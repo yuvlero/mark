@@ -1,0 +1,38 @@
+{
+  "name": "@yuvlero/mark",
+  "version": "0.1.0",
+  "description": "Mark: agent signing-key CLI/MCP client for a 2-of-3 Arkade escrow REST service",
+  "scripts": {
+    "build": "tsc && chmod +x dist/src/cli.js",
+    "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@arkade-os/sdk": "^0.4.79",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@noble/curves": "^2.4.0",
+    "@noble/hashes": "^2.4.0",
+    "@satora/swap": "^1.7.0",
+    "@scure/base": "^2.4.0",
+    "@scure/bip32": "^2.4.0",
+    "@scure/bip39": "^2.4.0",
+    "@scure/btc-signer": "^2.4.1",
+    "light-bolt11-decoder": "^3.2.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "bolt11": "^1.4.2",
+    "typescript": "^5.9.3"
+  },
+  "type": "module",
+  "private": true,
+  "bin": {
+    "mark": "dist/src/cli.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

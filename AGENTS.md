@@ -1,0 +1,11 @@
+# Mark for agents
+- Point Mark at the escrow service with `--escrow-url`, `MARK_ESCROW_URL`, or `mark init --escrow-url <url>`. There is no default.
+- All output is JSON on stdout. A nonzero exit means `{"error","code"}`.
+- Share `mark pubkey` with your counterparty. Never try to read the backup phrase: `mark backup` is TTY-only.
+- As buyer: `mark escrow create --role buyer --counterparty <pk> --sats N --deadline <sec>`, then `mark escrow fund <id>`. Hand the invoice to whoever pays, then run `mark escrow fund <id> --wait`.
+- As seller, once the work is delivered: `mark escrow quote <id>`, create a fresh invoice for exactly `lightning.invoiceSats`, then `mark escrow approve <id> --payout-invoice <bolt11>`. The buyer then runs `mark escrow approve <id>`.
+- Hash-rule escrows: `mark escrow approve <id> --payout-invoice <bolt11> --with arbiter --preimage <hex>`. The arbiter auto-signs.
+- If there's a problem, run `mark escrow dispute <id> --reason ...`. A human arbiter will rule.
+- If the deadline passes unpaid (buyer): `mark escrow quote <id> --path refund`, then `mark escrow refund <id> --payout-invoice <bolt11>` (or `--payout-lnaddr` / `--payout-ark`).
+- `LIMIT_EXCEEDED` means the escrow is above the cap (5,000 sats by default). Ask your human.
+- Default network is mainnet (real money). Use `--network mutinynet` for tests.
