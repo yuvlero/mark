@@ -10,7 +10,7 @@ import { createKeystore, openKeystore, resolvePassword, walletFile } from "../cr
 import { escrowKey, signAuth, signHash } from "../crypto/keys.js";
 import { normalizeTerms, termsDocument, termsHash, verifyTermsSig, normalizeEvidence, evidenceHash, type Terms } from "./terms.js";
 import { arkScript, payoutOutputs } from "../crypto/psbt.js";
-import { computeFees, expectedOutputs, outputsMatch, type FeeCalc } from "./fees.js";
+import { computeFees, expectedOutputs, outputsMatch, feeSchedule, type FeeCalc } from "./fees.js";
 import { validatePayoutInvoice, decodeInvoice, maxOverpaySats } from "../lightning/invoice.js";
 import type { Escrow, Party, Payout, ProposalFull } from "../api/escrowApi.js";
 import { assertEscrowCap } from "./limits.js";
@@ -133,7 +133,7 @@ export async function limits(c: Ctx) { return c.api.limits(); }
 function feeSummary(t: Escrow["fees"], amount: number) {
   if (!t) return { fees: "none (legacy / pre-fee deal)" };
   const n = computeFees(t, amount, amount, false), d = computeFees(t, amount, amount, true);
-  return { platformFeePct: t.feeBps / 100, disputeFeePct: t.disputeFeeBps / 100, freeBelowSats: t.freeBelowSats, normalPayout: { feeOutputSats: n.feeOutputSats, payeeSats: n.payeeSats, reason: n.reason }, ifDisputeRuled: { feeOutputSats: d.feeOutputSats, payeeSats: d.payeeSats, reason: d.reason, note: "dispute fee is taken from the escrow before the winner's payout (economically paid by the loser)" } };
+  return { termsVersion: t.v, schedule: feeSchedule(t), freeBelowSats: t.freeBelowSats, normalPayout: { feeOutputSats: n.feeOutputSats, payeeSats: n.payeeSats, reason: n.reason }, ifDisputeRuled: { feeOutputSats: d.feeOutputSats, payeeSats: d.payeeSats, reason: d.reason, note: "dispute fee is taken from the escrow before the winner's payout (economically paid by the loser)" } };
 }
 /** Expected fee for paying out this deal now, from the deal's PUBLISHED fee terms (never the server's word). */
 export const dealFee = (e: Escrow): FeeCalc => computeFees(e.fees ?? null, e.amountSats, held(e), !!(e.dispute && e.ruling));

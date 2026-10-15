@@ -58,13 +58,13 @@ The signature is over `sha256("mark-escrow:v1:<escrowId>:<action>:<ts>")`, made 
 Mark enforces its own cap (`limits.maxEscrowSats`, default 5000) **before** it calls the server. The server may enforce a stricter cap and answer `LIMIT_EXCEEDED`.
 
 ### GET /limits → 200 (public)
-`{ minDealSats: {lightning, ark, enforced}, maxDealSats, freeBelowSats, dustSats, fees: {enabled, source, address, feeBps, disputeFeeBps, freeBelowSats, dustBumpMaxBps, terms}, satora: {minSats, maxSats, fetchedAt, stale} }`
+`{ minDealSats: {lightning, ark, enforced}, maxDealSats, freeBelowSats, dustSats, fees: {enabled, source, address, freeBelowSats, flatSats, flatUntilSats, feeBps, disputeFeeBps, disputeMinSats, terms, schedule}, satora: {minSats, maxSats, fetchedAt, stale} }`
 Mark calls it before create: it refuses amounts below `minDealSats.enforced` (`AMOUNT_TOO_SMALL`, no POST) and puts `fees.terms` into the termsHash it signs. A server without `/limits` (404) is treated as fee-free.
 The server answers `400 AMOUNT_TOO_SMALL` with `details.minDealSats` too.
 
 ### Platform fees (published per deal)
-`Escrow.fees` (absent = legacy / pre-fee deal, no fees) = `{v:1, feeBps, disputeFeeBps, freeBelowSats, dustSats, dustBumpMaxBps, address}`, stamped at create and included in `termsDocument` as `fees`, so it is covered by `termsHash`.
-Fee math lives in `src/core/fees.ts`, **byte-identical** with the server's `src/lib/fees.ts`: 1% of `amountSats` on every payout (release or refund), +5% when a dispute exists **and** was ruled, nothing below 1000 sats, rounded up; a fee below Ark dust is bumped to dust only if that adds ≤ `dustBumpMaxBps` of the amount, else waived.
+`Escrow.fees` (absent = legacy / pre-fee deal, no fees) = `{v:2, freeBelowSats, flatSats, flatUntilSats, feeBps, disputeFeeBps, disputeMinSats, dustSats, address}` for new deals (older deals may carry `{v:1, feeBps, disputeFeeBps, freeBelowSats, dustSats, dustBumpMaxBps, address}`), stamped at create and included in `termsDocument` as `fees`, so it is covered by `termsHash`.
+Fee math lives in `src/core/fees.ts`, **byte-identical** with the server's `src/lib/fees.ts`. v2: platform fee 0 below `freeBelowSats` (3300), `flatSats` (330) up to `flatUntilSats` (33000) inclusive, then `ceil(amount * feeBps / 10000)` (1 %); ruled dispute adds `max(disputeMinSats, ceil(amount * disputeFeeBps / 10000))` (5 %, min 330); one combined output; a fee below dust or a payee leg below dust is waived (safety). v1 (legacy): 1 % + 5 % ruled, free below 1000, sub-dust fee bumped to dust if that adds ≤ `dustBumpMaxBps`, else waived. Unknown versions throw (Mark refuses to sign).
 Before signing, Mark requires the tx's value outputs (P2A anchor excluded) to be **exactly** `{proposal.dest: escrow − fee}` plus `{fees.address: fee}` when fee > 0. Anything else → `UNSAFE_TX`. If the server stamps fee terms different from what `/limits` published, create fails with `FEE_TERMS_MISMATCH`.
 
 ### GET /escrows/:id → 200 `Escrow`

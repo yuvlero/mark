@@ -26,7 +26,7 @@ export interface Escrow {
 export interface Quote { escrowSats: number; lightning: { invoiceSats: number; recommendedInvoiceSats?: number; minInvoiceSats?: number; maxInvoiceSats?: number; toleranceSats?: number; protocolFeeSats: number; networkFeeSats: number; minSats: number; maxSats: number; exact?: boolean; dest?: string }; ark: { payoutSats: number }; [k: string]: unknown }
 
 export interface Limits { network: string; minDealSats: { lightning: number; ark: number; enforced: number }; maxDealSats: number; freeBelowSats: number | null; dustSats: number;
-  fees: { enabled: boolean; source: string | null; address: string | null; feeBps: number; disputeFeeBps: number; freeBelowSats: number | null; dustBumpMaxBps: number | null; terms: FeeTerms | null; warning?: string };
+  fees: { enabled: boolean; source: string | null; address: string | null; feeBps: number; disputeFeeBps: number; freeBelowSats: number | null; flatSats?: number; flatUntilSats?: number | null; disputeMinSats?: number; dustBumpMaxBps?: number | null; terms: FeeTerms | null; schedule?: { platform: string; dispute: string } | null; warning?: string };
   satora: { minSats: number; maxSats: number; fetchedAt: string; stale: boolean }; [k: string]: unknown }
 
 export class EscrowApi {

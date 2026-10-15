@@ -10,7 +10,8 @@ import { termsHash, termsDocument } from "../dist/src/core/terms.js";
 import { tmpHome, mockFetch, arkAddr } from "./mockApi.mjs";
 
 const OTHER = "11".repeat(32), URL_ = "http://escrow.test", FEE = arkAddr(9), DEST = arkAddr(7);
-const TERMS = { v: 1, feeBps: 100, disputeFeeBps: 500, freeBelowSats: 1000, dustSats: 330, dustBumpMaxBps: 200, address: FEE };
+const TERMS = { v: 1, feeBps: 100, disputeFeeBps: 500, freeBelowSats: 1000, dustSats: 330, dustBumpMaxBps: 200, address: FEE }; // legacy v1 (old deals)
+const T2 = { v: 2, freeBelowSats: 3300, flatSats: 330, flatUntilSats: 33000, feeBps: 100, disputeFeeBps: 500, disputeMinSats: 330, dustSats: 330, address: FEE }; // current schedule
 /** PSBT with the given outputs plus a zero-value P2A anchor (like a real Ark tx). */
 function psbt(outs) {
   const t = new Transaction({ allowUnknownOutputs: true, allowUnknownInputs: true, disableScriptCheck: true });
@@ -72,7 +73,7 @@ test("create: signs termsHash INCLUDING the published fee terms; shows fee summa
   const b = f.calls.find((x) => x.key === "POST /escrows").body;
   assert.equal(b.termsHash, termsHash(termsDocument({ title: "t", description: "d" }, { network: "mutinynet", amountSats: 2000, buyerPubkey: c.pubkey, sellerPubkey: OTHER, fees: TERMS })));
   assert.notEqual(b.termsHash, termsHash(termsDocument({ title: "t", description: "d" }, { network: "mutinynet", amountSats: 2000, buyerPubkey: c.pubkey, sellerPubkey: OTHER })));
-  assert.equal(e.feeSummary.platformFeePct, 1); assert.equal(e.feeSummary.ifDisputeRuled.reason, "below_dust_waived");
+  assert.equal(e.feeSummary.termsVersion, 1); assert.match(e.feeSummary.schedule.platform, /1%/); assert.equal(e.feeSummary.ifDisputeRuled.reason, "below_dust_waived");
 });
 test("create: server stamping different fee terms -> FEE_TERMS_MISMATCH", async () => {
   const { c } = await createCtx(() => ({ ...TERMS, feeBps: 300 }));
@@ -92,4 +93,27 @@ test("fees.ts is byte-identical with the server copy (when checked out side by s
   const here = path.dirname(fileURLToPath(import.meta.url)); const srv = path.resolve(here, "../../escrow-server/src/lib/fees.ts");
   if (!fs.existsSync(srv)) return t.skip("escrow-server not checked out next to mark");
   assert.equal(fs.readFileSync(path.resolve(here, "../src/core/fees.ts"), "utf8"), fs.readFileSync(srv, "utf8"));
+});
+
+// ---- v2 schedule (current): free < 3300, flat 330 to 33000, then 1%; ruled dispute + max(5%, 330) ----
+test("v2 fee math matches the server README table", () => {
+  const r = (a, d) => computeFees(T2, a, a, d).feeOutputSats;
+  assert.deepEqual([3299, 3300, 10000, 33000, 33001, 100000, 1000000].map((a) => [r(a, false), r(a, true)]),
+    [[0, 0], [330, 660], [330, 830], [330, 1980], [331, 1982], [1000, 6000], [10000, 60000]]);
+});
+test("v2 co-sign: flat 330 at 10000 accepted; old 1% (100) refused", async () => {
+  const ok = await setup(psbt([[DEST, 9670], [FEE, 330]]), { amount: 10000, fees: T2 }); assert.ok(await passesChecks(uc.approve(ok.c, "e1")));
+  const bad = await setup(psbt([[DEST, 9900], [FEE, 100]]), { amount: 10000, fees: T2 }); assert.equal(await code(uc.approve(bad.c, "e1")), "UNSAFE_TX"); assert.equal(bad.signedFlag(), false);
+});
+test("v2 co-sign: ruled dispute at 10000 = 330 + 500 in one output", async () => {
+  const ok = await setup(psbt([[DEST, 9170], [FEE, 830]]), { amount: 10000, fees: T2, ruled: true }); assert.ok(await passesChecks(uc.approve(ok.c, "e1")));
+  const bad = await setup(psbt([[DEST, 9670], [FEE, 330]]), { amount: 10000, fees: T2, ruled: true }); assert.equal(await code(uc.approve(bad.c, "e1")), "UNSAFE_TX");
+});
+test("v2 co-sign: free tier (3299) = single output; 1000000 = 1%", async () => {
+  assert.ok(await passesChecks(uc.approve((await setup(psbt([[DEST, 3299]]), { amount: 3299, fees: T2 })).c, "e1")));
+  assert.ok(await passesChecks(uc.approve((await setup(psbt([[DEST, 990000], [FEE, 10000]]), { amount: 1000000, fees: T2 })).c, "e1")));
+});
+test("unknown fee terms version -> refuse to sign", async () => {
+  const { c, signedFlag } = await setup(psbt([[DEST, 49500], [FEE, 500]]), { fees: { ...T2, v: 3 } });
+  assert.notEqual(await code(uc.approve(c, "e1")), "OK"); assert.equal(signedFlag(), false);
 });

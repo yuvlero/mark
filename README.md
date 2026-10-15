@@ -57,5 +57,17 @@ Payout invoices are checked by both Mark and the service. An invoice that expire
 - Lightning funding is non-custodial: the funder's own Mark holds the swap claim key and claims straight into the escrow address.
 
 ## Platform fees
-The escrow server charges **1%** of the escrow amount on every payout (release or refund, incl. timeout refunds) and **+5%** when the admin rules a dispute (taken from the escrow before the winner's payout, so the loser pays it economically). Deals under **1000 sats** are free. Fees below Ark dust (330) are bumped to dust only when cheap (≤ 2% extra), otherwise waived.
+Current schedule (fee terms `v: 2`), charged on every payout (release, refund, timeout refund) as ONE fee output:
+
+| Amount | Normal payout: fee → payee | Ruled dispute: fee (platform + dispute) → winner |
+|---|---|---|
+| 3 299 | 0 → 3 299 (free below 3 300) | 0 → 3 299 |
+| 3 300 | 330 → 2 970 (flat) | 660 (330 + 330 min) → 2 640 |
+| 10 000 | 330 → 9 670 | 830 (330 + 500) → 9 170 |
+| 33 000 | 330 → 32 670 (last flat) | 1 980 (330 + 1 650) → 31 020 |
+| 33 001 | 331 → 32 670 (1 %, rounded up) | 1 982 (331 + 1 651) → 31 019 |
+| 100 000 | 1 000 → 99 000 | 6 000 → 94 000 |
+| 1 000 000 | 10 000 → 990 000 | 60 000 → 940 000 |
+
+The dispute fee (5 %, min 330, only from 3 300 sats) is taken from the escrow before the winner's payout, so the loser pays it economically. Every charged fee is ≥ Ark dust; if live dust ever rises above a fee, the server waives it and Mark expects no fee output. Mark computes the expected fee from the deal's **signed** terms: deals stamped with the older `v: 1` terms (1 %, +5 %, free < 1000, sub-dust bump/waive) keep those rules, and an unknown terms version is refused.
 The fee terms are stamped into each deal and covered by `termsHash`, so `mark escrow create/accept` sign them; `mark escrow show` prints `feeTerms` + `feeSummary`; `mark escrow quote` shows platform/dispute/Satora fees and the payee amount + invoice range. Legacy deals pay nothing. See [docs/escrow-api.md](docs/escrow-api.md#platform-fees-published-per-deal).
