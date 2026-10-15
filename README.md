@@ -68,8 +68,8 @@ mark escrow limits --sats 5000
 ```
 ```json
 {"minDealSats":{"lightning":335,"ark":330,"enforced":335},"maxDealSats":1000000, …,
- "feePreview":{"amountSats":5000,"platformFeeSats":330,"possibleDisputeFeeSats":330,"estimatedSwapCostSats":49,
-   "payeeReceives":{"arkSats":4670,"lightningSatsEstimate":4621,"ifDisputeRuledArkSats":4340}, …}}
+ "feePreview":{"amountSats":5000,"platformFeeSats":330,"possibleDisputeFeeSats":330,"estimatedSwapCostSats":38,"swapCostUpperBoundSats":62,
+   "payeeReceives":{"arkSats":4670,"lightningSatsEstimate":4632,"lightningSatsAtLeast":4608,"ifDisputeRuledArkSats":4340}, …}}
 ```
 
 ### 4.2 Create the deal with terms (either party; here the buyer)
@@ -155,7 +155,7 @@ mark escrow approve <id> --payout-invoice lnbc46510n1…
 
 The seller's approve **proposes and signs**. Then the buyer co-signs:
 ```bash
-mark escrow pending <id>     # B: see what is being paid where
+mark escrow pending          # B: every payout waiting on me (or: mark escrow pending <id>)
 mark escrow approve <id>     # B: co-sign. With 2 signatures the payout is submitted.
 ```
 The seller's Lightning wallet receives the payment and the state becomes `released`. Without the buyer, a seller with a hash rule can use `--with arbiter --preimage <hex>`.
@@ -180,7 +180,7 @@ The seller's Lightning wallet receives the payment and the state becomes `releas
 | Min deal | **335 sats on mainnet** (Satora minimum). Test networks may differ (mutinynet: 1,000). **Always read `GET /limits` → `minDealSats.enforced`** (`mark escrow limits`) |
 | Satora swap minimum | 335 sats per swap on mainnet (`limits.satora.minSats`) |
 | Ark dust | 330 sats (fees below dust are waived) |
-| Lightning swap cost | Satora protocol and routing fee, roughly 0.5–1 %; see `quote` |
+| Lightning payout swap cost | Satora protocol fee **0.3 %** (live rate) + Lightning routing (typically ~0.4–0.5 %). Example: 5,000-sat deal → 4,670 payee leg → **~36 sats** swap cost (4,634 received). `feePreview.estimatedSwapCostSats` is that realistic estimate; `swapCostUpperBoundSats` is the most you lose when invoicing the estimate's `recommendedInvoiceSats` (includes a safety margin). Exact cost: `quote --dest` |
 | Amountless BOLT11 | **unsupported** (use an amount or a Lightning address) |
 
 Examples (normal payout fee → payee on Ark; ruled dispute fee → winner): 3,299 → 0 / 0. 5,000 → 330 → 4,670 / 660 → 4,340. 33,000 → 330 / 1,980. 100,000 → 1,000 / 6,000. 1,000,000 → 10,000 / 60,000.
@@ -219,7 +219,7 @@ Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL`.
 | `mark escrow fund <id> [--wait] [--timeout sec]` | Lightning invoice to fund; `--wait` claims into the escrow |
 | `mark escrow status <id>` | Full deal state, proposals, events |
 | `mark escrow quote <id> [--path release\|refund] [--dest <lnaddr\|bolt11>]` | Payout amounts; exact with `--dest` |
-| `mark escrow pending <id>` | Pending proposals and payout details |
+| `mark escrow pending [<id>]` | Pending payout proposals and payout details. **No id:** across all my deals (local + server listing `needs=sign`), with `awaiting`, `needsMySignature` and the co-sign command |
 | `mark escrow approve <id> [--payout-invoice B \| --payout-lnaddr A \| --payout-ark X] [--kind release\|refund] [--with counterparty\|arbiter] [--preimage hex]` | Payee: propose and sign. Co-signer: sign (no payout flags) |
 | `mark escrow refund <id> --payout-… [--with arbiter\|counterparty]` | Buyer proposes a refund |
 | `mark escrow refund-payout <id> [--to <ark address>]` | Recover a failed Lightning payout swap |
@@ -240,7 +240,8 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 |---|---|
 | `pubkey` | `mark pubkey` |
 | `escrow_create` (role, counterparty, sats, deadline, terms{…}, hash?, arbiterMode?, webhookUrl?) | `escrow create` |
-| `escrow_show`, `escrow_accept`, `escrow_status`, `escrow_pending` | same names |
+| `escrow_show`, `escrow_accept`, `escrow_status` | same names |
+| `escrow_pending` (id? — omit for all my deals) | `escrow pending [<id>]` |
 | `escrow_limits` (sats?) | `escrow limits` |
 | `escrow_fund` (id, wait?) | `escrow fund` |
 | `escrow_quote` (id, path?, dest?) | `escrow quote` |

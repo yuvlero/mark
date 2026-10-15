@@ -186,3 +186,27 @@ test("seller propose with invoice a few sats under exact: swap under-sourced wit
     assert.equal(posted, want === "UNSAFE_TX");
   }
 });
+
+test("pending with no id: across local deals + server listing (needs=sign); awaits + co-sign command; listing failure tolerated", async () => {
+  let c0; const dest = arkAddr(7);
+  const prop = (id, sigs) => ({ id, kind: "release", dest, signers: ["buyer", "seller"], sigs, payout: { type: "ark", address: dest, sats: 1200 }, arkTx: psbtPaying(dest, 1200), checkpoints: [] });
+  const sum = (p) => ({ id: p.id, kind: p.kind, dest: p.dest, signers: p.signers, sigs: p.sigs });
+  const pA = prop("pa", ["seller"]), pB = prop("pb", ["buyer"]);
+  let listingOk = true;
+  const { c, f } = await ctx({
+    "GET /escrows": async () => listingOk ? [200, { party: c0.pubkey, count: 1, escrows: [{ id: "e2", role: "buyer" }], nextCursor: null }] : [404, { code: "NOT_FOUND", error: "no route" }],
+    "GET /escrows/e1": async () => [200, escrow(c0, { proposals: [sum(pB)] })],
+    "GET /escrows/e1/proposals/pb": async () => [200, pB],
+    "GET /escrows/e2": async () => [200, escrow(c0, { id: "e2", proposals: [sum(pA)] })],
+    "GET /escrows/e2/proposals/pa": async () => [200, pA],
+  }); c0 = c; c.index.set("e1", { role: "buyer" });
+  const r = await uc.pendingAll(c);
+  assert.equal(r.count, 2); assert.equal(r.needMySignature, 1);
+  assert.equal(r.proposals[0].escrowId, "e2"); assert.deepEqual(r.proposals[0].awaiting, ["buyer"]); assert.match(r.proposals[0].next, /mark escrow approve e2/);
+  assert.equal(r.proposals[1].needsMySignature, false); assert.match(r.proposals[1].next, /waiting for seller/);
+  const lq = f.calls.find((x) => x.key.startsWith("GET /escrows?")); assert.match(lq.key, /needs=sign/);
+  assert.ok(!f.calls.some((x) => x.key.includes("/signatures")));
+  listingOk = false; const r2 = await uc.pendingAll(c); assert.match(r2.note, /server listing unavailable/); assert.equal(r2.count, 2); // e2 remembered locally
+  const { checkEscrowArgs } = await import("../dist/src/cliArgs.js"); assert.equal(checkEscrowArgs("pending", undefined, {}), null);
+  assert.match(fs.readFileSync(new URL("../dist/src/mcp.js", import.meta.url), "utf8"), /id: z\.string\(\)\.optional\(\) \}, \(\{ id \}\) => wrap\(\(\) => \(id \? uc\.pending/);
+});

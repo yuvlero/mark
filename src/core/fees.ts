@@ -111,13 +111,14 @@ export function outputsMatch(outs: { script: string; amount: number }[], expecte
 }
 
 /** Upfront fee preview for a deal of `amountSats` (shown at create / limits). Swap cost is passed in (estimate). */
-export function feePreview(terms: FeeTerms | null | undefined, amountSats: number, o: { minDealSats: number; maxDealSats: number; swapEstimateSats?: number | null }) {
+export function feePreview(terms: FeeTerms | null | undefined, amountSats: number, o: { minDealSats: number; maxDealSats: number; swapEstimateSats?: number | null; swapUpperBoundSats?: number | null }) {
   const n = computeFees(terms, amountSats, amountSats, false), d = computeFees(terms, amountSats, amountSats, true);
   const swap = o.swapEstimateSats ?? null;
   return { amountSats, platformFeeSats: n.feeOutputSats, platformFeeReason: n.reason,
     possibleDisputeFeeSats: d.feeOutputSats - n.feeOutputSats, disputeFeeApplies: d.feeOutputSats > n.feeOutputSats,
-    estimatedSwapCostSats: swap, swapCostNote: "Lightning payout only (Satora protocol + routing fee, estimate; Ark payouts have no swap cost)",
-    payeeReceives: { arkSats: n.payeeSats, lightningSatsEstimate: swap === null ? null : n.payeeSats - swap, ifDisputeRuledArkSats: d.payeeSats },
+    estimatedSwapCostSats: swap, swapCostUpperBoundSats: o.swapUpperBoundSats ?? null,
+    swapCostNote: "Lightning payout only (Ark payouts have no swap cost). estimatedSwapCostSats = Satora protocol fee (live rate, ~0.3%) + typical routing (~0.5%); the exact cost depends on the destination (quote --dest). swapCostUpperBoundSats = cost if you invoice the estimate's recommendedInvoiceSats (includes the safety margin).",
+    payeeReceives: { arkSats: n.payeeSats, lightningSatsEstimate: swap === null ? null : n.payeeSats - swap, lightningSatsAtLeast: o.swapUpperBoundSats == null ? null : n.payeeSats - o.swapUpperBoundSats, ifDisputeRuledArkSats: d.payeeSats },
     minDealSats: o.minDealSats, maxDealSats: o.maxDealSats, withinLimits: amountSats >= o.minDealSats && amountSats <= o.maxDealSats,
     schedule: terms ? feeSchedule(terms) : null };
 }

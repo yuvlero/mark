@@ -102,10 +102,10 @@ created ──(funds seen on the escrow address)──▶ funded ──propose�
            "disputeFeeBps": 500, "disputeMinSats": 330, "terms": {"v": 2, …, "dustSats": 330, "address": "ark1…"}, "schedule": {…}},
   "satora": {"minSats": 335, "maxSats": 1000000, "fetchedAt": "…", "stale": false}, "note": "…",
   "feePreview": { "amountSats": 5000, "platformFeeSats": 330, "platformFeeReason": "charged", "possibleDisputeFeeSats": 330, "disputeFeeApplies": true,
-                  "estimatedSwapCostSats": 49, "payeeReceives": {"arkSats": 4670, "lightningSatsEstimate": 4621, "ifDisputeRuledArkSats": 4340},
+                  "estimatedSwapCostSats": 38, "swapCostUpperBoundSats": 62, "payeeReceives": {"arkSats": 4670, "lightningSatsEstimate": 4632, "lightningSatsAtLeast": 4608, "ifDisputeRuledArkSats": 4340},
                   "minDealSats": 335, "maxDealSats": 1000000, "withinLimits": true, "schedule": {…} } }
 ```
-`feePreview` is only present with `?sats=`. **Always read `minDealSats.enforced` before creating a deal**: it is 335 sats on mainnet (the Satora minimum), and test networks may differ (mutinynet: 1,000). Put `fees.terms` into the termsHash you sign.
+`feePreview` is only present with `?sats=`. `estimatedSwapCostSats` (Lightning payouts only) = live Satora protocol fee (~0.3 %) + a routing allowance (0.5 %), a realistic figure (a 4,670-sat payout cost 36 in practice). `swapCostUpperBoundSats` = payee leg − the estimate quote's `recommendedInvoiceSats` (includes the safety margin). The exact cost per destination comes from `quote?dest=`. **Always read `minDealSats.enforced` before creating a deal**: it is 335 sats on mainnet (the Satora minimum), and test networks may differ (mutinynet: 1,000). Put `fees.terms` into the termsHash you sign.
 
 **Fee math (terms v2):**
 - Platform fee: 0 if `amount < freeBelowSats`; `flatSats` if `amount ≤ flatUntilSats`; otherwise `ceil(amount × feeBps / 10000)`.

@@ -16,7 +16,7 @@ export const ESCROW_USAGE: Record<string, string> = {
   show: "mark escrow show <id>", accept: "mark escrow accept <id>",
   evidence: "mark escrow evidence <id> --text \"...\" (alias --note) [--sha256 <hex>] [--url <https://...>]",
   fund: "mark escrow fund <id> [--wait] [--timeout <sec>]", status: "mark escrow status <id>", limits: "mark escrow limits [--sats N]",
-  quote: "mark escrow quote <id> [--path release|refund] [--dest <bolt11|lightning address>]", pending: "mark escrow pending <id>",
+  quote: "mark escrow quote <id> [--path release|refund] [--dest <bolt11|lightning address>]", pending: "mark escrow pending [<id>]   (no id: all my deals)",
   approve: "mark escrow approve <id> [--payout-invoice <bolt11> | --payout-lnaddr <user@domain> | --payout-ark <ark address>] [--kind release|refund] [--with counterparty|arbiter] [--preimage <hex>]",
   dispute: "mark escrow dispute <id> [--reason \"...\"]", refund: "mark escrow refund <id> --payout-invoice <bolt11> | --payout-lnaddr <user@domain> | --payout-ark <addr> [--with arbiter|counterparty]",
   "refund-payout": "mark escrow refund-payout <id> [--to <ark address>]",
@@ -25,7 +25,7 @@ export const ESCROW_USAGE: Record<string, string> = {
   inbox: "mark escrow inbox",
   invites: "mark escrow invites [--all] [--needs accept|fund|sign|any] [--state <state>]",
 };
-const NEEDS_ID = new Set(["show", "accept", "evidence", "fund", "status", "quote", "pending", "approve", "dispute", "refund", "refund-payout", "messages", "message"]);
+const NEEDS_ID = new Set(["show", "accept", "evidence", "fund", "status", "quote", "approve", "dispute", "refund", "refund-payout", "messages", "message"]);
 /** Usage checks before any network/keystore access: unknown subcommand, missing id, missing/ambiguous flags. */
 export function checkEscrowArgs(sub: string | undefined, id: string | undefined, f: Record<string, string | boolean>) {
   const usage = (msg: string) => new MarkError("USAGE", `${msg}. usage: ${ESCROW_USAGE[sub!] ?? Object.values(ESCROW_USAGE).join(" | ")}`, { usage: sub && ESCROW_USAGE[sub] ? ESCROW_USAGE[sub] : ESCROW_USAGE });

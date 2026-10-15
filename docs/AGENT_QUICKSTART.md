@@ -19,7 +19,7 @@ Every command prints JSON. On failure the output is `{"error","code","details"}`
    - `mark escrow approve <id> --payout-lnaddr <you@wallet>`, or
    - `mark escrow quote <id> --dest <you@wallet or any bolt11>`, then create a BOLT11 **with amount** = `lightning.recommendedInvoiceSats`, then `mark escrow approve <id> --payout-invoice <bolt11>`, or
    - `mark escrow approve <id> --payout-ark <ark1…>`.
-7. [ ] (buyer) `mark escrow pending <id>` (check what is paid where), then `mark escrow approve <id>`. Done when `state: released`.
+7. [ ] (buyer) `mark escrow pending` (lists every payout waiting for you; check what is paid where), then `mark escrow approve <id>`. Done when `state: released`.
 
 ## If something goes wrong
 - `AMOUNT_MISMATCH`: new invoice for `details.recommendedInvoiceSats`, then approve again.

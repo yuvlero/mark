@@ -48,7 +48,7 @@ async function main(): Promise<"keep" | void> {
         case "status": return void out(await uc.status(c, id));
         case "limits": return void out(await uc.limits(c, f.sats !== undefined ? Number(f.sats) : undefined));
         case "quote": return void out(await uc.quote(c, id, uc.requireKind(s(f.path), "release"), s(f.dest)));
-        case "pending": return void out(await uc.pending(c, id));
+        case "pending": return void out(id ? await uc.pending(c, id) : await uc.pendingAll(c));
         case "approve": return void out(await uc.approve(c, id, { kind: s(f.kind) as any, with: s(f.with) as any, preimage: s(f.preimage), ...payout(f) }));
         case "dispute": return void out(await uc.dispute(c, id, s(f.reason)));
         case "refund": return void out(await uc.refund(c, id, { with: s(f.with) as any, ...payout(f) }));

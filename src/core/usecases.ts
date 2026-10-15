@@ -168,6 +168,34 @@ export async function pending(c: Ctx, id: string) {
   return { escrowId: id, state: e.state, myRole: role, proposals: out };
 }
 
+/** No id: pending payout proposals across all my deals (local index + server listing needs=sign). What each awaits + the co-sign command. Read-only. */
+export async function pendingAll(c: Ctx) {
+  const ids = new Set(c.index.ids()); let listing: string | null = null;
+  try {
+    let cursor: string | undefined;
+    for (let page = 0; page < 20; page++) {
+      const r = await c.api.partyList(c.pubkey, { needs: "sign", limit: 100, cursor }, (pq) => signListRequest(c.secret, "GET", pq));
+      if (r.party !== c.pubkey) throw new MarkError("ESCROW_BAD_RESPONSE", "listing is for a different key");
+      for (const it of r.escrows) { ids.add(it.id); if (!c.index.get(it.id).role) c.index.set(it.id, { role: it.role }); }
+      if (!r.nextCursor) break; cursor = r.nextCursor;
+    }
+  } catch (x: any) { listing = `server listing unavailable (${x.code ?? "ERROR"}); showing locally known deals only`; }
+  const items: any[] = []; const errors: any[] = [];
+  for (const id of ids) {
+    try {
+      const e = await c.api.get(id); const role = myRole(c, e);
+      for (const s of e.proposals.filter((p) => !p.submittedTxid)) {
+        const p = await c.api.proposal(id, s.id); const awaiting = p.signers.filter((x) => !p.sigs.includes(x)); const mine = awaiting.includes(role);
+        items.push({ escrowId: id, state: e.state, myRole: role, ...payoutDetails(e, p), signers: p.signers, signedBy: p.sigs, awaiting, needsMySignature: mine, txMatchesFeeTerms: txMatchesFeeTerms(e, p.arkTx, p.dest),
+          next: mine ? `review, then co-sign: mark escrow approve ${id}` : `waiting for ${awaiting.join(" and ") || "submission"}` });
+      }
+    } catch (x: any) { errors.push({ escrowId: id, code: x.code ?? "ERROR", error: String(x.message).slice(0, 200) }); }
+  }
+  items.sort((a, b) => Number(b.needsMySignature) - Number(a.needsMySignature));
+  return { count: items.length, needMySignature: items.filter((x) => x.needsMySignature).length, proposals: items, ...(listing ? { note: listing } : {}), ...(errors.length ? { errors } : {}),
+    next: items.some((x) => x.needsMySignature) ? "check each payout (amount, destination, txMatchesFeeTerms), then: mark escrow approve <escrowId>" : items.length ? "nothing needs your signature; waiting for the other signer(s)" : "no pending payout proposals" };
+}
+
 export async function status(c: Ctx, id: string) {
   const e = await c.api.get(requireId(id)); const l = c.index.get(id);
   const r: any = { ...e, myRole: myRole(c, e) };
