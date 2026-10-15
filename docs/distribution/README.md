@@ -12,8 +12,8 @@ Nothing here has been published or submitted. **Each step that needs an account 
 | 6 | mcp.so: submit (see mcp-so.md) | **mcp.so** login (GitHub/Google) | 1 |
 | 7 | awesome-mcp-servers PRs (punkpeye, appcypher) | **GitHub**: fork both repos and open PRs as yuvlero | 1, ideally 2 and 5 (the punkpeye list wants a Glama badge) |
 
-## Open issue before listing
-`mark mcp` needs a key: it exits with `NOT_INITIALIZED` until `mark init` has run. Registry inspectors (Glama, Smithery) start it fresh. Decide between auto-init on first `mcp` start (code change) and a documented init step. See glama.md.
+## Fresh-start inspection (resolved)
+`mark mcp` auto-creates the agent key on first start (never overwriting an existing one), so registry inspectors (Glama, Smithery) can start it fresh.
 
 ## Release steps (when approved)
 ```bash

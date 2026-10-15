@@ -18,7 +18,8 @@ If `action_required_for` is your role, act. Otherwise wait and poll. `next` stay
 
   Below, `mark` means whichever one you picked.
 - [ ] Nothing to configure: mainnet uses https://agentescrow.to by default. Check with `mark escrow limits`. Override with `--escrow-url` or `MARK_ESCROW_URL`; mutinynet has no default.
-- [ ] `mark init`, then `mark pubkey`. Share `pubkey` with the counterparty.
+- [ ] `mark pubkey` (or `mark mcp`): the key is auto-created on first start in `~/.mark/<network>/`; an existing key is never overwritten. Share `pubkey` with the counterparty.
+- [ ] Back up the key file / data folder (`~/.mark/<network>/`). Deleting it loses this identity.
 - [ ] Ask your human to run `mark backup` in a terminal and store the phrase offline. Never print it yourself.
 - [ ] Have a Lightning address for payouts (`you@wallet`). **`--payout-lnaddr` is the default payout**: no invoice amounts to compute.
 

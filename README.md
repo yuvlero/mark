@@ -7,7 +7,7 @@
 ## Quickstart
 
 ```bash
-npx -y github:yuvlero/mark init                 # once: creates this agent's key (mainnet, https://agentescrow.to)
+npx -y github:yuvlero/mark init                 # optional: any command auto-creates the key on first run
 npx -y github:yuvlero/mark pubkey               # share with the counterparty
 npx -y github:yuvlero/mark escrow limits --sats 5000
 npx -y github:yuvlero/mark escrow create --role buyer --counterparty <pubkey> --sats 5000 --deadline 86400 \
@@ -15,6 +15,8 @@ npx -y github:yuvlero/mark escrow create --role buyer --counterparty <pubkey> --
 # counterparty: escrow invites -> show <id> -> accept <id>; buyer: fund <id>; seller: evidence --file, approve --payout-lnaddr
 npx -y github:yuvlero/mark mcp                  # or run it as an MCP stdio server
 ```
+**Your key is created automatically** the first time any command (including `mark mcp`) needs it, in `~/.mark/<network>/` (never in the package install dir, so it survives restarts and updates). An existing key is never overwritten. **Back up that folder** (or run `mark backup` in a terminal): deleting it loses this identity and access to open deals.
+
 Add `--network mutinynet` to test without real money. The whole flow is in the [agent quickstart](docs/AGENT_QUICKSTART.md); wrappers for skills, LangChain and CrewAI are in [examples/](examples/).
 
 ## How it works
@@ -67,12 +69,14 @@ Network: `--network bitcoin` (default, **real money**) or `--network mutinynet` 
 ## 3. Identity, key storage, backup
 
 ```bash
-mark init                  # creates your key (once per network)
+mark init                  # optional: creates your key (once per network); any command does this automatically
 mark pubkey                # {"network":"bitcoin","pubkey":"<64-hex x-only key>"}: share this with counterparties
 ```
 ```json
 {"ok":true,"created":true,"network":"bitcoin","dataDir":"/home/agent/.mark/bitcoin","pubkey":"feee99…29ba","escrowUrl":"https://agentescrow.to","limits":{"maxEscrowSats":1000000},"note":"Backup phrase: run `mark backup` in an interactive terminal."}
 ```
+- **Auto-creation:** if no `wallet.enc.json` exists, the first command that needs the key (e.g. `mark mcp`, `mark pubkey`) creates it with an exclusive, atomic write (0600 file, 0700 dir) and logs to stderr only the file path and public key. If the file exists it is loaded unchanged; concurrent first starts converge on one key.
+- **Back up the data folder:** deleting `~/.mark/<network>/` (or the `wallet.enc.json` + `password` pair) without a backup phrase permanently loses this identity.
 - **Files:** `~/.mark/<network>/`, or `$MARK_HOME/<network>/`. The directory is 0700 and the files 0600:
   - `wallet.enc.json`: the seed, encrypted with scrypt + AES-256-GCM.
   - `password`: generated at init.
@@ -298,7 +302,7 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 | Code | Meaning / what to do |
 |---|---|
 | `USAGE` | Wrong command or flags; see `details.usage` |
-| `NOT_INITIALIZED` | Run `mark init --network <n>` |
+| `NOT_INITIALIZED` | Rare: the key is auto-created; run `mark init --network <n>` |
 | `ESCROW_URL_MISSING` | Only on networks without a default (e.g. mutinynet): set `MARK_ESCROW_URL` or `--escrow-url` |
 | `ESCROW_UNREACHABLE` / `ESCROW_BAD_RESPONSE` | Server down or wrong URL; retry later |
 | `NOT_A_PARTY` | Your pubkey is neither buyer nor seller of this deal |

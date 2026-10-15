@@ -41,8 +41,22 @@ export function resolvePassword(dir: string, createIfMissing: boolean, envName =
   }
   if (!createIfMissing) throw new MarkError("LOCKED", `no password: set ${envName} or ${envName}_FILE`);
   const pw = crypto.randomBytes(32).toString("base64url");
-  fs.writeFileSync(f, pw + "\n", { mode: 0o600 });
+  if (!writeExclusive(f, pw + "\n")) return resolvePassword(dir, false, envName); // lost a race: use the winner's password
   return pw;
+}
+
+/**
+ * Atomic exclusive create: write a private temp file (open 'wx', 0600), then hard-link it into place.
+ * link() fails with EEXIST if the target exists, so an existing file is never overwritten and a
+ * concurrent reader never sees a half-written file. Returns false if the target already existed.
+ */
+export function writeExclusive(f: string, data: string): boolean {
+  const tmp = `${f}.${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`;
+  const fd = fs.openSync(tmp, "wx", 0o600);
+  try { fs.writeSync(fd, data); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  try { fs.linkSync(tmp, f); return true; }
+  catch (e: any) { if (e?.code === "EEXIST") return false; throw e; }
+  finally { fs.rmSync(tmp, { force: true }); }
 }
 
 export function walletFile(dir: string) { return path.join(dir, "wallet.enc.json"); }
@@ -55,7 +69,7 @@ export function createKeystore(dir: string, password: string, importMnemonic?: s
   const salt = crypto.randomBytes(16);
   const key = deriveKey(password, salt);
   const blob = { version: 1, kdf: "scrypt", salt: salt.toString("hex"), ...encryptWith(key, mnemonic) };
-  fs.writeFileSync(f, JSON.stringify(blob) + "\n", { mode: 0o600 });
+  if (!writeExclusive(f, JSON.stringify(blob) + "\n")) throw new MarkError("EXISTS", "wallet already exists");
   return { mnemonic, key };
 }
 
@@ -66,4 +80,18 @@ export function openKeystore(dir: string, password: string): Keystore {
   const key = deriveKey(password, Buffer.from(blob.salt, "hex"));
   try { return { mnemonic: decryptWith(key, blob), key }; }
   catch { throw new MarkError("BAD_PASSWORD", "could not decrypt wallet"); }
+}
+
+/**
+ * Open the wallet, creating it ONLY if no wallet file exists yet. Never overwrites an existing
+ * key; if another process creates it concurrently, the winner's key is loaded. Never returns or
+ * logs the private key beyond the in-process Keystore.
+ */
+export function openOrCreateKeystore(dir: string): Keystore & { created: boolean } {
+  if (!fs.existsSync(walletFile(dir))) {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    try { return { ...createKeystore(dir, resolvePassword(dir, true)), created: true }; }
+    catch (e: any) { if (e?.code !== "EXISTS") throw e; }
+  }
+  return { ...openKeystore(dir, resolvePassword(dir, false)), created: false };
 }

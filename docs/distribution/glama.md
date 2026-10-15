@@ -10,10 +10,6 @@ Glama indexes public GitHub MCP servers automatically. Search for `yuvlero/mark`
 - Install / run: `npx -y github:yuvlero/mark mcp` (after npm publish: `npx -y @yuvlero/mark mcp`)
 - Environment: `MARK_NETWORK` (bitcoin | mutinynet), `MARK_ESCROW_URL` (optional), `MARK_HOME` (optional), `MARK_PASSWORD` (optional, secret)
 - License: MIT
-- **Known blocker for automated inspection:** today `mark mcp` exits with `NOT_INITIALIZED` until `mark init` has created a key. Glama and Smithery start the server in a fresh container, so their tool listing fails until either:
-  - the inspection command is `sh -c 'mark init --network mutinynet; mark mcp --network mutinynet'`, or
-  - `mcp` creates a key on first start (a code change, not done; needs Yuri's OK).
-
-  Verified: after `init`, the packed tarball's MCP server answers `initialize` and lists 18 tools.
+- **Automated inspection:** `mark mcp` auto-creates a key on first start (resolved), so Glama and Smithery can start it in a fresh container without `mark init`.
 - Badge for the README and the punkpeye PR, once listed:
   `[![yuvlero/mark MCP server](https://glama.ai/mcp/servers/yuvlero/mark/badges/score.svg)](https://glama.ai/mcp/servers/yuvlero/mark)`
