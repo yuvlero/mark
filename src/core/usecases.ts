@@ -8,11 +8,11 @@ import { MarkError } from "../errors.js";
 import { NETWORKS, dataDir, ensureDir, defaultConfig, saveConfig, configPath, loadConfig, normalizeUrl, type NetworkName } from "../config.js";
 import { createKeystore, openKeystore, resolvePassword, walletFile } from "../crypto/keystore.js";
 import { escrowKey, signAuth, signHash } from "../crypto/keys.js";
-import { normalizeTerms, termsDocument, termsHash, verifyTermsSig, normalizeEvidence, evidenceHash, type Terms } from "./terms.js";
+import { normalizeTerms, termsDocument, termsHash, verifyTermsSig, normalizeEvidence, evidenceHash, normalizeMessage, messageHash, type Terms } from "./terms.js";
 import { arkScript, payoutOutputs } from "../crypto/psbt.js";
 import { computeFees, expectedOutputs, outputsMatch, feeSchedule, feePreview, type FeeCalc } from "./fees.js";
 import { validatePayoutInvoice, decodeInvoice, maxOverpaySats, isAmountless } from "../lightning/invoice.js";
-import type { Escrow, Party, Payout, ProposalFull } from "../api/escrowApi.js";
+import type { Escrow, Party, Payout, ProposalFull, Message, MessageList } from "../api/escrowApi.js";
 import { assertEscrowCap } from "./limits.js";
 import type { Ctx } from "./context.js";
 import type { Role } from "./localIndex.js";
@@ -295,4 +295,48 @@ export async function refundPayout(c: Ctx, id: string, to?: string) {
   const l = c.index.get(requireId(id)); if (!l.payoutSwap) throw new MarkError("NOT_FOUND", "no payout swap recorded for this escrow");
   const dest = to ?? c.cfg.refundArkAddress; if (!dest || !/^t?ark1/.test(dest)) throw new MarkError("BAD_DEST", "--to <ark address> (or config refundArkAddress) required");
   return (await c.swaps()).refund(l.payoutSwap, dest);
+}
+
+// ---------- per-deal message threads (support channel with the operator) ----------
+/** Verify each message: id must equal messageHash(...) and the signature must verify against the author's key
+ *  (operator + system messages: the deal's arbiter pubkey, i.e. the operator's key for this escrow). */
+export function verifyMessage(l: Pick<MessageList, "escrowId" | "arbiterPubkey" | "buyerPubkey" | "sellerPubkey">, m: Message) {
+  const pk = m.author === "operator" ? l.arbiterPubkey : m.author === "buyer" ? l.buyerPubkey : m.author === "seller" ? l.sellerPubkey : null;
+  if (!pk || m.pubkey !== pk) return false;
+  try { const h = messageHash(l.escrowId, m.author, m.ts, { body: m.body, ...(m.kind ? { kind: m.kind as any } : {}), ...(m.replyTo ? { replyTo: m.replyTo } : {}) }); return h === m.id && verifyTermsSig(pk, h, m.sig); } catch { return false; }
+}
+async function fetchThread(c: Ctx, id: string, since?: number) {
+  const e = await c.api.get(requireId(id)); const role = myRole(c, e);
+  const l = await c.api.messages(id, { party: role, ...signAuth(c.secret, id, "messages") }, since);
+  // pin keys to the escrow record (not the thread response)
+  const keys = { escrowId: id, arbiterPubkey: e.arbiterPubkey, buyerPubkey: e.buyerPubkey, sellerPubkey: e.sellerPubkey };
+  return { e, role, l, msgs: l.messages.map((m) => ({ ...m, mine: m.author === role, verified: verifyMessage(keys, m) })) };
+}
+/** Read a deal's thread (since = cursor). Marks it read. Unverified messages are flagged, never trusted. */
+export async function messages(c: Ctx, id: string, since?: number) {
+  const { e, role, l, msgs } = await fetchThread(c, id, since);
+  if (l.cursor > (c.index.get(id).msgSeen ?? 0)) c.index.set(id, { msgSeen: l.cursor, role: c.index.get(id).role ?? role });
+  const bad = msgs.filter((m) => !m.verified).length;
+  return { escrowId: id, state: e.state, myRole: role, cursor: l.cursor, messages: msgs, ...(bad ? { warning: `${bad} message(s) failed signature verification: ignore them` } : {}),
+    next: `reply: mark escrow message ${id} --text "..." [--kind question|dispute|evidence|info] [--reply-to <messageId>]; poll: mark escrow messages ${id} --since ${l.cursor}` };
+}
+/** Post a signed message (kind: question|dispute|evidence|info). */
+export async function postMessage(c: Ctx, id: string, o: { text?: string; kind?: string; replyTo?: string }) {
+  const m = normalizeMessage({ body: o.text, kind: o.kind, replyTo: o.replyTo });
+  if (m.kind === "system") throw new MarkError("BAD_MESSAGE", "kind system is reserved for the server");
+  const e = await c.api.get(requireId(id)); const role = myRole(c, e); const ts = Math.floor(Date.now() / 1000);
+  const r = await c.api.postMessage(id, { author: role, ts, ...m, sig: signHash(c.secret, messageHash(id, role, ts, m)) });
+  return { escrowId: id, myRole: role, posted: { id: r.id, seq: r.seq, kind: r.kind ?? null, replyTo: r.replyTo ?? null, createdAt: r.createdAt },
+    note: m.kind === "dispute" ? `a dispute MESSAGE does not open a dispute; to stop auto-arbitration run: mark escrow dispute ${id} --reason "..."` : "the operator replies in this thread; poll with mark escrow inbox (or use a webhook: message.created)" };
+}
+/** Unread messages (not mine, after my last-seen cursor) across this identity's deals (local index). Does not mark read. */
+export async function inbox(c: Ctx) {
+  const out: any[] = []; const errors: any[] = [];
+  for (const id of c.index.ids()) {
+    try { const seen = c.index.get(id).msgSeen ?? 0; const { e, msgs } = await fetchThread(c, id, seen); const unread = msgs.filter((m) => !m.mine);
+      if (unread.length) out.push({ escrowId: id, state: e.state, unread: unread.length, fromOperator: unread.filter((m) => m.author === "operator" && m.kind !== "system").length,
+        latest: unread.slice(-3).map((m) => ({ id: m.id, author: m.author, kind: m.kind ?? null, at: m.createdAt, verified: m.verified, preview: m.body.slice(0, 200) })) }); }
+    catch (x: any) { errors.push({ escrowId: id, code: x.code ?? "ERROR", error: String(x.message).slice(0, 200) }); }
+  }
+  return { unreadDeals: out.length, unreadMessages: out.reduce((a, x) => a + x.unread, 0), deals: out, ...(errors.length ? { errors } : {}), next: out.length ? "read one with: mark escrow messages <id>" : "no unread messages" };
 }

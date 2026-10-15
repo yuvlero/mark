@@ -20,7 +20,7 @@ function termsFrom(f: Record<string, string | boolean>): uc.TermsInput {
   for (const [flag, k] of [["title", "title"], ["description", "description"], ["deliverable", "deliverable"], ["acceptance", "acceptance"], ["deliverable-sha256", "deliverableSha256"]]) if (s(f[flag]) !== undefined) t[k] = s(f[flag]);
   return t;
 }
-const USAGE = "mark <init|pubkey|backup|mcp|escrow create|show|accept|evidence|fund|limits|quote|status|pending|approve|dispute|refund|refund-payout> [--network bitcoin|mutinynet] [--escrow-url URL]";
+const USAGE = "mark <init|pubkey|backup|mcp|escrow create|show|accept|evidence|fund|limits|quote|status|pending|approve|dispute|refund|refund-payout|messages|message|inbox> [--network bitcoin|mutinynet] [--escrow-url URL]";
 async function main(): Promise<"keep" | void> {
   const { pos, f } = parseArgs(process.argv.slice(2));
   const network = normalizeNetwork(s(f.network)); const escrowUrl = s(f["escrow-url"]);
@@ -52,6 +52,9 @@ async function main(): Promise<"keep" | void> {
         case "approve": return void out(await uc.approve(c, id, { kind: s(f.kind) as any, with: s(f.with) as any, preimage: s(f.preimage), ...payout(f) }));
         case "dispute": return void out(await uc.dispute(c, id, s(f.reason)));
         case "refund": return void out(await uc.refund(c, id, { with: s(f.with) as any, ...payout(f) }));
+        case "messages": return void out(await uc.messages(c, id, f.since !== undefined ? Number(f.since) : undefined));
+        case "message": return void out(await uc.postMessage(c, id, { text: s(f.text) ?? s(f.note), kind: s(f.kind), replyTo: s(f["reply-to"]) }));
+        case "inbox": return void out(await uc.inbox(c));
         case "refund-payout": return void out(await uc.refundPayout(c, id, s(f.to)));
       }
       throw new MarkError("USAGE", USAGE);

@@ -20,8 +20,11 @@ export const ESCROW_USAGE: Record<string, string> = {
   approve: "mark escrow approve <id> [--payout-invoice <bolt11> | --payout-lnaddr <user@domain> | --payout-ark <ark address>] [--kind release|refund] [--with counterparty|arbiter] [--preimage <hex>]",
   dispute: "mark escrow dispute <id> [--reason \"...\"]", refund: "mark escrow refund <id> --payout-invoice <bolt11> | --payout-lnaddr <user@domain> | --payout-ark <addr> [--with arbiter|counterparty]",
   "refund-payout": "mark escrow refund-payout <id> [--to <ark address>]",
+  messages: "mark escrow messages <id> [--since <cursor>]",
+  message: "mark escrow message <id> --text \"...\" [--kind question|dispute|evidence|info] [--reply-to <messageId>]",
+  inbox: "mark escrow inbox",
 };
-const NEEDS_ID = new Set(["show", "accept", "evidence", "fund", "status", "quote", "pending", "approve", "dispute", "refund", "refund-payout"]);
+const NEEDS_ID = new Set(["show", "accept", "evidence", "fund", "status", "quote", "pending", "approve", "dispute", "refund", "refund-payout", "messages", "message"]);
 /** Usage checks before any network/keystore access: unknown subcommand, missing id, missing/ambiguous flags. */
 export function checkEscrowArgs(sub: string | undefined, id: string | undefined, f: Record<string, string | boolean>) {
   const usage = (msg: string) => new MarkError("USAGE", `${msg}. usage: ${ESCROW_USAGE[sub!] ?? Object.values(ESCROW_USAGE).join(" | ")}`, { usage: sub && ESCROW_USAGE[sub] ? ESCROW_USAGE[sub] : ESCROW_USAGE });
@@ -31,6 +34,9 @@ export function checkEscrowArgs(sub: string | undefined, id: string | undefined,
   if (sub === "create") { const miss = ["role", "counterparty", "sats", "deadline"].filter((k) => !s(f[k])); if (miss.length) return usage(`missing ${miss.map((k) => "--" + k).join(", ")}`); if (!/^\d+$/.test(s(f.sats)!)) return usage("--sats must be a whole number of sats"); }
   if (sub === "limits" && f.sats !== undefined && !/^\d+$/.test(String(f.sats))) return usage("--sats must be a whole number of sats");
   if (sub === "evidence") { if (s(f.text) && s(f.note) && s(f.text) !== s(f.note)) return usage("pass --text or --note, not both"); if (!s(f.text) && !s(f.note)) return usage("evidence text required (--text or --note)"); }
+  if (sub === "message" && !s(f.text) && !s(f.note)) return usage("message text required (--text)");
+  if (sub === "message" && f.kind !== undefined && !["question", "dispute", "evidence", "info"].includes(String(f.kind))) return usage("--kind must be question|dispute|evidence|info");
+  if (sub === "messages" && f.since !== undefined && !/^\d+$/.test(String(f.since))) return usage("--since must be a cursor (integer)");
   if (sub === "quote" && f.path !== undefined && f.path !== "release" && f.path !== "refund") return usage("--path must be release or refund");
   return null;
 }

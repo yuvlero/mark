@@ -67,3 +67,23 @@ export function normalizeEvidence(o: any): EvidenceIn {
 export function evidenceHash(escrowId: string, party: string, ts: number, ev: EvidenceIn) {
   return termsHash({ v: "mark-escrow-evidence/1", escrowId, party, ts, ...ev });
 }
+
+/** Per-deal message threads. Parties sign with their escrow key, the operator (and system messages) with the deal's arbiter key. */
+export const MESSAGE_LIMITS = { body: 4000 } as const;
+export const MESSAGE_KINDS = ["question", "dispute", "evidence", "info", "system"] as const;
+export type MessageKind = (typeof MESSAGE_KINDS)[number];
+export interface MessageIn { body: string; kind?: MessageKind; replyTo?: string }
+export function normalizeMessage(o: any): MessageIn {
+  const body = typeof o?.body === "string" ? o.body.normalize("NFC").trim() : "";
+  if (!body) throw new MarkError("BAD_MESSAGE", "message body is required");
+  if ([...body].length > MESSAGE_LIMITS.body) throw new MarkError("BAD_MESSAGE", `message body exceeds ${MESSAGE_LIMITS.body} characters`);
+  if (BAD_CHARS.test(body)) throw new MarkError("BAD_MESSAGE", "message body contains control characters");
+  const r: MessageIn = { body };
+  if (o.kind !== undefined && o.kind !== null && o.kind !== "") { if (!MESSAGE_KINDS.includes(o.kind)) throw new MarkError("BAD_MESSAGE", `kind must be one of ${MESSAGE_KINDS.join("|")}`); r.kind = o.kind; }
+  if (o.replyTo !== undefined && o.replyTo !== null && o.replyTo !== "") { const h = String(o.replyTo).toLowerCase(); if (!/^[0-9a-f]{64}$/.test(h)) throw new MarkError("BAD_MESSAGE", "replyTo must be a message id (64 hex)"); r.replyTo = h; }
+  return r;
+}
+/** Message id = signed hash: sha256(canonical {v, escrowId, author, ts, body, kind?, replyTo?}). */
+export function messageHash(escrowId: string, author: string, ts: number, m: MessageIn) {
+  return termsHash({ v: "mark-escrow-message/1", escrowId, author, ts, ...m });
+}

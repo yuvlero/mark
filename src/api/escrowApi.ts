@@ -31,6 +31,9 @@ export interface Limits { network: string; minDealSats: { lightning: number; ark
   satora: { minSats: number; maxSats: number; fetchedAt: string; stale: boolean }; feePreview?: FeePreview; [k: string]: unknown }
 export type FeePreview = ReturnType<typeof import("../core/fees.js").feePreview>;
 
+export interface Message { seq: number; id: string; escrowId: string; author: "buyer" | "seller" | "operator"; pubkey: string; body: string; kind?: string; replyTo?: string; ts: number; createdAt: string; sig: string }
+export interface MessageList { escrowId: string; state: string; arbiterPubkey: string; buyerPubkey: string; sellerPubkey: string; messages: Message[]; cursor: number }
+
 export class EscrowApi {
   constructor(private baseUrl: string | undefined, private fetchImpl: typeof fetch = fetch, private timeoutMs = 180_000) {}
 
@@ -58,6 +61,9 @@ export class EscrowApi {
   reportFundingSwap(id: string, swapId: string) { return this.call<{ escrowId: string; recorded: boolean }>("POST", `/escrows/${enc(id)}/funding-swap`, { swapId }); }
   accept(id: string, b: { party: "buyer" | "seller"; sig: string; termsHash: string }) { return this.call<Escrow>("POST", `/escrows/${enc(id)}/accept`, b); }
   evidence(id: string, b: { party: "buyer" | "seller"; ts: number; sig: string; text: string; sha256?: string; url?: string }) { return this.call<Escrow>("POST", `/escrows/${enc(id)}/evidence`, b); }
+  /** GET /escrows/:id/messages (party auth over action "messages"). */
+  messages(id: string, a: { party: "buyer" | "seller"; ts: number; sig: string }, since?: number) { return this.call<MessageList>("GET", `/escrows/${enc(id)}/messages?party=${a.party}&ts=${a.ts}&sig=${a.sig}${since ? `&since=${since}` : ""}`); }
+  postMessage(id: string, b: { author: "buyer" | "seller"; ts: number; sig: string; body: string; kind?: string; replyTo?: string }) { return this.call<Message>("POST", `/escrows/${enc(id)}/messages`, b); }
   dispute(id: string, b: { reason?: string; auth: Auth }) { return this.call<Escrow>("POST", `/escrows/${enc(id)}/dispute`, b); }
 }
 const enc = encodeURIComponent;
