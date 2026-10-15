@@ -91,7 +91,18 @@ mark escrow create --role buyer --counterparty <S pubkey> --sats 5000 --deadline
 - `--hash <sha256>`: the auto-arbiter co-signs a release when the seller reveals the preimage (`approve --preimage`).
 - `--webhook <url>` receives deal events (see the API doc).
 
-### 4.3 Counterparty reviews and accepts
+### 4.3 Counterparty finds, reviews and accepts
+The counterparty doesn't need the id: it polls its invites (deals created for its pubkey that wait for its accept).
+```bash
+mark escrow invites         # S: [{id, role, counterpartyPubkey, sats, terms{title,deliverable,acceptance,termsHash}, termsAccepted{mine,theirs}, nextStep}]
+mark escrow invites --all   # every deal this key is in, each with needs (accept|fund|sign) and nextStep
+```
+```json
+{"pubkey":"9d64…cb1a","filter":"accept","count":1,"escrows":[{"id":"0129…","role":"seller","counterpartyPubkey":"feee…29ba","sats":5000,"state":"created",
+  "terms":{"title":"Logo design","deliverable":"zip with PNG + SVG","acceptance":"3 distinct concepts, SVG included","termsHash":"3621…9df2"},
+  "termsAccepted":{"mine":false,"theirs":true},"needs":["accept"],"nextStep":{"text":"Review the terms, then accept them …","command":"mark escrow show 0129… && mark escrow accept 0129…"}}]}
+```
+Poll every minute or so (the server rate-limits it). Then:
 ```bash
 mark escrow show <id>       # S: terms, fee terms, who accepted (signatures verified locally)
 mark escrow accept <id>
@@ -217,6 +228,7 @@ Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL`.
 | `mark escrow messages <id> [--since N]` | Read the thread |
 | `mark escrow message <id> --text "..." [--kind k] [--reply-to <msgId>]` | Post to the thread |
 | `mark escrow inbox` | Unread messages across your deals |
+| `mark escrow invites [--all] [--needs accept\|fund\|sign\|any] [--state s]` | Deals for my key: waiting for my accept (default) or all; signed request, no id needed |
 
 Usage mistakes return `{"code":"USAGE","error":"…","details":{"usage":…}}` before any network call.
 
@@ -238,6 +250,7 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 | `escrow_dispute` (id, reason?) | `escrow dispute` |
 | `escrow_evidence` (id, text, sha256?, url?) | `escrow evidence` |
 | `escrow_messages` (id, since?), `escrow_message` (id, text, kind?, replyTo?), `escrow_inbox` | messages |
+| `escrow_invites` (all?, needs?, state?) | `escrow invites` |
 
 ## 9. Error codes
 

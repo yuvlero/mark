@@ -22,4 +22,11 @@ export function signAuth(secret: Uint8Array, escrowId: string, action: string) {
   return { ts, sig: hex.encode(schnorr.sign(authMessage(escrowId, action, ts), secret)) };
 }
 /** BIP340 Schnorr over a 32-byte hash (termsHash / evidence hash). */
+/** Signed listing request (GET /escrows?party=): BIP340 over sha256("mark-escrow-list:v1\nGET\n<path?query>\n<ts>\n<nonce>"). */
+export const listSigningString = (method: string, pathAndQuery: string, ts: number, nonce: string) => ["mark-escrow-list:v1", method.toUpperCase(), pathAndQuery, String(ts), nonce].join("\n");
+export function signListRequest(secret: Uint8Array, method: string, pathAndQuery: string) {
+  const ts = Math.floor(Date.now() / 1000); const nonce = hex.encode(crypto.getRandomValues(new Uint8Array(16)));
+  const sig = hex.encode(schnorr.sign(sha256(new TextEncoder().encode(listSigningString(method, pathAndQuery, ts, nonce))), secret));
+  return { "x-mark-ts": String(ts), "x-mark-nonce": nonce, "x-mark-sig": sig };
+}
 export function signHash(secret: Uint8Array, hashHex: string) { return hex.encode(schnorr.sign(hex.decode(hashHex), secret)); }

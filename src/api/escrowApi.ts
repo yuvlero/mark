@@ -34,14 +34,19 @@ export type FeePreview = ReturnType<typeof import("../core/fees.js").feePreview>
 export interface Message { seq: number; id: string; escrowId: string; author: "buyer" | "seller" | "operator"; pubkey: string; body: string; kind?: string; replyTo?: string; ts: number; createdAt: string; sig: string }
 export interface MessageList { escrowId: string; state: string; arbiterPubkey: string; buyerPubkey: string; sellerPubkey: string; messages: Message[]; cursor: number }
 
+export interface PartyItem { id: string; role: "buyer" | "seller"; counterpartyPubkey: string; sats: number; state: string; createdAt: string; deadline?: string;
+  terms: { title: string; deliverable: string | null; acceptance: string | null; termsHash: string | null } | null; termsAccepted: { mine: boolean | null; theirs: boolean | null };
+  needs: ("accept" | "fund" | "sign")[]; nextStep: { text: string; command: string } }
+export interface PartyList { party: string; count: number; escrows: PartyItem[]; nextCursor: string | null }
+
 export class EscrowApi {
   constructor(private baseUrl: string | undefined, private fetchImpl: typeof fetch = fetch, private timeoutMs = 180_000) {}
 
-  private async call<T>(method: string, path: string, body?: unknown): Promise<T> {
+  private async call<T>(method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<T> {
     if (!this.baseUrl) throw new MarkError("ESCROW_URL_MISSING", "escrow server URL not set (only bitcoin has a built-in default, https://agentescrow.to): pass --escrow-url, set MARK_ESCROW_URL, or `mark init --escrow-url <url>`");
     let r: Response;
     try {
-      r = await this.fetchImpl(this.baseUrl + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(this.timeoutMs) });
+      r = await this.fetchImpl(this.baseUrl + path, { method, headers: { "content-type": "application/json", ...headers }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(this.timeoutMs) });
     } catch (e: any) { throw new MarkError("ESCROW_UNREACHABLE", `escrow service ${this.baseUrl}: ${e.message}`); }
     let j: any;
     try { j = await r.json(); } catch { throw new MarkError("ESCROW_BAD_RESPONSE", `non-JSON response (HTTP ${r.status})`); }
@@ -52,6 +57,11 @@ export class EscrowApi {
   create(b: { buyerPubkey: string; sellerPubkey: string; amountSats: number; deadline: number | string; rule: unknown; arbiterMode?: string; webhookUrl?: string; terms?: unknown; termsHash?: string; creatorAcceptance?: { party: "buyer" | "seller"; sig: string } }) { return this.call<Escrow>("POST", "/escrows", b); }
   /** GET /limits: minimum deal sizes, fee rates + current fee terms, Satora min/max, Ark dust. */
   limits(sats?: number) { return this.call<Limits>("GET", `/limits${sats ? `?sats=${sats}` : ""}`); }
+  /** GET /escrows?party=: signed listing of my deals. `sign(pathAndQuery)` returns the x-mark-* auth headers. */
+  partyList(party: string, q: { needs?: string; state?: string; limit?: number; cursor?: string }, sign: (pathAndQuery: string) => Record<string, string>) {
+    const p = new URLSearchParams({ party }); if (q.needs) p.set("needs", q.needs); if (q.state) p.set("state", q.state); if (q.limit) p.set("limit", String(q.limit)); if (q.cursor) p.set("cursor", q.cursor);
+    const pq = `/escrows?${p.toString()}`; return this.call<PartyList>("GET", pq, undefined, sign(pq));
+  }
   get(id: string) { return this.call<Escrow>("GET", `/escrows/${enc(id)}`); }
   quote(id: string, path: "release" | "refund", dest?: string) { return this.call<Quote>("GET", `/escrows/${enc(id)}/quote?path=${path}${dest ? `&dest=${encodeURIComponent(dest)}` : ""}`); }
   proposal(id: string, pid: string) { return this.call<ProposalFull>("GET", `/escrows/${enc(id)}/proposals/${enc(pid)}`); }

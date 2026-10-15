@@ -7,7 +7,7 @@ import { signEscrowArkTx, signEscrowCheckpoints } from "@satora/swap";
 import { MarkError } from "../errors.js";
 import { NETWORKS, dataDir, ensureDir, defaultConfig, saveConfig, configPath, loadConfig, normalizeUrl, type NetworkName } from "../config.js";
 import { createKeystore, openKeystore, resolvePassword, walletFile } from "../crypto/keystore.js";
-import { escrowKey, signAuth, signHash } from "../crypto/keys.js";
+import { escrowKey, signAuth, signHash, signListRequest } from "../crypto/keys.js";
 import { normalizeTerms, termsDocument, termsHash, verifyTermsSig, normalizeEvidence, evidenceHash, normalizeMessage, messageHash, type Terms } from "./terms.js";
 import { arkScript, payoutOutputs } from "../crypto/psbt.js";
 import { computeFees, expectedOutputs, outputsMatch, feeSchedule, feePreview, type FeeCalc } from "./fees.js";
@@ -296,6 +296,22 @@ export async function refundPayout(c: Ctx, id: string, to?: string) {
   const l = c.index.get(requireId(id)); if (!l.payoutSwap) throw new MarkError("NOT_FOUND", "no payout swap recorded for this escrow");
   const dest = to ?? c.cfg.refundArkAddress; if (!dest || !/^t?ark1/.test(dest)) throw new MarkError("BAD_DEST", "--to <ark address> (or config refundArkAddress) required");
   return (await c.swaps()).refund(l.payoutSwap, dest);
+}
+
+// ---------- invite check (signed listing of my deals) ----------
+/** Deals for my key: default = waiting for my accept (invites); all = every deal I'm in. Remembers them locally (inbox). */
+export async function invites(c: Ctx, o: { all?: boolean; needs?: string; state?: string } = {}) {
+  const needs = o.all ? o.needs : o.needs ?? "accept";
+  if (needs && !["accept", "fund", "sign", "any"].includes(needs)) throw new MarkError("USAGE", "--needs must be accept|fund|sign|any");
+  const items: any[] = []; let cursor: string | undefined;
+  for (let page = 0; page < 20; page++) {
+    const r = await c.api.partyList(c.pubkey, { needs, state: o.state, limit: 100, cursor }, (pq) => signListRequest(c.secret, "GET", pq));
+    if (r.party !== c.pubkey) throw new MarkError("ESCROW_BAD_RESPONSE", "listing is for a different key");
+    for (const it of r.escrows) { if (!c.index.get(it.id).role) c.index.set(it.id, { role: it.role }); items.push(it); }
+    if (!r.nextCursor) break; cursor = r.nextCursor;
+  }
+  return { pubkey: c.pubkey, filter: o.all ? (needs ?? "all") : needs, count: items.length, escrows: items,
+    next: items.length ? (needs === "accept" ? "review each: mark escrow show <id>, then mark escrow accept <id> (the server's nextStep is a hint; Mark re-verifies terms on show/accept)" : "follow each item's nextStep") : (o.all ? "no deals for this key yet" : "no invites waiting for your accept") };
 }
 
 // ---------- per-deal message threads (support channel with the operator) ----------

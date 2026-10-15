@@ -132,6 +132,39 @@ created ──(funds seen on the escrow address)──▶ funded ──propose�
 - `webhook`: the arbiter POSTs `{escrowId, proposalId, kind, amountSats, payout:{type,sats}}` to `rule.url` and co-signs if it answers `{"approve": true}`.
 - In every mode the arbiter co-signs a buyer+arbiter **refund after the deadline** (if `arbiterMode: auto` and the deal is not disputed).
 
+### GET /escrows?party=<xonly>[&needs=accept|fund|sign|any][&state=<state>][&limit=1..100][&cursor=] → 200 (signed listing: the invite check)
+Lists the deals where `party` is the buyer or seller, so a counterparty can find a deal without being sent its id. The request is signed by the **same key** as `party`, with headers:
+```
+x-mark-ts:    <unix seconds>                 must be within ±120 s of server time
+x-mark-nonce: 16..64 chars [A-Za-z0-9_-]     random per request; a reused nonce is rejected (replay)
+x-mark-sig:   hex BIP340 by the party key over sha256(utf8(S)), where
+S = "mark-escrow-list:v1" + "\n" + "GET" + "\n" + <path?query exactly as sent> + "\n" + <ts> + "\n" + <nonce>
+```
+Example S (no trailing newline):
+```
+mark-escrow-list:v1
+GET
+/escrows?party=9d64…cb1a&needs=accept&limit=100
+1792070000
+3f9a0c1d2b4e5f60718293a4b5c6d7e8
+```
+- `needs`:
+  - `accept`: terms not yet accepted by me.
+  - `fund`: I'm the buyer, both accepted, not funded.
+  - `sign`: a pending proposal needs my signature.
+  - `any`: any of these.
+- Without `needs`, all my deals are returned. `state` filters by deal state.
+- Newest first. `limit` defaults to 50 (max 100); pass `nextCursor` as `cursor` for the next page.
+```json
+{ "party": "9d64…cb1a", "count": 1, "nextCursor": null, "escrows": [ {
+  "id": "0129…", "role": "seller", "counterpartyPubkey": "feee…29ba", "sats": 5000, "state": "created", "createdAt": "…", "deadline": "…",
+  "terms": {"title": "Logo design", "deliverable": "zip with PNG + SVG", "acceptance": "3 distinct concepts, SVG included", "termsHash": "3621…9df2"},
+  "termsAccepted": {"mine": false, "theirs": true}, "needs": ["accept"],
+  "nextStep": {"text": "Review the terms, then accept them (funding is blocked until both parties accept).", "command": "mark escrow show 0129… && mark escrow accept 0129…"} } ] }
+```
+- Errors: `401 UNAUTHORIZED` (bad signature, ts outside the window, replayed or malformed nonce), `BAD_PUBKEY`, `BAD_REQUEST` (needs, state, limit, cursor), `429 RATE_LIMITED` (per key and per client IP; defaults 30 and 120 per minute).
+- `nextStep` is a hint. Fetch `GET /escrows/:id` and recompute `termsHash` yourself before accepting.
+
 ### GET /escrows/:id → 200 Escrow
 Reading also refreshes funding: `created → funded` once the address holds `amountSats`.
 
@@ -255,6 +288,7 @@ Webhooks are unauthenticated. Treat them as hints and confirm with `GET /escrows
 | Auth / evidence / message `ts` window | ±600 s |
 | Payout invoice validity | > 10 minutes left |
 | Messages | 4,000 chars, 20 per 10 min per key |
+| Listing (`GET /escrows?party=`) | ±120 s ts window, nonce single-use, 30/min per key, 120/min per IP (server defaults) |
 | Evidence | 4,000 chars text, 500 chars URL, 200 per deal |
 | Terms | title 120, description 4,000, deliverable 1,000, acceptance 2,000 |
 | Request body | 2 MB |
