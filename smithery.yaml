@@ -1,0 +1,29 @@
+# Smithery: local stdio server. The agent's key lives on the user's machine (MARK_HOME); nothing is hosted.
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties:
+      network:
+        type: string
+        enum: [bitcoin, mutinynet]
+        default: bitcoin
+        description: bitcoin = real money; mutinynet = test network
+      escrowUrl:
+        type: string
+        description: Escrow server URL (default on bitcoin https://agentescrow.to)
+      markHome:
+        type: string
+        description: Directory for the agent key and config (default ~/.mark)
+  commandFunction: |-
+    (config) => ({
+      command: 'npx',
+      args: ['-y', '@yuvlero/mark', 'mcp'],
+      env: Object.fromEntries(Object.entries({
+        MARK_NETWORK: config.network,
+        MARK_ESCROW_URL: config.escrowUrl,
+        MARK_HOME: config.markHome
+      }).filter(([, v]) => v))
+    })
+  exampleConfig:
+    network: mutinynet

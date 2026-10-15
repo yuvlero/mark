@@ -1,5 +1,24 @@
 # Mark: escrow for AI agents
 
+**Let your agent pay another agent, and get paid, without trusting it.** Mark is a CLI and MCP server for non-custodial 2-of-3 Bitcoin escrow. Two agents sign the terms. The buyer funds over Lightning, the seller delivers and is paid over Lightning, and a neutral arbiter key only matters if they disagree or one goes silent. No accounts and no custody: each agent holds its own key, and every command prints JSON that agents can act on.
+
+**Proof:** a real agent-to-agent deal on Bitcoin mainnet ran from create to payout in about 9 minutes. Production deal `6930c46a`: 5,000 sats, 330 sats platform fee, 4,634 sats delivered to the seller over Lightning.
+
+## Quickstart
+
+```bash
+npx -y github:yuvlero/mark init                 # once: creates this agent's key (mainnet, https://agentescrow.to)
+npx -y github:yuvlero/mark pubkey               # share with the counterparty
+npx -y github:yuvlero/mark escrow limits --sats 5000
+npx -y github:yuvlero/mark escrow create --role buyer --counterparty <pubkey> --sats 5000 --deadline 86400 \
+  --title "Logo design" --description "3 concepts" --acceptance "SVG included"
+# counterparty: escrow invites -> show <id> -> accept <id>; buyer: fund <id>; seller: evidence --file, approve --payout-lnaddr
+npx -y github:yuvlero/mark mcp                  # or run it as an MCP stdio server
+```
+Add `--network mutinynet` to test without real money. The whole flow is in the [agent quickstart](docs/AGENT_QUICKSTART.md); wrappers for skills, LangChain and CrewAI are in [examples/](examples/).
+
+## How it works
+
 Mark is a command-line tool and MCP server. It lets an AI agent buy or sell something from another agent through a **non-custodial 2-of-3 escrow** on [Arkade](https://arkadeos.com/) (Bitcoin), with **Lightning in and Lightning out** through [Satora](https://satora.io) swaps.
 
 - **Three keys:** buyer, seller, and the escrow service's **arbiter**. Any payout needs 2 of the 3 signatures. The service holds only the arbiter key, so it can never move funds alone.
@@ -7,17 +26,16 @@ Mark is a command-line tool and MCP server. It lets an AI agent buy or sell some
 - **agent-escrow** is the hosted escrow service (arbiter plus coordination API). Mark talks to it over plain HTTPS; the public API is in [docs/escrow-api.md](docs/escrow-api.md).
 - Your key never leaves Mark. Before signing, Mark checks locally that the transaction pays **exactly** the payee amount to the agreed destination plus the published platform fee, and nothing else.
 
-> **In a hurry?** Follow [docs/AGENT_QUICKSTART.md](docs/AGENT_QUICKSTART.md), a short checklist.
 
 ---
 
 ## 1. Install
 
-Requirements: **Node.js ≥ 20** (≥ 22.12 recommended) and npm. Linux or macOS. No `node dist/src/cli.js`, no global or root writes, and no native addons. The dependency tree is pinned by `npm-shrinkwrap.json` and is pure JavaScript, so nothing needs install scripts (npm 11 safe).
+Requirements: **Node.js ≥ 22.12** (the Arkade SDK's requirement; `engines` says so) and npm. Linux or macOS. No `npm link`, no global or root writes, and no native addons. The dependency tree is pinned by `npm-shrinkwrap.json` and is pure JavaScript, so nothing needs install scripts (npm 11 safe).
 
 Pick one:
 ```bash
-# a) npx, nothing kept on PATH (builds on first run, then cached)
+# a) npx, nothing kept on PATH (builds on first run, then cached). Once published to npm: npx -y @yuvlero/mark
 npx -y github:yuvlero/mark escrow limits
 
 # b) a local clone

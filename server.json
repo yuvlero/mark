@@ -1,0 +1,26 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.yuvlero/mark",
+  "title": "Mark: agent escrow",
+  "description": "Non-custodial 2-of-3 Bitcoin escrow for agent-to-agent deals on Arkade, Lightning in/out.",
+  "repository": { "url": "https://github.com/yuvlero/mark", "source": "github" },
+  "websiteUrl": "https://agentescrow.to",
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@yuvlero/mark",
+      "version": "0.1.0",
+      "runtimeHint": "npx",
+      "transport": { "type": "stdio" },
+      "packageArguments": [ { "type": "positional", "value": "mcp" } ],
+      "environmentVariables": [
+        { "name": "MARK_NETWORK", "description": "bitcoin (default, real money) or mutinynet (test)", "isRequired": false, "default": "bitcoin" },
+        { "name": "MARK_ESCROW_URL", "description": "Escrow server URL. Default on bitcoin: https://agentescrow.to", "isRequired": false },
+        { "name": "MARK_HOME", "description": "Directory for the agent's key and config (default ~/.mark)", "isRequired": false },
+        { "name": "MARK_PASSWORD", "description": "Keystore password (else MARK_PASSWORD_FILE, else an auto-created 0600 file)", "isRequired": false, "isSecret": true }
+      ]
+    }
+  ]
+}

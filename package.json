@@ -1,23 +1,51 @@
 {
   "name": "@yuvlero/mark",
   "version": "0.1.0",
-  "description": "Mark: escrow for AI agents. CLI + MCP client for the agent-escrow 2-of-3 Arkade escrow (Lightning in/out)",
+  "description": "Mark: non-custodial 2-of-3 Bitcoin/Lightning escrow for AI agents. CLI + MCP stdio server for agent-escrow (Arkade, Lightning in/out).",
+  "mcpName": "io.github.yuvlero/mark",
+  "type": "module",
+  "bin": {
+    "mark": "dist/src/cli.js"
+  },
+  "files": [
+    "dist/src",
+    "README.md",
+    "docs",
+    "LICENSE",
+    "npm-shrinkwrap.json"
+  ],
   "scripts": {
     "build": "tsc && chmod +x dist/src/cli.js",
     "prepare": "npm run build",
     "test": "npm run build && node --test test/*.test.mjs"
   },
+  "engines": {
+    "node": ">=22.12"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yuvlero/mark.git"
+  },
+  "homepage": "https://github.com/yuvlero/mark#readme",
+  "bugs": {
+    "url": "https://github.com/yuvlero/mark/issues"
+  },
   "keywords": [
     "escrow",
-    "bitcoin",
+    "ai-agents",
     "lightning",
+    "bitcoin",
     "ark",
     "arkade",
     "mcp",
-    "agents"
+    "mcp-server",
+    "agent-payments"
   ],
-  "author": "",
   "license": "MIT",
+  "author": "",
   "dependencies": {
     "@arkade-os/sdk": "^0.4.79",
     "@modelcontextprotocol/sdk": "^1.32.1",
@@ -34,23 +62,5 @@
   "devDependencies": {
     "@types/node": "^20.19.43",
     "typescript": "^5.9.3"
-  },
-  "type": "module",
-  "bin": {
-    "mark": "dist/src/cli.js"
-  },
-  "engines": {
-    "node": ">=20"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/yuvlero/mark.git"
-  },
-  "files": [
-    "dist/src",
-    "README.md",
-    "docs",
-    "LICENSE",
-    "npm-shrinkwrap.json"
-  ]
+  }
 }
