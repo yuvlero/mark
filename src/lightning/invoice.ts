@@ -33,15 +33,17 @@ export function invoiceRange(exactSats: number) {
 
 /**
  * Throws INVOICE_EXPIRED if the invoice expires within `minRemainingSec`, AMOUNT_MISMATCH unless it requests between
- * `exactSats - invoiceTolerance(exactSats)` and `exactSats` (inclusive), BAD_INVOICE for amountless / wrong-network / undecodable invoices.
+ * `exactSats - invoiceTolerance(exactSats)` and `exactSats` (inclusive), AMOUNTLESS_INVOICE_UNSUPPORTED for amountless invoices (Satora requires an amount), BAD_INVOICE for wrong-network / undecodable invoices.
  */
 export function validatePayoutInvoice(inv: string, expectedSats: number, network: NetworkName, nowSec = Math.floor(Date.now() / 1000), minRemainingSec = 600) {
   if (!networkOk(inv, network)) throw new MarkError("BAD_INVOICE", `invoice is not for network ${network}`);
   const d = decodeInvoice(inv);
-  if (d.msat === undefined) throw new MarkError("BAD_INVOICE", "amountless invoices are not accepted");
+  if (d.msat === undefined) throw new MarkError("AMOUNTLESS_INVOICE_UNSUPPORTED", `amountless invoice: the swap provider (Satora) requires an invoice amount. Create the invoice for ${invoiceRange(expectedSats).recommendedInvoiceSats} sats (accepted ${invoiceRange(expectedSats).minInvoiceSats}..${expectedSats})`, { setInvoiceAmountSats: invoiceRange(expectedSats).recommendedInvoiceSats, ...invoiceRange(expectedSats) });
   if (d.msat % 1000 !== 0) throw new MarkError("AMOUNT_MISMATCH", "invoice amount must be whole sats");
   if (d.expiresAt - nowSec < minRemainingSec) throw new MarkError("INVOICE_EXPIRED", `invoice expired or expires in under ${minRemainingSec}s`, { expiresAt: new Date(d.expiresAt * 1000).toISOString() });
   const r = invoiceRange(expectedSats);
   if (d.sats! > r.maxInvoiceSats || d.sats! < r.minInvoiceSats) throw new MarkError("AMOUNT_MISMATCH", `invoice requests ${d.sats} sats; must be ${r.minInvoiceSats}..${r.maxInvoiceSats} sats (exact payout after fees right now is ${expectedSats}; recommended ${r.recommendedInvoiceSats})`, { invoiceSats: d.sats, expectedSats, ...r });
   return d;
 }
+/** true for a decodable BOLT11 without an amount. */
+export function isAmountless(inv: string): boolean { try { return decodeInvoice(inv).msat === undefined; } catch { return false; } }

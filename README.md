@@ -35,21 +35,26 @@ mark escrow create --role buyer --counterparty <seller xonly> --sats 1200 --dead
   --title "Buy 1M tokens of inference" --description "..." [--deliverable "..."] [--acceptance "..."] \
   [--deliverable-sha256 <hex>] [--terms-file terms.json] [--hash <sha256>]   # creator signs termsHash
 mark escrow show <id>              # what the deal is for, who accepted (sigs verified locally), evidence
-mark escrow accept <id>            # counterparty: verify termsHash locally, sign it. Funding needs both.
-mark escrow evidence <id> --text "..." [--sha256 <hex>] [--url <https://...>]   # signed, timestamped note
-mark escrow limits                 # min deal size (Lightning / Ark payout), fee rates, free tier, Satora min/max, Ark dust
+mark escrow accept <id>            # counterparty: verify termsHash locally, sign it. Funding needs both. Prints state + next step.
+mark escrow evidence <id> --text "..." [--sha256 <hex>] [--url <https://...>]   # signed, timestamped note (--note = alias of --text)
+mark escrow limits [--sats N]      # min/max deal size, fee schedule + examples; with --sats: feePreview (platform fee, possible dispute fee, est. swap cost)
 mark escrow fund <id>              # Lightning invoice (Satora LN->Arkade into the escrow address)
 mark escrow fund <id> --wait       # after payment: claims into the escrow
-mark escrow quote <id> [--path release|refund] [--dest <bolt11|lnaddr>]   # exact sats (route-specific; without --dest it is an estimate)
+mark escrow quote <id> [--path release|refund] [--dest <bolt11|lnaddr>]   # exact sats with --dest (quoteType "exact"); without: "estimate", recommendedInvoiceSats includes a safety margin
 mark escrow approve <id> --payout-invoice <bolt11>      # seller proposes + signs (or --payout-lnaddr / --payout-ark)
 mark escrow approve <id>                                # buyer co-signs the pending proposal
 mark escrow approve <id> --payout-invoice <bolt11> --with arbiter --preimage <hex>   # auto-arbiter release
 mark escrow dispute <id> --reason "..."
+mark escrow approve <id>                                # winner after an admin ruling WITH a destination: just sign (no payout flags)
 mark escrow refund <id> --payout-invoice <bolt11>       # buyer, after deadline (arbiter co-signs)
 # MCP tools: escrow_create (terms param), escrow_show, escrow_accept, escrow_evidence, ...
 npm test                                                # unit tests
 ```
-Payout invoices are checked by both Mark and the service. An invoice that expires within 10 minutes gives `INVOICE_EXPIRED`. An amount different from `quote.lightning.invoiceSats`, or a Satora swap whose source amount differs from the escrowed amount, gives `AMOUNT_MISMATCH`. Wrong-network and amountless invoices give `BAD_INVOICE`.
+Payout invoices are checked by both Mark and the service. An invoice that expires within 10 minutes gives `INVOICE_EXPIRED`. An amount different from `quote.lightning.invoiceSats`, or a Satora swap whose source amount differs from the escrowed amount, gives `AMOUNT_MISMATCH`. Wrong-network invoices give `BAD_INVOICE`. Amountless invoices give `AMOUNTLESS_INVOICE_UNSUPPORTED` (Satora requires an invoice amount); `details.setInvoiceAmountSats` is the amount to put on the invoice, or use `--payout-lnaddr`. Server error `details` (for example the exact range and `recommendedInvoiceSats` on `AMOUNT_MISMATCH`) are passed through.
+
+Usage errors (unknown subcommand, missing id, missing flag value, missing create flags) return `{code: "USAGE", error, details.usage}` before any network or keystore access.
+
+`mark escrow create` prints `feePreview`: platform fee, possible dispute fee, estimated swap cost, min/max deal size. Schedule: free under 3 300; 330 flat from 3 300 to 33 000; 1 % above; dispute fee max(5 %, 330) only for deals of 3 300 or more; max deal 1 000 000.
 
 ## Design notes and limits
 - The crate's timelocked paths are **CSV + 2 parties**. There is no buyer-only timeout leaf, and the CSV is the Ark server's unilateral exit delay, not the escrow deadline. Spending through those paths also means an on-chain unilateral exit. So the v0.1 "timeout refund" is the collaborative arbiter + buyer path, which the arbiter auto-signs after the deadline. The CSV paths remain a server-free fallback, but they still need 2 parties.

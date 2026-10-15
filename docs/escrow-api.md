@@ -58,6 +58,8 @@ The signature is over `sha256("mark-escrow:v1:<escrowId>:<action>:<ts>")`, made 
 Mark enforces its own cap (`limits.maxEscrowSats`, default 1000000) **before** it calls the server. The server may enforce a stricter cap and answer `LIMIT_EXCEEDED`.
 
 ### GET /limits → 200 (public)
+
+`GET /limits?sats=N` adds `feePreview` (`platformFeeSats`, `possibleDisputeFeeSats`, `estimatedSwapCostSats`, `payeeReceives`, `minDealSats`, `maxDealSats`, `withinLimits`, `schedule`); `POST /escrows` returns the same `feePreview` for the created amount. Quotes carry `quoteType: "exact" | "estimate"`; an estimate's `lightning.recommendedInvoiceSats` already subtracts `lightning.estimateMarginSats`. Amountless BOLT11: quote returns `amountlessInvoice {supported: false, setInvoiceAmountSats}`, propose fails `AMOUNTLESS_INVOICE_UNSUPPORTED`. Error bodies may carry `details`.
 `{ minDealSats: {lightning, ark, enforced}, maxDealSats, freeBelowSats, dustSats, fees: {enabled, source, address, freeBelowSats, flatSats, flatUntilSats, feeBps, disputeFeeBps, disputeMinSats, terms, schedule}, satora: {minSats, maxSats, fetchedAt, stale} }`
 Mark calls it before create: it refuses amounts below `minDealSats.enforced` (`AMOUNT_TOO_SMALL`, no POST) and puts `fees.terms` into the termsHash it signs. A server without `/limits` (404) is treated as fee-free.
 The server answers `400 AMOUNT_TOO_SMALL` with `details.minDealSats` too.

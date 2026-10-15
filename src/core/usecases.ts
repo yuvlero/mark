@@ -10,8 +10,8 @@ import { createKeystore, openKeystore, resolvePassword, walletFile } from "../cr
 import { escrowKey, signAuth, signHash } from "../crypto/keys.js";
 import { normalizeTerms, termsDocument, termsHash, verifyTermsSig, normalizeEvidence, evidenceHash, type Terms } from "./terms.js";
 import { arkScript, payoutOutputs } from "../crypto/psbt.js";
-import { computeFees, expectedOutputs, outputsMatch, feeSchedule, type FeeCalc } from "./fees.js";
-import { validatePayoutInvoice, decodeInvoice, maxOverpaySats } from "../lightning/invoice.js";
+import { computeFees, expectedOutputs, outputsMatch, feeSchedule, feePreview, type FeeCalc } from "./fees.js";
+import { validatePayoutInvoice, decodeInvoice, maxOverpaySats, isAmountless } from "../lightning/invoice.js";
 import type { Escrow, Party, Payout, ProposalFull } from "../api/escrowApi.js";
 import { assertEscrowCap } from "./limits.js";
 import type { Ctx } from "./context.js";
@@ -83,7 +83,9 @@ export async function create(c: Ctx, o: CreateOpts) {
   if (e.termsHash !== h) throw new MarkError("TERMS_HASH_MISMATCH", `server recorded termsHash ${e.termsHash} but I signed ${h}; do not fund escrow ${e.id}`);
   if (JSON.stringify(e.fees ?? null) !== JSON.stringify(fees)) throw new MarkError("FEE_TERMS_MISMATCH", `server stamped different fee terms than it published; do not fund escrow ${e.id}`);
   c.index.set(e.id, { role });
-  return { ...e, feeTerms: fees, feeSummary: feeSummary(fees, o.sats), next: `share the escrow id with your counterparty; they must run: mark escrow show ${e.id} then mark escrow accept ${e.id}. Funding is blocked until both accepted.` };
+  // upfront fee preview: server's (with live swap estimate) if present, else computed locally from the published terms
+  const preview = (e as any).feePreview ?? (lim ? feePreview(fees, o.sats, { minDealSats: lim.minDealSats.enforced, maxDealSats: lim.maxDealSats, swapEstimateSats: null }) : null);
+  return { ...e, feeTerms: fees, feeSummary: feeSummary(fees, o.sats), feePreview: preview, next: `share the escrow id with your counterparty; they must run: mark escrow show ${e.id} then mark escrow accept ${e.id}. Funding is blocked until both accepted.` };
 }
 
 /** Recompute termsHash locally from the deal and check every recorded acceptance signature (never trust the server's word). */
@@ -114,11 +116,14 @@ export async function accept(c: Ctx, id: string) {
   if (!v.hashVerified) throw new MarkError("TERMS_HASH_MISMATCH", "server termsHash does not match the terms shown; refusing to sign", { serverTermsHash: e.termsHash, localTermsHash: v.termsHash });
   const r = (v.accepted as any)[role].signatureValid ? e : await c.api.accept(id, { party: role, termsHash: v.termsHash!, sig: signHash(c.secret, v.termsHash!) });
   const after = verifyDealTerms(c, r);
-  return { escrowId: id, myRole: role, accepted: true, terms: after.terms, termsHash: after.termsHash, acceptedBy: after.accepted, agreed: after.agreed };
+  const missing = (["buyer", "seller"] as const).filter((p) => !(after.accepted as any)[p].accepted);
+  return { escrowId: id, myRole: role, accepted: true, alreadyAccepted: r === e, state: r.state, terms: after.terms, termsHash: after.termsHash, acceptedBy: after.accepted, agreed: after.agreed,
+    next: !after.agreed ? `waiting for the ${missing.join(" and ") || "counterparty"} to accept: mark escrow accept ${id}` : r.state === "created" ? (role === "buyer" ? `both accepted; fund with: mark escrow fund ${id}` : "both accepted; waiting for the buyer to fund") : undefined };
 }
 
 /** Add a signed, timestamped evidence note (either party, any state; especially during a dispute). */
 export async function addEvidence(c: Ctx, id: string, o: { text?: string; sha256?: string; url?: string }) {
+  if (!o.text || !String(o.text).trim()) throw new MarkError("BAD_EVIDENCE", "evidence text required: mark escrow evidence <id> --text \"...\" (alias --note) [--sha256 <hex>] [--url <https://...>]");
   const e = await c.api.get(requireId(id)); const role = myRole(c, e);
   const ev = normalizeEvidence(o); const ts = Math.floor(Date.now() / 1000);
   const r = await c.api.evidence(id, { party: role, ts, ...ev, sig: signHash(c.secret, evidenceHash(id, role, ts, ev)) });
@@ -126,8 +131,18 @@ export async function addEvidence(c: Ctx, id: string, o: { text?: string; sha256
 }
 
 export async function quote(c: Ctx, id: string, path: Kind = "release", dest?: string) { return c.api.quote(requireId(id), requireKind(path), dest); }
-/** Server limits: minimum deal sizes (Lightning / Ark payout), fee rates, free threshold, Satora min/max, Ark dust. */
-export async function limits(c: Ctx) { return c.api.limits(); }
+/** Server limits: minimum deal sizes (Lightning / Ark payout), fee rates, free threshold, Satora min/max, Ark dust.
+ *  With `sats`: an upfront fee preview for that deal size (platform fee, possible dispute fee, estimated swap cost, min/max). */
+export async function limits(c: Ctx, sats?: number) {
+  if (sats !== undefined) assertEscrowCap(c.cfg, sats);
+  const l = await c.api.limits(sats);
+  const t = l.fees.terms ?? null; const at = (a: number) => { const p = feePreview(t, a, { minDealSats: l.minDealSats.enforced, maxDealSats: l.maxDealSats }); return { amountSats: a, platformFeeSats: p.platformFeeSats, possibleDisputeFeeSats: p.possibleDisputeFeeSats }; };
+  const preview = sats === undefined ? undefined : (l.feePreview ?? feePreview(t, sats, { minDealSats: l.minDealSats.enforced, maxDealSats: l.maxDealSats, swapEstimateSats: null }));
+  return { ...l, feeSummary: { minDealSats: l.minDealSats.enforced, maxDealSats: l.maxDealSats, schedule: t ? feeSchedule(t) : null,
+      examples: [3299, 3300, 33000, 100000, 1000000].filter((a) => a >= l.minDealSats.enforced && a <= l.maxDealSats).map(at),
+      swapCost: "Lightning payouts also pay the Satora swap (protocol + routing fee, a few sats); pass --sats N for an estimate" },
+    ...(preview ? { feePreview: preview } : {}) };
+}
 
 /** What the published fee terms mean for this amount (normal payout and a ruled dispute). */
 function feeSummary(t: Escrow["fees"], amount: number) {
@@ -229,6 +244,7 @@ async function payoutSpec(c: Ctx, e: Escrow, kind: Kind, o: PayoutOpts): Promise
   const amount = dealFee(e).payeeSats; // payee leg: escrow minus the platform fee output
   if (o.payoutInvoice) {
     const q = await c.api.quote(e.id, kind, o.payoutInvoice); // route-specific: same pricing as swap creation
+    if (isAmountless(o.payoutInvoice)) throw new MarkError("AMOUNTLESS_INVOICE_UNSUPPORTED", `amountless invoices cannot be paid (Satora requires the amount). Create the invoice for ${q.amountlessInvoice?.setInvoiceAmountSats ?? q.lightning.recommendedInvoiceSats} sats (estimate with safety margin), or run: mark escrow quote ${e.id} --dest <your lightning address> for the exact value`, { setInvoiceAmountSats: q.amountlessInvoice?.setInvoiceAmountSats ?? q.lightning.recommendedInvoiceSats, quoteType: q.quoteType ?? "estimate" });
     validatePayoutInvoice(o.payoutInvoice, q.lightning.invoiceSats, c.network); // fail fast before creating a swap
   } else if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(o.payoutLnaddr!)) throw new MarkError("BAD_DEST", "payout-lnaddr must be a lightning address");
   const s = await c.swaps();

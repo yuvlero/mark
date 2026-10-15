@@ -23,11 +23,13 @@ export interface Escrow {
   evidence?: { id: string; party: "buyer" | "seller"; at: string; ts: number; text: string; sha256?: string; url?: string; sig: string }[];
   [k: string]: unknown;
 }
-export interface Quote { escrowSats: number; lightning: { invoiceSats: number; recommendedInvoiceSats?: number; minInvoiceSats?: number; maxInvoiceSats?: number; toleranceSats?: number; protocolFeeSats: number; networkFeeSats: number; minSats: number; maxSats: number; exact?: boolean; dest?: string }; ark: { payoutSats: number }; [k: string]: unknown }
+export interface Quote { escrowSats: number; lightning: { invoiceSats: number; recommendedInvoiceSats?: number; minInvoiceSats?: number; maxInvoiceSats?: number; toleranceSats?: number; protocolFeeSats: number; networkFeeSats: number; minSats: number; maxSats: number; exact?: boolean; estimate?: boolean; quoteType?: "exact" | "estimate"; estimateMarginSats?: number; dest?: string }; ark: { payoutSats: number };
+  amountlessInvoice?: { supported: boolean; setInvoiceAmountSats: number; note: string }; [k: string]: unknown }
 
 export interface Limits { network: string; minDealSats: { lightning: number; ark: number; enforced: number }; maxDealSats: number; freeBelowSats: number | null; dustSats: number;
   fees: { enabled: boolean; source: string | null; address: string | null; feeBps: number; disputeFeeBps: number; freeBelowSats: number | null; flatSats?: number; flatUntilSats?: number | null; disputeMinSats?: number; dustBumpMaxBps?: number | null; terms: FeeTerms | null; schedule?: { platform: string; dispute: string } | null; warning?: string };
-  satora: { minSats: number; maxSats: number; fetchedAt: string; stale: boolean }; [k: string]: unknown }
+  satora: { minSats: number; maxSats: number; fetchedAt: string; stale: boolean }; feePreview?: FeePreview; [k: string]: unknown }
+export type FeePreview = ReturnType<typeof import("../core/fees.js").feePreview>;
 
 export class EscrowApi {
   constructor(private baseUrl: string | undefined, private fetchImpl: typeof fetch = fetch, private timeoutMs = 180_000) {}
@@ -40,13 +42,13 @@ export class EscrowApi {
     } catch (e: any) { throw new MarkError("ESCROW_UNREACHABLE", `escrow service ${this.baseUrl}: ${e.message}`); }
     let j: any;
     try { j = await r.json(); } catch { throw new MarkError("ESCROW_BAD_RESPONSE", `non-JSON response (HTTP ${r.status})`); }
-    if (!r.ok) throw new MarkError(j?.code || "ESCROW_ERROR", j?.error || `HTTP ${r.status}`);
+    if (!r.ok) throw new MarkError(j?.code || "ESCROW_ERROR", j?.error || `HTTP ${r.status}`, j?.details); // keep server details (e.g. AMOUNT_MISMATCH range + recommended amount)
     return j as T;
   }
 
   create(b: { buyerPubkey: string; sellerPubkey: string; amountSats: number; deadline: number | string; rule: unknown; arbiterMode?: string; webhookUrl?: string; terms?: unknown; termsHash?: string; creatorAcceptance?: { party: "buyer" | "seller"; sig: string } }) { return this.call<Escrow>("POST", "/escrows", b); }
   /** GET /limits: minimum deal sizes, fee rates + current fee terms, Satora min/max, Ark dust. */
-  limits() { return this.call<Limits>("GET", "/limits"); }
+  limits(sats?: number) { return this.call<Limits>("GET", `/limits${sats ? `?sats=${sats}` : ""}`); }
   get(id: string) { return this.call<Escrow>("GET", `/escrows/${enc(id)}`); }
   quote(id: string, path: "release" | "refund", dest?: string) { return this.call<Quote>("GET", `/escrows/${enc(id)}/quote?path=${path}${dest ? `&dest=${encodeURIComponent(dest)}` : ""}`); }
   proposal(id: string, pid: string) { return this.call<ProposalFull>("GET", `/escrows/${enc(id)}/proposals/${enc(pid)}`); }

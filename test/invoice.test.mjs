@@ -21,6 +21,6 @@ test("fee drift tolerance: exact-tol..exact accepted, below rejected", () => {
 test("fractional sats -> AMOUNT_MISMATCH", () => assert.equal(code(() => validatePayoutInvoice(makeInvoice({ msat: 1195500 }), 1195, "bitcoin")), "AMOUNT_MISMATCH"));
 test("expired -> INVOICE_EXPIRED", () => assert.equal(code(() => validatePayoutInvoice(makeInvoice({ sats: 1195, ageSec: 7200, expiry: 3600 }), 1195, "bitcoin")), "INVOICE_EXPIRED"));
 test("expiring within 10 min -> INVOICE_EXPIRED", () => assert.equal(code(() => validatePayoutInvoice(makeInvoice({ sats: 1195, expiry: 300 }), 1195, "bitcoin")), "INVOICE_EXPIRED"));
-test("amountless -> BAD_INVOICE", () => assert.equal(code(() => validatePayoutInvoice(makeInvoice({}), 1195, "bitcoin")), "BAD_INVOICE"));
+test("amountless -> AMOUNTLESS_INVOICE_UNSUPPORTED with the amount to set (Satora requires an amount)", () => { let d; try { validatePayoutInvoice(makeInvoice({}), 1195, "bitcoin"); } catch (e) { d = e; } assert.equal(d.code, "AMOUNTLESS_INVOICE_UNSUPPORTED"); assert.equal(d.details.setInvoiceAmountSats, 1193); assert.match(d.message, /1193/); });
 test("wrong network -> BAD_INVOICE", () => { assert.equal(code(() => validatePayoutInvoice(makeInvoice({ sats: 1195, network: "mutinynet" }), 1195, "bitcoin")), "BAD_INVOICE"); assert.equal(code(() => validatePayoutInvoice(makeInvoice({ sats: 1195 }), 1195, "mutinynet")), "BAD_INVOICE"); });
 test("garbage -> BAD_INVOICE", () => assert.equal(code(() => decodeInvoice("lnbc1garbage")), "BAD_INVOICE"));
