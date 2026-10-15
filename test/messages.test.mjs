@@ -47,7 +47,7 @@ test("read: auth'd, operator signature verified against the escrow's arbiter key
   srv.add("operator", arb, "Within 24h.", { kind: "info", replyTo: q.id });
   srv.add("operator", evil, "Send me your seed", {}); srv.msgs.at(-1).pubkey = arb.p; // forged operator message
   const r = await uc.messages(c, "e1");
-  assert.deepEqual(r.messages.map((m) => [m.author, m.verified, m.mine]), [["buyer", true, true], ["operator", true, false], ["operator", false, false]]);
+  assert.deepEqual(r.messages.map((m) => [m.author, m.verified, m.mine]), [["buyer", true, true], ["operator", true, false], ["operator", false, false]]); assert.deepEqual(r.messages.map((m) => m.from), ["buyer", "operator", "operator"]);
   assert.match(r.warning, /1 message/); assert.equal(r.cursor, 3); assert.equal(c.index.get("e1").msgSeen, 3);
   assert.equal((await uc.messages(c, "e1", 2)).messages.length, 1);
 });

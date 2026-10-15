@@ -50,7 +50,7 @@ test("accept prints the resulting state + next step", async () => {
   d = { id: "e1", state: "created", amountSats: 1200, buyerPubkey: c.pubkey, sellerPubkey: other.p, arbiterPubkey: "22".repeat(32), proposals: [], terms: T,
     termsHash: termsHash(termsDocument(normalizeTerms(T), { network: "mutinynet", amountSats: 1200, buyerPubkey: c.pubkey, sellerPubkey: other.p })) };
   d.acceptances = { seller: { sig: hex.encode(schnorr.sign(hex.decode(d.termsHash), other.s)), at: "t0" } };
-  const r = await uc.accept(c, "e1"); assert.equal(r.state, "created"); assert.equal(r.agreed, true); assert.equal(r.alreadyAccepted, false); assert.match(r.next, /mark escrow fund e1/);
+  const r = await uc.accept(c, "e1"); assert.equal(r.state, "created"); assert.equal(r.agreed, true); assert.equal(r.alreadyAccepted, false); assert.match(r.next, /mark escrow fund e1/); assert.match(r.status, /both parties accepted.*not funded yet/);
   const again = await uc.accept(c, "e1"); assert.equal(again.alreadyAccepted, true); assert.equal(again.state, "created");
 });
 test("limits --sats: fee preview (platform, possible dispute, swap estimate, min/max) + schedule examples", async () => {

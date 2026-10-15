@@ -117,7 +117,8 @@ export async function accept(c: Ctx, id: string) {
   const r = (v.accepted as any)[role].signatureValid ? e : await c.api.accept(id, { party: role, termsHash: v.termsHash!, sig: signHash(c.secret, v.termsHash!) });
   const after = verifyDealTerms(c, r);
   const missing = (["buyer", "seller"] as const).filter((p) => !(after.accepted as any)[p].accepted);
-  return { escrowId: id, myRole: role, accepted: true, alreadyAccepted: r === e, state: r.state, terms: after.terms, termsHash: after.termsHash, acceptedBy: after.accepted, agreed: after.agreed,
+  return { escrowId: id, myRole: role, accepted: true, alreadyAccepted: r === e, state: r.state,
+    status: !after.agreed ? `you accepted; waiting for the ${missing.join(" and ") || "counterparty"}` : r.state === "created" ? "both parties accepted the terms; not funded yet (state 'created' means waiting for the buyer's funding)" : `both accepted; escrow is ${r.state}`, terms: after.terms, termsHash: after.termsHash, acceptedBy: after.accepted, agreed: after.agreed,
     next: !after.agreed ? `waiting for the ${missing.join(" and ") || "counterparty"} to accept: mark escrow accept ${id}` : r.state === "created" ? (role === "buyer" ? `both accepted; fund with: mark escrow fund ${id}` : "both accepted; waiting for the buyer to fund") : undefined };
 }
 
@@ -310,7 +311,7 @@ async function fetchThread(c: Ctx, id: string, since?: number) {
   const l = await c.api.messages(id, { party: role, ...signAuth(c.secret, id, "messages") }, since);
   // pin keys to the escrow record (not the thread response)
   const keys = { escrowId: id, arbiterPubkey: e.arbiterPubkey, buyerPubkey: e.buyerPubkey, sellerPubkey: e.sellerPubkey };
-  return { e, role, l, msgs: l.messages.map((m) => ({ ...m, mine: m.author === role, verified: verifyMessage(keys, m) })) };
+  return { e, role, l, msgs: l.messages.map((m: any) => ({ ...m, from: m.author === "operator" ? (m.kind === "system" || m.extra?.event ? "system" : "operator") : m.author, mine: m.author === role, verified: verifyMessage(keys, m), ...(m.flag ? { duplicate: m.flag.flag === "duplicate" } : {}) })) };
 }
 /** Read a deal's thread (since = cursor). Marks it read. Unverified messages are flagged, never trusted. */
 export async function messages(c: Ctx, id: string, since?: number) {
@@ -333,9 +334,9 @@ export async function postMessage(c: Ctx, id: string, o: { text?: string; kind?:
 export async function inbox(c: Ctx) {
   const out: any[] = []; const errors: any[] = [];
   for (const id of c.index.ids()) {
-    try { const seen = c.index.get(id).msgSeen ?? 0; const { e, msgs } = await fetchThread(c, id, seen); const unread = msgs.filter((m) => !m.mine);
-      if (unread.length) out.push({ escrowId: id, state: e.state, unread: unread.length, fromOperator: unread.filter((m) => m.author === "operator" && m.kind !== "system").length,
-        latest: unread.slice(-3).map((m) => ({ id: m.id, author: m.author, kind: m.kind ?? null, at: m.createdAt, verified: m.verified, preview: m.body.slice(0, 200) })) }); }
+    try { const seen = c.index.get(id).msgSeen ?? 0; const { e, msgs } = await fetchThread(c, id, seen); const unread = msgs.filter((m) => !m.mine && !m.flag);
+      if (unread.length) out.push({ escrowId: id, state: e.state, unread: unread.length, fromOperator: unread.filter((m) => m.from === "operator").length,
+        latest: unread.slice(-3).map((m) => ({ id: m.id, author: m.author, from: m.from, kind: m.kind ?? null, at: m.createdAt, verified: m.verified, preview: m.body.slice(0, 200) })) }); }
     catch (x: any) { errors.push({ escrowId: id, code: x.code ?? "ERROR", error: String(x.message).slice(0, 200) }); }
   }
   return { unreadDeals: out.length, unreadMessages: out.reduce((a, x) => a + x.unread, 0), deals: out, ...(errors.length ? { errors } : {}), next: out.length ? "read one with: mark escrow messages <id>" : "no unread messages" };
