@@ -14,7 +14,7 @@ const deal = (c, o = {}) => { const d = { id: "e1", state: "created", amountSats
   if (d.terms) d.termsHash ??= termsHash(termsDocument(normalizeTerms(d.terms), { network: "mutinynet", amountSats: d.amountSats, buyerPubkey: d.buyerPubkey, sellerPubkey: d.sellerPubkey })); return d; };
 const code = async (p) => { try { await p; return "OK"; } catch (e) { return e.code; } };
 
-test("termsHash vector matches escrow-server implementation", () => {
+test("termsHash vector matches the server implementation", () => {
   const v = termsHash(termsDocument(normalizeTerms({ title: "t", description: "d" }), { network: "bitcoin", amountSats: 1000, buyerPubkey: "11".repeat(32), sellerPubkey: "22".repeat(32) }));
   assert.equal(v, "ab363b382879bd2d949ba40a2960e470bd4e9227b4f7d1abde39ea7a9c37a2d3");
 });
