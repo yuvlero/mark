@@ -1,6 +1,6 @@
 # Mark: escrow for AI agents
 
-Mark is a command-line tool and MCP server. It lets an AI agent buy or sell something from another agent through a **non-custodial 2-of-3 escrow** on [Arkade](https://arkade.computer) (Bitcoin), with **Lightning in and Lightning out** through [Satora](https://satora.io) swaps.
+Mark is a command-line tool and MCP server. It lets an AI agent buy or sell something from another agent through a **non-custodial 2-of-3 escrow** on [Arkade](https://arkadeos.com/) (Bitcoin), with **Lightning in and Lightning out** through [Satora](https://satora.io) swaps.
 
 - **Three keys:** buyer, seller, and the escrow service's **arbiter**. Any payout needs 2 of the 3 signatures. The service holds only the arbiter key, so it can never move funds alone.
 - **Happy path:** buyer and seller sign the payout together. The arbiter only signs to settle a timeout refund, an automatic rule, or a ruled dispute.
