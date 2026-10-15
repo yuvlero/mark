@@ -68,6 +68,39 @@ sig        = hex(schnorr(id_bytes, key))
 - `terms`, `termsHash` and `acceptances` are `null` on legacy deals.
 - `address` is the Ark address of the 2-of-3 contract.
 
+- Every Escrow response (GET/POST, accept, …) also carries `awaiting`, `action_required_for` and `arbiterPolicy` (see below). They are derived fields and are not signed.
+
+### Machine-readable status
+`awaiting` and `action_required_for` are top-level enums on every Escrow response and on every `GET /escrows?party=` item. Mark's `show`, `status`, `accept` and `invites` print the same values, because both sides use the same function. Act when `action_required_for` is your role; otherwise poll. The prose fields (`next`, `nextStep`) are hints only.
+
+They are evaluated in this order; the first match wins:
+
+| Condition | `awaiting` | `action_required_for` |
+|---|---|---|
+| `released` / `refunded` | `none` | `none` |
+| terms not accepted by the buyer / seller | `buyer_accept` / `seller_accept` | `buyer` / `seller` |
+| `created`, both accepted | `buyer_funding` | `buyer` |
+| `disputed`, no ruling yet | `ruling` | `operator` |
+| open proposal missing signatures | `release_signature` (also used for refunds) | the first missing non-arbiter signer, else `arbiter` (`operator` if `arbiterMode: manual` and no ruling) |
+| proposal fully signed, not yet submitted | `payout` | `none` |
+| ruled, no proposal yet | `payout` | the winner (`seller` for release, `buyer` for refund) |
+| `funded` | `delivery` | `seller` |
+
+**The seller must NOT deliver before `state` is `funded`** (`awaiting: delivery`). `created` means agreed but unfunded.
+
+Deliverables travel **off-band**, by any channel the parties agree on (email, a link, a Nostr DM). The server hosts no files, and the message thread is for negotiation. The seller posts the deliverable's sha256 as signed evidence (`POST /escrows/:id/evidence` with `sha256`). Mark's `evidence --file` hashes the file locally, and compares the hash with `terms.deliverableSha256` when the terms set one.
+
+### `rule` vs `arbiterMode` (`arbiterPolicy`)
+- `rule.type` is the auto-arbiter's **release** condition:
+  - `hash`: it co-signs a seller + arbiter release when the proposal carries the preimage of `rule.sha256`.
+  - `webhook`: it co-signs when `rule.url` approves.
+  - `manual`: there is **no automatic release condition**; a release needs buyer + seller. It does not mean "a human must act".
+- `arbiterMode`:
+  - `auto`: the arbiter signs automatically per `rule`, and co-signs a buyer + arbiter refund after the deadline.
+  - `manual`: the arbiter signs only to execute an operator ruling.
+- An open dispute stops all automatic signing.
+- `arbiterPolicy` is the decoded form: `{mode, releaseRule, autoRelease, timeoutRefund, disputes}`. The last three are prose strings.
+
 ### Terms
 `{ title (1..120, one line), description (1..4000), deliverable? (≤1000), acceptance? (≤2000), deliverableSha256? (64 hex) }`. Unknown keys and control characters are rejected (except `\t \n \r`), and so are bidi overrides.
 
@@ -159,11 +192,11 @@ GET
 { "party": "9d64…cb1a", "count": 1, "nextCursor": null, "escrows": [ {
   "id": "0129…", "role": "seller", "counterpartyPubkey": "feee…29ba", "sats": 5000, "state": "created", "createdAt": "…", "deadline": "…",
   "terms": {"title": "Logo design", "deliverable": "zip with PNG + SVG", "acceptance": "3 distinct concepts, SVG included", "termsHash": "3621…9df2"},
-  "termsAccepted": {"mine": false, "theirs": true}, "needs": ["accept"],
+  "termsAccepted": {"mine": false, "theirs": true}, "needs": ["accept"], "awaiting": "seller_accept", "action_required_for": "seller",
   "nextStep": {"text": "Review the terms, then accept them (funding is blocked until both parties accept).", "command": "mark escrow show 0129… && mark escrow accept 0129…"} } ] }
 ```
 - Errors: `401 UNAUTHORIZED` (bad signature, ts outside the window, replayed or malformed nonce), `BAD_PUBKEY`, `BAD_REQUEST` (needs, state, limit, cursor), `429 RATE_LIMITED` (per key and per client IP; defaults 30 and 120 per minute).
-- `nextStep` is a hint. Fetch `GET /escrows/:id` and recompute `termsHash` yourself before accepting.
+- Each item carries `awaiting` and `action_required_for` (see §2). `nextStep` is a hint. Fetch `GET /escrows/:id` and recompute `termsHash` yourself before accepting.
 
 ### GET /escrows/:id → 200 Escrow
 Reading also refreshes funding: `created → funded` once the address holds `amountSats`.
@@ -227,7 +260,7 @@ Includes `arkTx` and `checkpoints` to sign.
 - If the operator supplied the winner's destination, the proposal already exists and the winner just signs it.
 
 ### POST /escrows/:id/evidence → 201 Escrow
-`{"party": "buyer", "ts": <unix>, "text": "≤4000", "sha256"?: "<64 hex>", "url"?: "https://… ≤500", "sig": "<schnorr over evidenceId>"}`. Append-only, idempotent per id, at most 200 per deal (`LIMIT_EXCEEDED`). `ts` must be within 10 minutes. Each note is also posted to the thread as a `kind: "evidence"` system message.
+`{"party": "buyer", "ts": <unix>, "text": "≤4000", "sha256"?: "<64 hex>", "url"?: "https://… ≤500", "sig": "<schnorr over evidenceId>"}`. Append-only, idempotent per id, at most 200 per deal (`LIMIT_EXCEEDED`). `ts` must be within 10 minutes. Each note is also posted to the thread as a `kind: "evidence"` system message. For a deliverable, put its sha256 here. The file itself goes off-band; the server stores no blobs.
 
 ### POST /escrows/:id/messages → 201 Message
 ```json

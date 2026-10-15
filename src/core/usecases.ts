@@ -15,6 +15,14 @@ import { validatePayoutInvoice, decodeInvoice, maxOverpaySats, isAmountless } fr
 import type { Escrow, Party, Payout, ProposalFull, Message, MessageList } from "../api/escrowApi.js";
 import { assertEscrowCap } from "./limits.js";
 import type { Ctx } from "./context.js";
+import { dealStatus, arbiterPolicy } from "./status.js";
+import { createHash } from "node:crypto";
+
+/** Machine-readable status (shared logic: status.ts, identical to the server's). */
+export function statusOf(e: Escrow) {
+  return { ...dealStatus({ state: e.state, accepted: e.terms ? { buyer: !!e.acceptances?.buyer, seller: !!e.acceptances?.seller } : null, ruling: (e.ruling as any) ?? null, arbiterMode: e.arbiterMode as string | undefined,
+    proposals: (e.proposals ?? []).map((p) => ({ kind: p.kind, signers: p.signers, signed: p.sigs, submitted: !!p.submittedTxid })) }), arbiterPolicy: arbiterPolicy(e.rule as any, e.arbiterMode as string | undefined) };
+}
 import type { Role } from "./localIndex.js";
 
 export type Kind = "release" | "refund";
@@ -103,7 +111,9 @@ export async function show(c: Ctx, id: string) {
   const e = await c.api.get(requireId(id)); const role = myRole(c, e); const v = verifyDealTerms(c, e);
   const evidence = (e.evidence ?? []).map((x) => ({ ...x, signatureValid: verifyTermsSig(x.party === "buyer" ? e.buyerPubkey : e.sellerPubkey, evidenceHash(e.id, x.party, x.ts, { text: x.text, ...(x.sha256 ? { sha256: x.sha256 } : {}), ...(x.url ? { url: x.url } : {}) }), x.sig) }));
   const iAccepted = v.accepted ? (v.accepted as any)[role].accepted : null;
-  return { id: e.id, state: e.state, myRole: role, amountSats: e.amountSats, deadline: e.deadline, ...v, feeTerms: e.fees ?? null, feeSummary: feeSummary(e.fees ?? null, e.amountSats), evidence,
+  const want = e.terms?.deliverableSha256;
+  for (const x of evidence as any[]) if (want && x.sha256) x.deliverableMatch = x.sha256 === want;
+  return { id: e.id, state: e.state, myRole: role, ...statusOf(e), amountSats: e.amountSats, deadline: e.deadline, ...v, feeTerms: e.fees ?? null, feeSummary: feeSummary(e.fees ?? null, e.amountSats), evidence,
     dispute: e.dispute ?? null, ruling: e.ruling ?? null,
     next: v.legacy ? "legacy deal (no terms)" : !v.hashVerified ? "TERMS HASH MISMATCH: do not accept or fund" : !iAccepted ? `review the terms, then: mark escrow accept ${e.id}` : !v.agreed ? "waiting for the counterparty to accept" : e.state === "created" ? (role === "buyer" ? `both accepted; fund with: mark escrow fund ${e.id}` : "both accepted; waiting for the buyer to fund") : undefined };
 }
@@ -117,18 +127,33 @@ export async function accept(c: Ctx, id: string) {
   const r = (v.accepted as any)[role].signatureValid ? e : await c.api.accept(id, { party: role, termsHash: v.termsHash!, sig: signHash(c.secret, v.termsHash!) });
   const after = verifyDealTerms(c, r);
   const missing = (["buyer", "seller"] as const).filter((p) => !(after.accepted as any)[p].accepted);
-  return { escrowId: id, myRole: role, accepted: true, alreadyAccepted: r === e, state: r.state,
+  return { escrowId: id, myRole: role, accepted: true, alreadyAccepted: r === e, state: r.state, ...statusOf(r),
     status: !after.agreed ? `you accepted; waiting for the ${missing.join(" and ") || "counterparty"}` : r.state === "created" ? "both parties accepted the terms; not funded yet (state 'created' means waiting for the buyer's funding)" : `both accepted; escrow is ${r.state}`, terms: after.terms, termsHash: after.termsHash, acceptedBy: after.accepted, agreed: after.agreed,
     next: !after.agreed ? `waiting for the ${missing.join(" and ") || "counterparty"} to accept: mark escrow accept ${id}` : r.state === "created" ? (role === "buyer" ? `both accepted; fund with: mark escrow fund ${id}` : "both accepted; waiting for the buyer to fund") : undefined };
 }
 
 /** Add a signed, timestamped evidence note (either party, any state; especially during a dispute). */
-export async function addEvidence(c: Ctx, id: string, o: { text?: string; sha256?: string; url?: string }) {
-  if (!o.text || !String(o.text).trim()) throw new MarkError("BAD_EVIDENCE", "evidence text required: mark escrow evidence <id> --text \"...\" (alias --note) [--sha256 <hex>] [--url <https://...>]");
+/** sha256 of a local file (streamed; the file never leaves this machine). */
+export async function sha256File(p: string): Promise<{ sha256: string; bytes: number }> {
+  const h = createHash("sha256"); let bytes = 0;
+  try { for await (const ch of fs.createReadStream(p)) { h.update(ch as Buffer); bytes += (ch as Buffer).length; } } catch (x: any) { throw new MarkError("BAD_EVIDENCE", `cannot read --file: ${x.message}`); }
+  return { sha256: h.digest("hex"), bytes };
+}
+export async function addEvidence(c: Ctx, id: string, o: { text?: string; sha256?: string; url?: string; file?: string }) {
+  if (o.file) {
+    const f = await sha256File(o.file);
+    if (o.sha256 && o.sha256.toLowerCase() !== f.sha256) throw new MarkError("BAD_EVIDENCE", `--sha256 does not match --file (file hashes to ${f.sha256})`);
+    o = { ...o, sha256: f.sha256, text: o.text?.trim() ? o.text : `deliverable ${o.file.split(/[\\/]/).pop()} (${f.bytes} bytes), sha256 ${f.sha256}` };
+  }
+  if (!o.text || !String(o.text).trim()) throw new MarkError("BAD_EVIDENCE", "evidence text required: mark escrow evidence <id> --text \"...\" (alias --note) [--sha256 <hex> | --file <path>] [--url <https://...>]");
   const e = await c.api.get(requireId(id)); const role = myRole(c, e);
   const ev = normalizeEvidence(o); const ts = Math.floor(Date.now() / 1000);
   const r = await c.api.evidence(id, { party: role, ts, ...ev, sig: signHash(c.secret, evidenceHash(id, role, ts, ev)) });
-  return { escrowId: id, myRole: role, added: { ts, ...ev }, evidenceCount: (r.evidence ?? []).length, state: r.state };
+  const want = e.terms?.deliverableSha256; const match = want && ev.sha256 ? ev.sha256 === want : null;
+  return { escrowId: id, myRole: role, added: { ts, ...ev }, evidenceCount: (r.evidence ?? []).length, state: r.state,
+    ...(want ? { deliverableSha256: want, deliverableMatch: match } : {}),
+    ...(match === false ? { warning: "this sha256 does NOT match the deliverable-sha256 in the signed terms" } : {}),
+    ...(r.state === "created" ? { notice: "the escrow is not funded yet: do not deliver before state is funded" } : {}) };
 }
 
 export async function quote(c: Ctx, id: string, path: Kind = "release", dest?: string) { return c.api.quote(requireId(id), requireKind(path), dest); }
@@ -198,7 +223,7 @@ export async function pendingAll(c: Ctx) {
 
 export async function status(c: Ctx, id: string) {
   const e = await c.api.get(requireId(id)); const l = c.index.get(id);
-  const r: any = { ...e, myRole: myRole(c, e) };
+  const r: any = { ...e, ...statusOf(e), myRole: myRole(c, e) };
   if (l.fundSwap || l.payoutSwap) {
     const s = await c.swaps();
     const look = (sid: string) => s.get(sid).catch((x: any) => ({ id: sid, error: x.message }));

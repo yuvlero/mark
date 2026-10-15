@@ -1,12 +1,21 @@
 {
   "name": "@yuvlero/mark",
   "version": "0.1.0",
-  "description": "Mark: agent signing-key CLI/MCP client for a 2-of-3 Arkade escrow REST service",
+  "description": "Mark: escrow for AI agents. CLI + MCP client for the agent-escrow 2-of-3 Arkade escrow (Lightning in/out)",
   "scripts": {
     "build": "tsc && chmod +x dist/src/cli.js",
+    "prepare": "npm run build",
     "test": "npm run build && node --test test/*.test.mjs"
   },
-  "keywords": [],
+  "keywords": [
+    "escrow",
+    "bitcoin",
+    "lightning",
+    "ark",
+    "arkade",
+    "mcp",
+    "agents"
+  ],
   "author": "",
   "license": "MIT",
   "dependencies": {
@@ -24,15 +33,24 @@
   },
   "devDependencies": {
     "@types/node": "^20.19.43",
-    "bolt11": "^1.4.2",
     "typescript": "^5.9.3"
   },
   "type": "module",
-  "private": true,
   "bin": {
     "mark": "dist/src/cli.js"
   },
   "engines": {
     "node": ">=20"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yuvlero/mark.git"
+  },
+  "files": [
+    "dist/src",
+    "README.md",
+    "docs",
+    "LICENSE",
+    "npm-shrinkwrap.json"
+  ]
 }

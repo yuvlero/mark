@@ -13,16 +13,23 @@ Mark is a command-line tool and MCP server. It lets an AI agent buy or sell some
 
 ## 1. Install
 
-Requirements: **Node.js ≥ 20**, npm and git. Linux or macOS.
+Requirements: **Node.js ≥ 20** (≥ 22.12 recommended) and npm. Linux or macOS. No `node dist/src/cli.js`, no global or root writes, and no native addons. The dependency tree is pinned by `npm-shrinkwrap.json` and is pure JavaScript, so nothing needs install scripts (npm 11 safe).
 
+Pick one:
 ```bash
-git clone https://github.com/yuvlero/mark.git
-cd mark
-npm install
-npm test            # optional; offline, mocks the server
-npm link            # puts `mark` on PATH (or use: node dist/src/cli.js ...)
-mark                # prints usage
+# a) npx, nothing kept on PATH (builds on first run, then cached)
+npx -y github:yuvlero/mark escrow limits
+
+# b) a local clone
+git clone https://github.com/yuvlero/mark.git && cd mark
+npm ci                       # installs and builds dist/ (prepare step)
+node dist/src/cli.js         # prints usage; alias mark="node $PWD/dist/src/cli.js"
+npm test                     # optional; offline, mocks the server
+
+# c) a per-user prefix (no sudo, no -g: npm's -g breaks git-dep builds)
+npm install --prefix ~/.local/mark github:yuvlero/mark && ~/.local/mark/node_modules/.bin/mark
 ```
+Below, `mark` means any of these.
 
 ## 2. Configure the escrow URL
 
@@ -72,6 +79,12 @@ mark escrow limits --sats 5000
    "payeeReceives":{"arkSats":4670,"lightningSatsEstimate":4632,"lightningSatsAtLeast":4608,"ifDisputeRuledArkSats":4340}, …}}
 ```
 
+> **Payouts: use `--payout-lnaddr you@wallet` by default.** It needs no invoice amount math. Invoices (`--payout-invoice`) and Ark (`--payout-ark`) are alternatives.
+>
+> **Buyer-less release (hash lock):** create with `--hash <sha256 of a secret>`. The seller later runs `mark escrow approve <id> --with arbiter --preimage <secret hex> --payout-lnaddr you@wallet`, and the auto-arbiter co-signs without the buyer. See §4.2.
+>
+> **Status for agents:** `show`, `status`, `accept` and `invites` print `awaiting` (`buyer_accept|seller_accept|buyer_funding|delivery|release_signature|payout|ruling|none`) and `action_required_for` (`buyer|seller|arbiter|operator|none`). Act when it is your role. The table is in [escrow-api.md](docs/escrow-api.md#machine-readable-status).
+
 ### 4.2 Create the deal with terms (either party; here the buyer)
 ```bash
 mark escrow create --role buyer --counterparty <S pubkey> --sats 5000 --deadline 86400 \
@@ -87,15 +100,20 @@ mark escrow create --role buyer --counterparty <S pubkey> --sats 5000 --deadline
 - `--deadline` is seconds from now or an ISO time. After it passes, the buyer can get a refund co-signed by the arbiter.
 - Terms are immutable. The creator signs `termsHash` at create time, and that hash covers the terms, amount, both pubkeys, the network and the fee terms.
 - `--terms-file terms.json` (`{title, description, deliverable?, acceptance?, deliverableSha256?}`) works instead of the flags.
-- `--arbiter auto|manual` (default `auto`): `auto` lets the arbiter co-sign timeout refunds and rules; `manual` means the operator decides.
-- `--hash <sha256>`: the auto-arbiter co-signs a release when the seller reveals the preimage (`approve --preimage`).
+- `--arbiter auto|manual` (default `auto`) sets `arbiterMode`.
+  - `auto`: the arbiter signs automatically per `rule`, and co-signs a buyer + arbiter refund after the deadline.
+  - `manual`: it signs only to execute an operator ruling.
+- `rule` is the auto-release condition: `--hash` gives `hash`, `--webhook` gives `webhook`, otherwise `manual`. `rule: manual` means **no automatic release** (buyer + seller sign); it does not mean a human must act. `show` prints both, decoded, as `arbiterPolicy`.
+- `--hash <sha256>`: the auto-arbiter co-signs a seller + arbiter release when the seller reveals the preimage (`approve --with arbiter --preimage <hex>`). No buyer is needed.
 - `--webhook <url>` receives deal events (see the API doc).
 
 ### 4.3 Counterparty finds, reviews and accepts
-The counterparty doesn't need the id: it polls its invites (deals created for its pubkey that wait for its accept).
+The counterparty doesn't need the id: it polls its invites. A bare `invites` shows **only** deals waiting for **my** accept. Use `--all`, `--needs fund|sign|any` or `--state <s>` to see the others.
 ```bash
 mark escrow invites         # S: [{id, role, counterpartyPubkey, sats, terms{title,deliverable,acceptance,termsHash}, termsAccepted{mine,theirs}, nextStep}]
-mark escrow invites --all   # every deal this key is in, each with needs (accept|fund|sign) and nextStep
+mark escrow invites --all   # every deal this key is in, each with needs (accept|fund|sign), awaiting, action_required_for, nextStep
+mark escrow invites --needs fund    # deals I must fund (also: --needs sign | any)
+mark escrow invites --all --state funded
 ```
 ```json
 {"pubkey":"9d64…cb1a","filter":"accept","count":1,"escrows":[{"id":"0129…","role":"seller","counterpartyPubkey":"feee…29ba","sats":5000,"state":"created",
@@ -127,10 +145,14 @@ mark escrow fund <id>
 - `mark escrow status <id>` should now show `state: "funded"`.
 
 ### 4.5 Seller delivers
-Deliver off-band (a URL, a file, an API result). Optionally attach proof:
+**Do NOT deliver before `state` is `funded`** (`awaiting: delivery`). `created` means agreed but unfunded.
+
+Deliver **off-band**, by whatever channel you both agreed on (email, a link, a Nostr DM, an API result). The message thread is for negotiation, not file transfer, and the server hosts no files. Then post the deliverable's sha256 as signed evidence:
 ```bash
-mark escrow evidence <id> --text "delivered logos.zip" --sha256 <hex of the file> --url https://…
+mark escrow evidence <id> --file logos.zip            # hashed locally, never uploaded; signs {text, sha256}
+mark escrow evidence <id> --text "delivered logos.zip" --sha256 <hex> --url https://…   # same, by hand
 ```
+If the terms set `--deliverable-sha256`, the output has `deliverableMatch: true|false`, plus a `warning` on mismatch. `show` marks each evidence item the same way.
 
 ### 4.6 Seller gets paid: pick the payout, propose, sign
 **Option A: Lightning address (simplest; the amount is exact automatically).**
@@ -158,7 +180,7 @@ The seller's approve **proposes and signs**. Then the buyer co-signs:
 mark escrow pending          # B: every payout waiting on me (or: mark escrow pending <id>)
 mark escrow approve <id>     # B: co-sign. With 2 signatures the payout is submitted.
 ```
-The seller's Lightning wallet receives the payment and the state becomes `released`. Without the buyer, a seller with a hash rule can use `--with arbiter --preimage <hex>`.
+The seller's Lightning wallet receives the payment and the state becomes `released`. Without the buyer, a seller with a hash rule uses `mark escrow approve <id> --with arbiter --preimage <hex> --payout-lnaddr …`.
 
 **`AMOUNT_MISMATCH`** means the invoice amount is outside the accepted range. Read `details` (`expectedSats`, `minInvoiceSats`, `maxInvoiceSats`, `recommendedInvoiceSats`), make a new invoice for `recommendedInvoiceSats`, and approve again. With `AMOUNTLESS_INVOICE_UNSUPPORTED`, set `details.setInvoiceAmountSats` on the invoice or use `--payout-lnaddr`. With `INVOICE_EXPIRED`, make a fresh invoice.
 
@@ -224,7 +246,7 @@ Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL`.
 | `mark escrow refund <id> --payout-… [--with arbiter\|counterparty]` | Buyer proposes a refund |
 | `mark escrow refund-payout <id> [--to <ark address>]` | Recover a failed Lightning payout swap |
 | `mark escrow dispute <id> [--reason "..."]` | Open a dispute (the operator rules) |
-| `mark escrow evidence <id> --text "..." [--sha256 hex] [--url https://…]` | Signed evidence note (`--note` is an alias) |
+| `mark escrow evidence <id> [--file <path>] [--text "..."] [--sha256 hex] [--url https://…]` | Signed evidence note (`--note` is an alias). `--file` hashes locally and matches `deliverableSha256` |
 | `mark escrow messages <id> [--since N]` | Read the thread |
 | `mark escrow message <id> --text "..." [--kind k] [--reply-to <msgId>]` | Post to the thread |
 | `mark escrow inbox` | Unread messages across your deals |
@@ -308,6 +330,6 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 ## Development
 
 ```bash
-npm install && npm test     # builds, then runs the unit tests (HTTP mocked)
+npm ci && npm test          # builds, then runs the unit tests (HTTP mocked)
 ```
 Layout: `src/cli.ts`, `src/mcp.ts` (thin adapters) → `src/core/` (use-cases, terms, fees) → `src/api/escrowApi.ts` (the only HTTP client). Also `src/crypto/` (keystore, PSBT checks), `src/swap/` (Satora) and `src/lightning/` (BOLT11 checks).

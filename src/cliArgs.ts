@@ -14,7 +14,7 @@ const s = (v: unknown) => (typeof v === "string" ? v : undefined);
 export const ESCROW_USAGE: Record<string, string> = {
   create: "mark escrow create --role buyer|seller --counterparty <xonly pubkey> --sats N --deadline <seconds|ISO> --title <short> --description <text> [--deliverable <text>] [--acceptance <criteria>] [--deliverable-sha256 <hex>] [--terms-file <json>] [--hash <sha256hex>] [--arbiter auto|manual] [--webhook url]",
   show: "mark escrow show <id>", accept: "mark escrow accept <id>",
-  evidence: "mark escrow evidence <id> --text \"...\" (alias --note) [--sha256 <hex>] [--url <https://...>]",
+  evidence: "mark escrow evidence <id> [--text \"...\" (alias --note)] [--sha256 <hex> | --file <path> (hashed locally, not uploaded)] [--url <https://...>]",
   fund: "mark escrow fund <id> [--wait] [--timeout <sec>]", status: "mark escrow status <id>", limits: "mark escrow limits [--sats N]",
   quote: "mark escrow quote <id> [--path release|refund] [--dest <bolt11|lightning address>]", pending: "mark escrow pending [<id>]   (no id: all my deals)",
   approve: "mark escrow approve <id> [--payout-invoice <bolt11> | --payout-lnaddr <user@domain> | --payout-ark <ark address>] [--kind release|refund] [--with counterparty|arbiter] [--preimage <hex>]",
@@ -34,7 +34,7 @@ export function checkEscrowArgs(sub: string | undefined, id: string | undefined,
   for (const [k, v] of Object.entries(f)) if (v === true && !["wait", "json", "all"].includes(k)) return usage(`--${k} needs a value`);
   if (sub === "create") { const miss = ["role", "counterparty", "sats", "deadline"].filter((k) => !s(f[k])); if (miss.length) return usage(`missing ${miss.map((k) => "--" + k).join(", ")}`); if (!/^\d+$/.test(s(f.sats)!)) return usage("--sats must be a whole number of sats"); }
   if (sub === "limits" && f.sats !== undefined && !/^\d+$/.test(String(f.sats))) return usage("--sats must be a whole number of sats");
-  if (sub === "evidence") { if (s(f.text) && s(f.note) && s(f.text) !== s(f.note)) return usage("pass --text or --note, not both"); if (!s(f.text) && !s(f.note)) return usage("evidence text required (--text or --note)"); }
+  if (sub === "evidence") { if (s(f.text) && s(f.note) && s(f.text) !== s(f.note)) return usage("pass --text or --note, not both"); if (!s(f.text) && !s(f.note) && !s(f.file)) return usage("evidence text required (--text or --note), or --file <path>"); }
   if (sub === "message" && !s(f.text) && !s(f.note)) return usage("message text required (--text)");
   if (sub === "message" && f.kind !== undefined && !["question", "dispute", "evidence", "info"].includes(String(f.kind))) return usage("--kind must be question|dispute|evidence|info");
   if (sub === "invites" && f.needs !== undefined && !["accept", "fund", "sign", "any"].includes(String(f.needs))) return usage("--needs must be accept|fund|sign|any");
