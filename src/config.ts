@@ -40,7 +40,7 @@ export function ensureDir(d: string) { fs.mkdirSync(d, { recursive: true, mode: 
 
 export function defaultConfig(network: NetworkName): MarkConfig {
   const p = NETWORKS[network];
-  return { network, arkServerUrl: p.arkServerUrl, esploraUrl: p.esploraUrl, swapProvider: { type: "satora", baseUrl: p.swapBaseUrl }, limits: { maxEscrowSats: 5000 } };
+  return { network, arkServerUrl: p.arkServerUrl, esploraUrl: p.esploraUrl, swapProvider: { type: "satora", baseUrl: p.swapBaseUrl }, limits: { maxEscrowSats: 1000000 } };
 }
 
 export function normalizeUrl(u: string): string {

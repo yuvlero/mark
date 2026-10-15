@@ -55,7 +55,7 @@ The signature is over `sha256("mark-escrow:v1:<escrowId>:<action>:<ts>")`, made 
   rule: {type:"manual"} | {type:"hash", sha256:<64 hex>},
   arbiterMode?: "auto"|"manual", webhookUrl?: string }
 ```
-Mark enforces its own cap (`limits.maxEscrowSats`, default 5000) **before** it calls the server. The server may enforce a stricter cap and answer `LIMIT_EXCEEDED`.
+Mark enforces its own cap (`limits.maxEscrowSats`, default 1000000) **before** it calls the server. The server may enforce a stricter cap and answer `LIMIT_EXCEEDED`.
 
 ### GET /limits → 200 (public)
 `{ minDealSats: {lightning, ark, enforced}, maxDealSats, freeBelowSats, dustSats, fees: {enabled, source, address, freeBelowSats, flatSats, flatUntilSats, feeBps, disputeFeeBps, disputeMinSats, terms, schedule}, satora: {minSats, maxSats, fetchedAt, stale} }`

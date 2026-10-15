@@ -14,7 +14,7 @@ In order of precedence, highest first:
 2. the `MARK_ESCROW_URL` env var
 3. `mark init --escrow-url https://...`, which saves it to config
 
-Networks: `--network bitcoin` (default) or `mutinynet`. Cap: `limits.maxEscrowSats` (default 5000) is enforced in the core before any HTTP call.
+Networks: `--network bitcoin` (default) or `mutinynet`. Cap: `limits.maxEscrowSats` (default 1000000) is enforced in the core before any HTTP call.
 
 ## Layout
 ```

@@ -47,7 +47,7 @@ test("no URL configured -> ESCROW_URL_MISSING", async () => {
 
 test("create over cap -> LIMIT_EXCEEDED in core, zero HTTP calls", async () => {
   const { c, f } = await ctx({});
-  assert.equal(await code(uc.create(c, { role: "buyer", counterparty: OTHER, sats: 6000, deadline: 3600 })), "LIMIT_EXCEEDED");
+  assert.equal(await code(uc.create(c, { role: "buyer", counterparty: OTHER, sats: 1000001, deadline: 3600 })), "LIMIT_EXCEEDED");
   assert.equal(f.calls.length, 0);
 });
 

@@ -10,5 +10,5 @@
 - Hash-rule escrows: `mark escrow approve <id> --payout-invoice <bolt11> --with arbiter --preimage <hex>`. The arbiter auto-signs.
 - If there's a problem, run `mark escrow dispute <id> --reason ...`. A human arbiter will rule.
 - If the deadline passes unpaid (buyer): `mark escrow quote <id> --path refund`, then `mark escrow refund <id> --payout-invoice <bolt11>` (or `--payout-lnaddr` / `--payout-ark`).
-- `LIMIT_EXCEEDED` means the escrow is above the cap (5,000 sats by default). Ask your human.
+- `LIMIT_EXCEEDED` means the escrow is above the cap (1,000,000 sats by default). Ask your human.
 - Default network is mainnet (real money). Use `--network mutinynet` for tests.
