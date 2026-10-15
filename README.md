@@ -26,12 +26,16 @@ mark                # prints usage
 
 ## 2. Configure the escrow URL
 
-The production URL will be built into Mark. Until then, set it yourself:
-
+**It works out of the box:** on mainnet (`bitcoin`, the default network) Mark uses the production server **https://agentescrow.to**. Sanity check (read-only):
 ```bash
-export MARK_ESCROW_URL=https://<escrow-server>      # or pass --escrow-url https://... on any command
+mark escrow limits          # GET https://agentescrow.to/limits → minDealSats, fees, Satora limits
+curl -s https://agentescrow.to/health    # {"ok":true,"network":"bitcoin",…}
 ```
-Precedence: `--escrow-url` > `MARK_ESCROW_URL` > the URL saved by `mark init --escrow-url ...`.
+Override (e.g. a self-hosted or test server), highest precedence first:
+1. `--escrow-url https://…` on any command
+2. `MARK_ESCROW_URL=https://…`
+3. the URL saved by `mark init --escrow-url https://…` (config file)
+4. built-in default: `https://agentescrow.to` for `bitcoin` only; test networks (`mutinynet`) have **no** default and need one of 1–3.
 
 Network: `--network bitcoin` (default, **real money**) or `--network mutinynet` (test coins). You can also set `MARK_NETWORK`. The escrow server serves one network, so use the one it runs.
 
@@ -42,7 +46,7 @@ mark init                  # creates your key (once per network)
 mark pubkey                # {"network":"bitcoin","pubkey":"<64-hex x-only key>"}: share this with counterparties
 ```
 ```json
-{"ok":true,"created":true,"network":"bitcoin","dataDir":"/home/agent/.mark/bitcoin","pubkey":"feee99…29ba","escrowUrl":"https://…","limits":{"maxEscrowSats":1000000},"note":"Backup phrase: run `mark backup` in an interactive terminal."}
+{"ok":true,"created":true,"network":"bitcoin","dataDir":"/home/agent/.mark/bitcoin","pubkey":"feee99…29ba","escrowUrl":"https://agentescrow.to","limits":{"maxEscrowSats":1000000},"note":"Backup phrase: run `mark backup` in an interactive terminal."}
 ```
 - **Files:** `~/.mark/<network>/`, or `$MARK_HOME/<network>/`. The directory is 0700 and the files 0600:
   - `wallet.enc.json`: the seed, encrypted with scrypt + AES-256-GCM.
@@ -218,7 +222,7 @@ Usage mistakes return `{"code":"USAGE","error":"…","details":{"usage":…}}` b
 
 ## 8. Agent tools (MCP)
 
-Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example client config: `{"command":"mark","args":["mcp"],"env":{"MARK_ESCROW_URL":"https://…"}}`.
+Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example client config: `{"command":"mark","args":["mcp"]}` (mainnet uses https://agentescrow.to; add `"env":{"MARK_ESCROW_URL":"https://…"}` to override).
 
 | Tool | Equivalent |
 |---|---|
@@ -241,7 +245,7 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 |---|---|
 | `USAGE` | Wrong command or flags; see `details.usage` |
 | `NOT_INITIALIZED` | Run `mark init --network <n>` |
-| `ESCROW_URL_MISSING` | Set `MARK_ESCROW_URL` or `--escrow-url` |
+| `ESCROW_URL_MISSING` | Only on networks without a default (e.g. mutinynet): set `MARK_ESCROW_URL` or `--escrow-url` |
 | `ESCROW_UNREACHABLE` / `ESCROW_BAD_RESPONSE` | Server down or wrong URL; retry later |
 | `NOT_A_PARTY` | Your pubkey is neither buyer nor seller of this deal |
 | `NOT_FOUND` | Unknown deal or proposal id |

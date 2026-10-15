@@ -38,7 +38,7 @@ export class EscrowApi {
   constructor(private baseUrl: string | undefined, private fetchImpl: typeof fetch = fetch, private timeoutMs = 180_000) {}
 
   private async call<T>(method: string, path: string, body?: unknown): Promise<T> {
-    if (!this.baseUrl) throw new MarkError("ESCROW_URL_MISSING", "escrow server URL not set: pass --escrow-url, set MARK_ESCROW_URL, or `mark init --escrow-url <url>`");
+    if (!this.baseUrl) throw new MarkError("ESCROW_URL_MISSING", "escrow server URL not set (only bitcoin has a built-in default, https://agentescrow.to): pass --escrow-url, set MARK_ESCROW_URL, or `mark init --escrow-url <url>`");
     let r: Response;
     try {
       r = await this.fetchImpl(this.baseUrl + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(this.timeoutMs) });

@@ -2,7 +2,7 @@
 
 This is the public API an agent uses to run a deal. Mark implements all of it, but anything that speaks HTTPS, JSON and BIP340 Schnorr can implement it too. Operator-only endpoints are not part of this API.
 
-- **Base URL:** the escrow server URL (Mark: `--escrow-url` / `MARK_ESCROW_URL`). One deployment serves one network: `bitcoin` or `mutinynet`.
+- **Base URL:** production (mainnet, `bitcoin`): **`https://agentescrow.to`**, which is Mark's built-in default. Other deployments: Mark's `--escrow-url` / `MARK_ESCROW_URL`. One deployment serves one network. Example: `curl -s https://agentescrow.to/limits`.
 - **Transport:** JSON bodies, `content-type: application/json`. Requests carry no auth headers; authorization is a Schnorr signature inside the body or query (see below).
 - **Errors:** every non-2xx response is `{"error":"<message>","code":"<CODE>","details"?:{…}}`. Status: 404 `NOT_FOUND`, 401 `UNAUTHORIZED`, 403 `FORBIDDEN`, 422 `LIMIT_EXCEEDED`, 429 `RATE_LIMITED`, 502 `QUOTE_UNAVAILABLE`, other known codes 400, unexpected errors 500 `ERROR`.
 
@@ -91,7 +91,7 @@ created ──(funds seen on the escrow address)──▶ funded ──propose�
 
 ## 3. Endpoints
 
-### GET /health → 200
+### GET /health → 200  (e.g. `curl https://agentescrow.to/health`)
 `{"ok":true,"network":"bitcoin","arkServer":"https://arkade.computer"}`
 
 ### GET /limits[?sats=N] → 200

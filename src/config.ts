@@ -8,9 +8,9 @@ export type NetworkName = "bitcoin" | "mutinynet";
 /** One-line switch for the default network. */
 export const DEFAULT_NETWORK: NetworkName = "bitcoin";
 
-export interface NetworkPreset { arkServerUrl: string; esploraUrl: string; swapBaseUrl: string; bitcoinNetwork: "mainnet" | "signet"; isMainnet: boolean }
+export interface NetworkPreset { /** Built-in escrow server (production) for this network; none for test networks. */ defaultEscrowUrl?: string; arkServerUrl: string; esploraUrl: string; swapBaseUrl: string; bitcoinNetwork: "mainnet" | "signet"; isMainnet: boolean }
 export const NETWORKS: Record<NetworkName, NetworkPreset> = {
-  bitcoin: { arkServerUrl: "https://arkade.computer", esploraUrl: "https://mempool.space/api", swapBaseUrl: "https://api.satora.io", bitcoinNetwork: "mainnet", isMainnet: true },
+  bitcoin: { defaultEscrowUrl: "https://agentescrow.to", arkServerUrl: "https://arkade.computer", esploraUrl: "https://mempool.space/api", swapBaseUrl: "https://api.satora.io", bitcoinNetwork: "mainnet", isMainnet: true },
   mutinynet: { arkServerUrl: "https://mutinynet.arkade.sh", esploraUrl: "https://mutinynet.com/api", swapBaseUrl: "https://mutinynetswap.lendasat.com", bitcoinNetwork: "signet", isMainnet: false },
 };
 
@@ -23,7 +23,8 @@ export function normalizeNetwork(n?: string): NetworkName {
 
 export interface MarkConfig {
   network: NetworkName;
-  /** Escrow REST base URL. No default: set via `--escrow-url`, MARK_ESCROW_URL, or config. */
+  /** Escrow REST base URL. Precedence: `--escrow-url` > MARK_ESCROW_URL > config file > built-in default
+   *  (bitcoin: https://agentescrow.to; other networks: none). The built-in default is never written to the config file. */
   escrowUrl?: string;
   arkServerUrl: string;
   esploraUrl: string;
@@ -50,13 +51,13 @@ export function normalizeUrl(u: string): string {
   return x.toString().replace(/\/+$/, "");
 }
 
-/** Load config file merged over defaults; overrides: { escrowUrl } (flag) > MARK_ESCROW_URL > file. */
+/** Load config file merged over defaults; escrowUrl: flag > MARK_ESCROW_URL > file > NETWORKS[network].defaultEscrowUrl. */
 export function loadConfig(network: NetworkName, overrides: { escrowUrl?: string } = {}): MarkConfig {
   const f = configPath(network);
   if (!fs.existsSync(f)) throw new MarkError("NOT_INITIALIZED", `not initialized; run: mark init --network ${network}`);
   const d = defaultConfig(network); const j = JSON.parse(fs.readFileSync(f, "utf8"));
   const c: MarkConfig = { ...d, ...j, swapProvider: { ...d.swapProvider, ...(j.swapProvider || {}) }, limits: { maxEscrowSats: Number(j.limits?.maxEscrowSats ?? d.limits.maxEscrowSats) } };
-  const url = overrides.escrowUrl || process.env.MARK_ESCROW_URL || c.escrowUrl;
+  const url = overrides.escrowUrl || process.env.MARK_ESCROW_URL || c.escrowUrl || NETWORKS[network].defaultEscrowUrl;
   c.escrowUrl = url ? normalizeUrl(url) : undefined;
   return c;
 }

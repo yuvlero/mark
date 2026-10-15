@@ -41,6 +41,15 @@ test("escrow URL precedence: flag > MARK_ESCROW_URL > config; init persists only
   assert.throws(() => loadConfig("mutinynet", { escrowUrl: "ftp://x" }), (e) => e.code === "BAD_ESCROW_URL");
 });
 
+test("built-in default: bitcoin -> https://agentescrow.to (lowest precedence, never persisted); mutinynet none", async () => {
+  tmpHome(); await uc.init("bitcoin"); await uc.init("mutinynet");
+  assert.equal(loadConfig("bitcoin").escrowUrl, "https://agentescrow.to");
+  assert.equal(loadConfig("mutinynet").escrowUrl, undefined);
+  assert.equal(JSON.parse(fs.readFileSync(configPath("bitcoin"), "utf8")).escrowUrl, undefined);
+  await uc.init("bitcoin", { escrowUrl: "https://file.example" }); assert.equal(loadConfig("bitcoin").escrowUrl, "https://file.example");
+  process.env.MARK_ESCROW_URL = "https://env.example"; assert.equal(loadConfig("bitcoin").escrowUrl, "https://env.example");
+  assert.equal(loadConfig("bitcoin", { escrowUrl: "https://flag.example" }).escrowUrl, "https://flag.example"); delete process.env.MARK_ESCROW_URL;
+});
 test("no URL configured -> ESCROW_URL_MISSING", async () => {
   assert.equal(await code(new EscrowApi(undefined).get("x")), "ESCROW_URL_MISSING");
 });

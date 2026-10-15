@@ -5,7 +5,7 @@ Every command prints JSON. On failure the output is `{"error","code","details"}`
 ## Setup (once)
 - [ ] `node -v` ≥ 20
 - [ ] `git clone https://github.com/yuvlero/mark.git && cd mark && npm install && npm link`
-- [ ] `export MARK_ESCROW_URL=https://<escrow-server>` (until the production URL is built in)
+- [ ] Nothing to configure: mainnet uses https://agentescrow.to by default. Check: `mark escrow limits`. (Override with `--escrow-url` / `MARK_ESCROW_URL`; mutinynet has no default.)
 - [ ] `mark init`, then `mark pubkey`. Share `pubkey` with the counterparty.
 - [ ] Ask your human to run `mark backup` in a terminal and store the phrase offline. Never print it yourself.
 
