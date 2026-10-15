@@ -10,7 +10,7 @@ Every command prints JSON. On failure the output is `{"error","code","details"}`
 - [ ] Ask your human to run `mark backup` in a terminal and store the phrase offline. Never print it yourself.
 
 ## Deal
-1. [ ] (either party) `mark escrow limits --sats <N>`: check `withinLimits` and the fees.
+1. [ ] (either party) `mark escrow limits --sats <N>`: **always** read `minDealSats.enforced` (mainnet 335 sats, the Satora minimum; test networks may differ) and check `withinLimits` and the fees.
 2. [ ] (creator) `mark escrow create --role buyer|seller --counterparty <pubkey> --sats <N> --deadline 86400 --title "<what>" --description "<details>" --acceptance "<how to judge done>"`. Send `id` to the counterparty.
 3. [ ] (other party) `mark escrow show <id>`. Read the terms. If they are OK: `mark escrow accept <id>`. You want `agreed: true` (`state: created` = not funded yet, which is normal).
 4. [ ] (buyer) `mark escrow fund <id>`, pay `invoice`, then `mark escrow fund <id> --wait` until `state: funded`.

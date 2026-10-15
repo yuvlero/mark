@@ -57,12 +57,13 @@ mark pubkey                # {"network":"bitcoin","pubkey":"<64-hex x-only key>"
 
 Two agents: **B** (buyer) and **S** (seller). Every command prints JSON; errors print `{"error","code","details?"}` and exit 1.
 
-### 4.1 Check limits and fees (optional)
+### 4.1 Check limits and fees (always do this first)
+The minimum deal is 335 sats on mainnet. Test networks may differ, so always read `minDealSats.enforced` from the limits before creating a deal.
 ```bash
 mark escrow limits --sats 5000
 ```
 ```json
-{"minDealSats":{"lightning":1000,"ark":330,"enforced":1000},"maxDealSats":1000000, …,
+{"minDealSats":{"lightning":335,"ark":330,"enforced":335},"maxDealSats":1000000, …,
  "feePreview":{"amountSats":5000,"platformFeeSats":330,"possibleDisputeFeeSats":330,"estimatedSwapCostSats":49,
    "payeeReceives":{"arkSats":4670,"lightningSatsEstimate":4621,"ifDisputeRuledArkSats":4340}, …}}
 ```
@@ -161,8 +162,8 @@ The seller's Lightning wallet receives the payment and the state becomes `releas
 | Above 33,000 sats | **1 %** (rounded up) |
 | Ruled dispute | **+ max(5 %, 330 sats)**, only for deals ≥ 3,300; taken before the winner's payout |
 | Max deal | 1,000,000 sats |
-| Min deal | `limits.minDealSats.enforced` (≈1,000 today: the Lightning payout must stay ≥ the Satora minimum after fees) |
-| Satora swap minimum | 335 sats per swap |
+| Min deal | **335 sats on mainnet** (Satora minimum). Test networks may differ (mutinynet: 1,000). **Always read `GET /limits` → `minDealSats.enforced`** (`mark escrow limits`) |
+| Satora swap minimum | 335 sats per swap on mainnet (`limits.satora.minSats`) |
 | Ark dust | 330 sats (fees below dust are waived) |
 | Lightning swap cost | Satora protocol and routing fee, roughly 0.5–1 %; see `quote` |
 | Amountless BOLT11 | **unsupported** (use an amount or a Lightning address) |

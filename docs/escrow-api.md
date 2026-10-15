@@ -96,16 +96,16 @@ created ──(funds seen on the escrow address)──▶ funded ──propose�
 
 ### GET /limits[?sats=N] → 200
 ```json
-{ "network": "bitcoin", "minDealSats": {"lightning": 1000, "ark": 330, "enforced": 1000}, "maxDealSats": 1000000,
+{ "network": "bitcoin", "minDealSats": {"lightning": 335, "ark": 330, "enforced": 335}, "maxDealSats": 1000000,
   "freeBelowSats": 3300, "dustSats": 330,
   "fees": {"enabled": true, "address": "ark1…", "freeBelowSats": 3300, "flatSats": 330, "flatUntilSats": 33000, "feeBps": 100,
            "disputeFeeBps": 500, "disputeMinSats": 330, "terms": {"v": 2, …, "dustSats": 330, "address": "ark1…"}, "schedule": {…}},
-  "satora": {"minSats": 1000, "maxSats": 1000000, "fetchedAt": "…", "stale": false}, "note": "…",
+  "satora": {"minSats": 335, "maxSats": 1000000, "fetchedAt": "…", "stale": false}, "note": "…",
   "feePreview": { "amountSats": 5000, "platformFeeSats": 330, "platformFeeReason": "charged", "possibleDisputeFeeSats": 330, "disputeFeeApplies": true,
                   "estimatedSwapCostSats": 49, "payeeReceives": {"arkSats": 4670, "lightningSatsEstimate": 4621, "ifDisputeRuledArkSats": 4340},
-                  "minDealSats": 1000, "maxDealSats": 1000000, "withinLimits": true, "schedule": {…} } }
+                  "minDealSats": 335, "maxDealSats": 1000000, "withinLimits": true, "schedule": {…} } }
 ```
-`feePreview` is only present with `?sats=`. Put `fees.terms` into the termsHash you sign.
+`feePreview` is only present with `?sats=`. **Always read `minDealSats.enforced` before creating a deal**: it is 335 sats on mainnet (the Satora minimum), and test networks may differ (mutinynet: 1,000). Put `fees.terms` into the termsHash you sign.
 
 **Fee math (terms v2):**
 - Platform fee: 0 if `amount < freeBelowSats`; `flatSats` if `amount ≤ flatUntilSats`; otherwise `ceil(amount × feeBps / 10000)`.
@@ -149,7 +149,7 @@ Reading also refreshes funding: `created → funded` once the address holds `amo
 ```json
 { "escrowId": "…", "path": "release", "payee": "seller", "funded": true, "escrowSats": 5000, "payeeLegSats": 4670,
   "lightning": {"invoiceSats": 4668, "minInvoiceSats": 4574, "maxInvoiceSats": 4668, "recommendedInvoiceSats": 4621, "toleranceSats": 94,
-                "quoteType": "estimate", "estimate": true, "estimateMarginSats": 47, "protocolFeeSats": 0, "networkFeeSats": 2, "minSats": 1000, "maxSats": 1000000, "exact": false},
+                "quoteType": "estimate", "estimate": true, "estimateMarginSats": 47, "protocolFeeSats": 0, "networkFeeSats": 2, "minSats": 335, "maxSats": 1000000, "exact": false},
   "ark": {"payoutSats": 4670},
   "fees": {"terms": {…}, "platformFeeSats": 330, "disputeFeeSats": 0, "dustBumpSats": 0, "feeOutputSats": 330, "waived": false, "reason": "charged",
            "satoraProtocolFeeSats": 0, "satoraNetworkFeeSats": 2, "ifDisputeRuled"?: {…}},
@@ -249,8 +249,8 @@ Webhooks are unauthenticated. Treat them as hints and confirm with `GET /escrows
 
 | Limit | Value |
 |---|---|
-| Deal size | `minDealSats.enforced` (≈1,000) … 1,000,000 sats |
-| Satora swap | min 335 (live: `satora.minSats`), max `satora.maxSats` |
+| Deal size | `minDealSats.enforced` (mainnet 335; test networks may differ; read `GET /limits`) … 1,000,000 sats |
+| Satora swap | min 335 on mainnet (live: `satora.minSats`; test networks may differ), max `satora.maxSats` |
 | Ark dust | 330 sats |
 | Auth / evidence / message `ts` window | ±600 s |
 | Payout invoice validity | > 10 minutes left |
