@@ -21,3 +21,5 @@ export function signAuth(secret: Uint8Array, escrowId: string, action: string) {
   const ts = Math.floor(Date.now() / 1000);
   return { ts, sig: hex.encode(schnorr.sign(authMessage(escrowId, action, ts), secret)) };
 }
+/** BIP340 Schnorr over a 32-byte hash (termsHash / evidence hash). */
+export function signHash(secret: Uint8Array, hashHex: string) { return hex.encode(schnorr.sign(hex.decode(hashHex), secret)); }

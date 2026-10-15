@@ -53,8 +53,8 @@ test("create over cap -> LIMIT_EXCEEDED in core, zero HTTP calls", async () => {
 
 test("create under cap posts contract body and indexes role", async () => {
   const { c, f } = await ctx({ "POST /escrows": async (b) => [201, { ...b, id: "e1", state: "created", address: arkAddr(5), proposals: [] }] });
-  const e = await uc.create(c, { role: "seller", counterparty: OTHER, sats: 1200, deadline: "3600", hash: "ab".repeat(32) });
-  const b = f.calls[0].body;
+  const e = await uc.create(c, { role: "seller", counterparty: OTHER, sats: 1200, deadline: "3600", hash: "ab".repeat(32), terms: { title: "t", description: "d" } });
+  const b = f.calls.find((x) => x.key === "POST /escrows").body;
   assert.deepEqual([b.buyerPubkey, b.sellerPubkey, b.amountSats, b.deadline], [OTHER, c.pubkey, 1200, 3600]);
   assert.deepEqual(b.rule, { type: "hash", sha256: "ab".repeat(32) });
   assert.equal(e.id, "e1"); assert.equal(c.index.get("e1").role, "seller");
@@ -97,10 +97,10 @@ test("paysTo: exact dest+amount ok, short amount or other script rejected", () =
   assert.equal(paysTo(psbtPaying(arkAddr(8), 1200), d, 1200), false);
 });
 
-test("approve as non-payee with nothing pending -> NOTHING_TO_SIGN; payee without payout -> BAD_REQUEST", async () => {
+test("approve with no payout and nothing pending -> NOTHING_TO_SIGN (never asks a co-signer for a payout)", async () => {
   let c0; const { c } = await ctx({ "GET /escrows/e1": async () => [200, escrow(c0)] }); c0 = c;
   assert.equal(await code(uc.approve(c, "e1", { kind: "release" })), "NOTHING_TO_SIGN");
-  assert.equal(await code(uc.approve(c, "e1")), "BAD_REQUEST"); // buyer defaults to refund, needs payout
+  assert.equal(await code(uc.approve(c, "e1")), "NOTHING_TO_SIGN"); // buyer with no payout: co-sign only, never falls into refund-propose
   assert.equal(await code(uc.approve(c, "e1", { payoutArk: "notanaddr" })), "BAD_DEST");
 });
 
@@ -140,4 +140,40 @@ test("backup phrase is refused for non-interactive callers", async () => {
 test("errorJson shape", () => {
   assert.deepEqual(errorJson(new MarkError("X", "m", { a: 1 })), { error: "m", code: "X", details: { a: 1 } });
   assert.deepEqual(errorJson(new Error("boom")), { error: "boom", code: "ERROR" });
+});
+
+test("buyer co-sign: no payout arg, signs pending seller proposal and returns its payout details", async () => {
+  let c0; const dest = arkAddr(7); const { makeInvoice } = await import("./helpers.mjs");
+  const inv = makeInvoice({ sats: 1190, network: "mutinynet" }); let signed;
+  const prop = { id: "p1", kind: "release", dest, signers: ["buyer", "seller"], sigs: ["seller"], payout: { type: "invoice", invoice: inv, swapId: "sw1", sats: 1190 }, arkTx: psbtPaying(dest, 1200), checkpoints: [] };
+  const { c, f } = await ctx({
+    "GET /escrows/e1": async () => [200, escrow(c0, { proposals: [{ id: "p1", kind: "release", dest, signers: ["buyer", "seller"], sigs: ["seller"] }] })],
+    "GET /escrows/e1/proposals/p1": async () => [200, prop],
+    "POST /escrows/e1/proposals/p1/signatures": async (b) => { signed = b; return [200, { escrow: escrow(c0, { state: "released" }), proposal: { id: "p1" } }]; },
+  }); c0 = c;
+  const pend = await uc.pending(c, "e1");
+  assert.equal(pend.proposals[0].needsMySignature, true); assert.equal(pend.proposals[0].txMatchesFeeTerms, true); assert.equal(pend.proposals[0].invoiceSats, 1190);
+  assert.ok(!f.calls.some((x) => x.key.includes("/signatures")));
+  assert.equal(pend.proposals[0].feesAndOverpaySats, 10); assert.equal(pend.proposals[0].swapId, "sw1");
+  // mock PSBT has no real escrow tapscript, so the signer itself throws, but only after passing every Mark check
+  // (no BAD_REQUEST "payout required", no NOTHING_TO_SIGN, no UNSAFE_TX)
+  await assert.rejects(uc.approve(c, "e1"), (e) => /No taproot scripts signed/.test(e.message) && !e.code);
+  assert.equal(signed, undefined);
+});
+
+test("seller propose with invoice a few sats under exact: swap under-sourced within cap is accepted, beyond cap rejected", async () => {
+  const { makeInvoice } = await import("./helpers.mjs"); const dest = arkAddr(7);
+  for (const [src, want] of [[1197, "UNSAFE_TX"], [1170, "AMOUNT_MISMATCH"], [1201, "AMOUNT_MISMATCH"]]) {
+    let c0, posted = false;
+    const swap = { createPay: async () => ({ id: "sw1", fundAddress: dest, fundAmountSats: src, status: "pending" }) };
+    const { c } = await ctx({
+      "GET /escrows/e1": async () => [200, escrow(c0, { buyerPubkey: OTHER, sellerPubkey: c0.pubkey })],
+      "GET /escrows/e1/quote": async () => [200, { lightning: { invoiceSats: 1196 } }],
+      "POST /escrows/e1/proposals": async () => { posted = true; return [201, { escrow: escrow(c0, { buyerPubkey: OTHER, sellerPubkey: c0.pubkey }), proposal: { id: "p1" } }]; },
+      "GET /escrows/e1/proposals/p1": async () => [200, { id: "p1", kind: "release", dest, signers: ["buyer", "seller"], sigs: [], arkTx: psbtPaying(arkAddr(8), 1200), checkpoints: [] }],
+    }, { swapFactory: async () => swap }); c0 = c;
+    // 1194 is 2 under the exact 1196 -> accepted by validation; tx is bogus so the final sign step refuses (UNSAFE_TX) after propose
+    assert.equal(await code(uc.approve(c, "e1", { payoutInvoice: makeInvoice({ sats: 1194, network: "mutinynet" }) })), want, `src ${src}`);
+    assert.equal(posted, want === "UNSAFE_TX");
+  }
 });

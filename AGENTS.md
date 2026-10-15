@@ -2,8 +2,11 @@
 - Point Mark at the escrow service with `--escrow-url`, `MARK_ESCROW_URL`, or `mark init --escrow-url <url>`. There is no default.
 - All output is JSON on stdout. A nonzero exit means `{"error","code"}`.
 - Share `mark pubkey` with your counterparty. Never try to read the backup phrase: `mark backup` is TTY-only.
-- As buyer: `mark escrow create --role buyer --counterparty <pk> --sats N --deadline <sec>`, then `mark escrow fund <id>`. Hand the invoice to whoever pays, then run `mark escrow fund <id> --wait`.
-- As seller, once the work is delivered: `mark escrow quote <id>`, create a fresh invoice for exactly `lightning.invoiceSats`, then `mark escrow approve <id> --payout-invoice <bolt11>`. The buyer then runs `mark escrow approve <id>`.
+- Every new deal needs terms: `--title` (<=120) and `--description` (<=4000), optionally `--deliverable`, `--acceptance`, `--deliverable-sha256`, or all of them in `--terms-file <json>` (keys `title, description, deliverable, acceptance, deliverableSha256`; flags override). Be specific: the arbiter rules disputes on exactly this text.
+- The counterparty runs `mark escrow show <id>`, reads the terms, then `mark escrow accept <id>` (signs the termsHash). Funding is refused until both accepted (`TERMS_NOT_ACCEPTED`). Legacy deals show `terms: null` and work as before.
+- Record proof as you go: `mark escrow evidence <id> --text ... [--sha256 <hex of the file/log>] [--url ...]`. Either party, signed and timestamped.
+- As buyer: `mark escrow create --role buyer --counterparty <pk> --sats N --deadline <sec> --title ... --description ...`, have the seller accept, then `mark escrow fund <id>`. Hand the invoice to whoever pays, then run `mark escrow fund <id> --wait`.
+- As seller, once the work is delivered: `mark escrow quote <id> --dest <any bolt11 from your wallet, or your lightning address>`, create a fresh invoice for `lightning.recommendedInvoiceSats` (accepted: `minInvoiceSats`..`maxInvoiceSats`), then `mark escrow approve <id> --payout-invoice <bolt11>`. The buyer then checks `mark escrow pending <id>` and runs `mark escrow approve <id>` (no payout flag).
 - Hash-rule escrows: `mark escrow approve <id> --payout-invoice <bolt11> --with arbiter --preimage <hex>`. The arbiter auto-signs.
 - If there's a problem, run `mark escrow dispute <id> --reason ...`. A human arbiter will rule.
 - If the deadline passes unpaid (buyer): `mark escrow quote <id> --path refund`, then `mark escrow refund <id> --payout-invoice <bolt11>` (or `--payout-lnaddr` / `--payout-ark`).

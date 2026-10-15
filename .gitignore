@@ -1,8 +1,10 @@
 node_modules/
 dist/
 .mark/
-.test-seller/
-.env
-*.log
+.mark-*/
+*.env
+.env*
+*.password
 password
-preimage*.hex
+*.log
+.test-*/

@@ -19,9 +19,21 @@ export function networkOk(inv: string, network: NetworkName) {
   return network === "bitcoin" ? /^lnbc(?!rt)/.test(s) : /^ln(tbs|tb|sb)/.test(s);
 }
 
+/** Fee-drift tolerance: an invoice may request up to this many sats LESS than the exact payout. */
+export const invoiceTolerance = (exactSats: number) => Math.max(10, Math.ceil(exactSats * 0.02));
+/** Safety margin below the exact payout recommended for new invoices (absorbs small route-fee drift). */
+export const RECOMMENDED_MARGIN_SATS = 2;
+/** Max sats the payout swap may be under-sourced vs. the escrow (the excess VHTLC funding is overpay to the swap provider). */
+export const maxOverpaySats = (escrowSats: number) => invoiceTolerance(escrowSats) + 5;
+/** Acceptable invoice amounts for a given exact payout: [exact - tolerance, exact]. */
+export function invoiceRange(exactSats: number) {
+  const tol = invoiceTolerance(exactSats);
+  return { minInvoiceSats: Math.max(1, exactSats - tol), maxInvoiceSats: exactSats, recommendedInvoiceSats: Math.max(1, exactSats - RECOMMENDED_MARGIN_SATS), toleranceSats: tol };
+}
+
 /**
- * Throws INVOICE_EXPIRED if the invoice expires within `minRemainingSec`, AMOUNT_MISMATCH unless it requests exactly
- * `expectedSats`, BAD_INVOICE for amountless / wrong-network / undecodable invoices.
+ * Throws INVOICE_EXPIRED if the invoice expires within `minRemainingSec`, AMOUNT_MISMATCH unless it requests between
+ * `exactSats - invoiceTolerance(exactSats)` and `exactSats` (inclusive), BAD_INVOICE for amountless / wrong-network / undecodable invoices.
  */
 export function validatePayoutInvoice(inv: string, expectedSats: number, network: NetworkName, nowSec = Math.floor(Date.now() / 1000), minRemainingSec = 600) {
   if (!networkOk(inv, network)) throw new MarkError("BAD_INVOICE", `invoice is not for network ${network}`);
@@ -29,6 +41,7 @@ export function validatePayoutInvoice(inv: string, expectedSats: number, network
   if (d.msat === undefined) throw new MarkError("BAD_INVOICE", "amountless invoices are not accepted");
   if (d.msat % 1000 !== 0) throw new MarkError("AMOUNT_MISMATCH", "invoice amount must be whole sats");
   if (d.expiresAt - nowSec < minRemainingSec) throw new MarkError("INVOICE_EXPIRED", `invoice expired or expires in under ${minRemainingSec}s`, { expiresAt: new Date(d.expiresAt * 1000).toISOString() });
-  if (d.sats !== expectedSats) throw new MarkError("AMOUNT_MISMATCH", `invoice requests ${d.sats} sats; payout after fees is exactly ${expectedSats} sats (see quote)`, { invoiceSats: d.sats, expectedSats });
+  const r = invoiceRange(expectedSats);
+  if (d.sats! > r.maxInvoiceSats || d.sats! < r.minInvoiceSats) throw new MarkError("AMOUNT_MISMATCH", `invoice requests ${d.sats} sats; must be ${r.minInvoiceSats}..${r.maxInvoiceSats} sats (exact payout after fees right now is ${expectedSats}; recommended ${r.recommendedInvoiceSats})`, { invoiceSats: d.sats, expectedSats, ...r });
   return d;
 }

@@ -16,4 +16,6 @@ export function arkScript(addr: string) { return hex.encode(ArkAddress.decode(ad
 export function paysTo(b64: string, dest: string, minSats: number) {
   const s = arkScript(dest); return outputs(b64).some((o) => o.script === s && o.amount >= minSats);
 }
+/** P2A anchor (zero value) excluded: the outputs that move value. */
+export const payoutOutputs = (b64: string) => outputs(b64).filter((o) => !(o.script === "51024e73" && o.amount === 0));
 /** xonly pubkeys that have a tapscript signature on input 0. */
