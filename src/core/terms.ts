@@ -1,5 +1,5 @@
 /** Deal terms + evidence: validation, canonical JSON, hashing, BIP340 signature checks.
- *  MUST stay byte-identical with the escrow server implementation (see docs/escrow-api.md "Terms"). */
+ *  Shared with its counterpart in the other repo (Mark / escrow server), identical apart from the error class; a server-side parity test enforces it. */
 import { schnorr } from "@noble/curves/secp256k1.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { hex } from "@scure/base";

@@ -3,6 +3,7 @@
  * All validation, caps and safety checks live here.
  */
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import { signEscrowArkTx, signEscrowCheckpoints } from "@satora/swap";
 import { MarkError } from "../errors.js";
 import { NETWORKS, dataDir, ensureDir, defaultConfig, saveConfig, configPath, loadConfig, normalizeUrl, type NetworkName } from "../config.js";
@@ -16,15 +17,13 @@ import type { Escrow, Party, Payout, ProposalFull, Message, MessageList } from "
 import { assertEscrowCap } from "./limits.js";
 import type { Ctx } from "./context.js";
 import { dealStatus, arbiterPolicy } from "./status.js";
-import { createHash } from "node:crypto";
+import type { Role } from "./localIndex.js";
 
 /** Machine-readable status (shared logic: status.ts, identical to the server's). */
 export function statusOf(e: Escrow) {
   return { ...dealStatus({ state: e.state, accepted: e.terms ? { buyer: !!e.acceptances?.buyer, seller: !!e.acceptances?.seller } : null, ruling: (e.ruling as any) ?? null, arbiterMode: e.arbiterMode as string | undefined,
     proposals: (e.proposals ?? []).map((p) => ({ kind: p.kind, signers: p.signers, signed: p.sigs, submitted: !!p.submittedTxid })) }), arbiterPolicy: arbiterPolicy(e.rule as any, e.arbiterMode as string | undefined) };
 }
-import type { Role } from "./localIndex.js";
-
 export type Kind = "release" | "refund";
 export interface PayoutOpts { payoutInvoice?: string; payoutLnaddr?: string; payoutArk?: string }
 export interface TermsInput { title?: string; description?: string; deliverable?: string; acceptance?: string; deliverableSha256?: string }
@@ -197,13 +196,7 @@ export async function pending(c: Ctx, id: string) {
 export async function pendingAll(c: Ctx) {
   const ids = new Set(c.index.ids()); let listing: string | null = null;
   try {
-    let cursor: string | undefined;
-    for (let page = 0; page < 20; page++) {
-      const r = await c.api.partyList(c.pubkey, { needs: "sign", limit: 100, cursor }, (pq) => signListRequest(c.secret, "GET", pq));
-      if (r.party !== c.pubkey) throw new MarkError("ESCROW_BAD_RESPONSE", "listing is for a different key");
-      for (const it of r.escrows) { ids.add(it.id); if (!c.index.get(it.id).role) c.index.set(it.id, { role: it.role }); }
-      if (!r.nextCursor) break; cursor = r.nextCursor;
-    }
+    for (const it of await listMine(c, { needs: "sign" })) ids.add(it.id);
   } catch (x: any) { listing = `server listing unavailable (${x.code ?? "ERROR"}); showing locally known deals only`; }
   const items: any[] = []; const errors: any[] = [];
   for (const id of ids) {
@@ -352,17 +345,22 @@ export async function refundPayout(c: Ctx, id: string, to?: string) {
 }
 
 // ---------- invite check (signed listing of my deals) ----------
-/** Deals for my key: default = waiting for my accept (invites); all = every deal I'm in. Remembers them locally (inbox). */
-export async function invites(c: Ctx, o: { all?: boolean; needs?: string; state?: string } = {}) {
-  const needs = o.all ? o.needs : o.needs ?? "accept";
-  if (needs && !["accept", "fund", "sign", "any"].includes(needs)) throw new MarkError("USAGE", "--needs must be accept|fund|sign|any");
+/** Signed GET /escrows?party=<me>, all pages (max 20 x 100). Remembers each deal's role locally. */
+async function listMine(c: Ctx, q: { needs?: string; state?: string }) {
   const items: any[] = []; let cursor: string | undefined;
   for (let page = 0; page < 20; page++) {
-    const r = await c.api.partyList(c.pubkey, { needs, state: o.state, limit: 100, cursor }, (pq) => signListRequest(c.secret, "GET", pq));
+    const r = await c.api.partyList(c.pubkey, { ...q, limit: 100, cursor }, (pq) => signListRequest(c.secret, "GET", pq));
     if (r.party !== c.pubkey) throw new MarkError("ESCROW_BAD_RESPONSE", "listing is for a different key");
     for (const it of r.escrows) { if (!c.index.get(it.id).role) c.index.set(it.id, { role: it.role }); items.push(it); }
     if (!r.nextCursor) break; cursor = r.nextCursor;
   }
+  return items;
+}
+/** Deals for my key: default = waiting for my accept (invites); all = every deal I'm in. Remembers them locally (inbox). */
+export async function invites(c: Ctx, o: { all?: boolean; needs?: string; state?: string } = {}) {
+  const needs = o.all ? o.needs : o.needs ?? "accept";
+  if (needs && !["accept", "fund", "sign", "any"].includes(needs)) throw new MarkError("USAGE", "--needs must be accept|fund|sign|any");
+  const items = await listMine(c, { needs, state: o.state });
   return { pubkey: c.pubkey, filter: o.all ? (needs ?? "all") : needs, count: items.length, escrows: items,
     next: items.length ? (needs === "accept" ? "review each: mark escrow show <id>, then mark escrow accept <id> (the server's nextStep is a hint; Mark re-verifies terms on show/accept)" : "follow each item's nextStep") : (o.all ? "no deals for this key yet" : "no invites waiting for your accept") };
 }

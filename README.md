@@ -235,11 +235,11 @@ Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL`.
 | `mark backup` | Show the backup phrase (interactive terminal only) |
 | `mark mcp` | Run as an MCP stdio server |
 | `mark escrow create --role buyer\|seller --counterparty <pubkey> --sats N --deadline <sec\|ISO> --title T --description D [--deliverable] [--acceptance] [--deliverable-sha256 <hex>] [--terms-file f.json] [--hash <sha256>] [--arbiter auto\|manual] [--webhook URL]` | Create and sign terms |
-| `mark escrow show <id>` | Terms, fee terms, acceptances (verified), evidence, next step |
-| `mark escrow accept <id>` | Verify `termsHash` locally and sign it |
+| `mark escrow show <id>` | Terms, fee terms, acceptances (verified), evidence (with `deliverableMatch`), `awaiting`, `action_required_for`, `arbiterPolicy`, next step |
+| `mark escrow accept <id>` | Verify `termsHash` locally and sign it (prints `awaiting`, `action_required_for`) |
 | `mark escrow limits [--sats N]` | Limits, fee schedule, fee preview |
 | `mark escrow fund <id> [--wait] [--timeout sec]` | Lightning invoice to fund; `--wait` claims into the escrow |
-| `mark escrow status <id>` | Full deal state, proposals, events |
+| `mark escrow status <id>` | Full deal state, proposals, events, local swap status, `awaiting`, `action_required_for`, `arbiterPolicy` |
 | `mark escrow quote <id> [--path release\|refund] [--dest <lnaddr\|bolt11>]` | Payout amounts; exact with `--dest` |
 | `mark escrow pending [<id>]` | Pending payout proposals and payout details. **No id:** across all my deals (local + server listing `needs=sign`), with `awaiting`, `needsMySignature` and the co-sign command |
 | `mark escrow approve <id> [--payout-invoice B \| --payout-lnaddr A \| --payout-ark X] [--kind release\|refund] [--with counterparty\|arbiter] [--preimage hex]` | Payee: propose and sign. Co-signer: sign (no payout flags) |
@@ -248,9 +248,9 @@ Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL`.
 | `mark escrow dispute <id> [--reason "..."]` | Open a dispute (the operator rules) |
 | `mark escrow evidence <id> [--file <path>] [--text "..."] [--sha256 hex] [--url https://…]` | Signed evidence note (`--note` is an alias). `--file` hashes locally and matches `deliverableSha256` |
 | `mark escrow messages <id> [--since N]` | Read the thread |
-| `mark escrow message <id> --text "..." [--kind k] [--reply-to <msgId>]` | Post to the thread |
+| `mark escrow message <id> --text "..." [--kind question\|dispute\|evidence\|info] [--reply-to <msgId>]` | Post to the thread |
 | `mark escrow inbox` | Unread messages across your deals |
-| `mark escrow invites [--all] [--needs accept\|fund\|sign\|any] [--state s]` | Deals for my key: waiting for my accept (default) or all; signed request, no id needed |
+| `mark escrow invites [--all] [--needs accept\|fund\|sign\|any] [--state s]` | Deals for my key: waiting for my accept (default), or all / filtered. Each item has `needs`, `awaiting`, `action_required_for`, `nextStep`. Signed request, no id needed |
 
 Usage mistakes return `{"code":"USAGE","error":"…","details":{"usage":…}}` before any network call.
 
@@ -271,7 +271,7 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 | `escrow_refund` (id, payout…, with?) | `escrow refund` |
 | `escrow_refund_payout` (id, to?) | `escrow refund-payout` |
 | `escrow_dispute` (id, reason?) | `escrow dispute` |
-| `escrow_evidence` (id, text, sha256?, url?) | `escrow evidence` |
+| `escrow_evidence` (id, text?, note?, sha256?, file?, url?) | `escrow evidence` |
 | `escrow_messages` (id, since?), `escrow_message` (id, text, kind?, replyTo?), `escrow_inbox` | messages |
 | `escrow_invites` (all?, needs?, state?) | `escrow invites` |
 

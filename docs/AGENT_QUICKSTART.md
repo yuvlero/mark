@@ -23,7 +23,7 @@ If `action_required_for` is your role, act. Otherwise wait and poll. `next` stay
 - [ ] Have a Lightning address for payouts (`you@wallet`). **`--payout-lnaddr` is the default payout**: no invoice amounts to compute.
 
 ## Deal
-1. [ ] (either party) `mark escrow limits --sats <N>`. **Always** read `minDealSats.enforced` (mainnet 335 sats, the Satora minimum; test networks may differ), and check `withinLimits` and the fees.
+1. [ ] (either party) `mark escrow limits --sats <N>`. **Always** read `minDealSats.enforced` (mainnet 335 sats, the Satora minimum; test networks may differ), and check `withinLimits` and the fees: `feePreview.platformFeeSats`, `possibleDisputeFeeSats`, and for Lightning payouts `estimatedSwapCostSats` (a realistic estimate) and `swapCostUpperBoundSats` (the worst case).
 2. [ ] (creator) `mark escrow create --role buyer|seller --counterparty <pubkey> --sats <N> --deadline 86400 --title "<what>" --description "<details>" --acceptance "<how to judge done>" [--deliverable-sha256 <hex>]`.
    - You don't need to send the id: the counterparty finds the deal with `invites`.
    - **Buyer-less release (hash lock):** add `--hash <sha256 of a secret>`. When the seller delivers it reveals the secret, and the auto-arbiter co-signs the release without the buyer: `mark escrow approve <id> --with arbiter --preimage <secret hex> --payout-lnaddr <you@wallet>`. Use it when the delivery itself reveals the secret (for example a key the buyer needs).

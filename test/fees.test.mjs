@@ -1,7 +1,6 @@
 // Mark-side fee safety: exact output verification against the deal's PUBLISHED fee terms, fee terms in termsHash, limits, AMOUNT_TOO_SMALL.
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs"; import path from "node:path"; import { fileURLToPath } from "node:url";
 import { Transaction } from "@scure/btc-signer"; import { base64 } from "@scure/base"; import { ArkAddress } from "@arkade-os/sdk";
 import * as uc from "../dist/src/core/usecases.js";
 import { openCtx } from "../dist/src/core/context.js";
@@ -89,11 +88,7 @@ test("fee math matches the server table", () => {
   const r = (a, d) => computeFees(TERMS, a, a, d).feeOutputSats;
   assert.deepEqual([r(999, true), r(1000, false), r(1001, true), r(10000, false), r(10000, true), r(100000, false), r(100000, true)], [0, 0, 0, 0, 600, 1000, 6000]);
 });
-test("fees.ts is byte-identical with the server copy (when checked out side by side)", (t) => {
-  const here = path.dirname(fileURLToPath(import.meta.url)); const srv = path.resolve(here, "../../escrow-server/src/lib/fees.ts");
-  if (!fs.existsSync(srv)) return t.skip("escrow-server not checked out next to mark");
-  assert.equal(fs.readFileSync(path.resolve(here, "../src/core/fees.ts"), "utf8"), fs.readFileSync(srv, "utf8"));
-});
+// Byte-parity of the shared modules (fees, status, terms) is enforced by a test in the escrow server repo, which reads this repo's copies.
 
 // ---- v2 schedule (current): free < 3300, flat 330 to 33000, then 1%; ruled dispute + max(5%, 330) ----
 test("v2 fee math matches the server README table", () => {
