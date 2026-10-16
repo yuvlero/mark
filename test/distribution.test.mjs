@@ -21,7 +21,7 @@ test("smithery.yaml runs the published package's mcp subcommand", () => {
 });
 test("examples exist with a README each and no secrets", () => {
   for (const d of ["skill", "langchain-js", "langchain-python", "crewai"]) assert.ok(fs.existsSync(new URL(`../examples/${d}/README.md`, import.meta.url)), d);
-  assert.match(rd("../examples/skill/SKILL.md"), /^---\nname: mark-escrow\ndescription: /);
+  assert.equal(fs.existsSync(new URL("../examples/skill/SKILL.md", import.meta.url)), false, "one skill file only (skills/agent-escrow)");
 });
 import { nodeTooOld, nodeVersionMessage, MIN_NODE } from "../dist/src/nodeVersion.js";
 test("Node version gate: 20.19+ runs, older exits with a clear message", () => {
@@ -36,3 +36,14 @@ test("MCP server version comes from package.json (no hard-coded version in src/m
   const src = rd("../src/mcp.ts"); assert.match(src, /new McpServer\(\{ name: "mark", version: MARK_VERSION \}\)/); assert.doesNotMatch(src, /version: "\d+\.\d+\.\d+"/);
 });
 test("CHANGELOG has an entry for the current version", () => { assert.match(rd("../CHANGELOG.md"), new RegExp(`^## \\[${pkg.version.replace(/\./g, "\\.")}\\] - \\d{4}-\\d{2}-\\d{2}$`, "m")); });
+
+test("agent skill: frontmatter, ships in the package, uses only real CLI commands and MCP tools", async () => {
+  const sk = rd("../skills/agent-escrow/SKILL.md");
+  assert.match(sk, /^---\nname: agent-escrow\ndescription: [^\n]+\n---\n/); assert.ok(pkg.files.includes("skills"));
+  const { ESCROW_USAGE } = await import("../dist/src/cliArgs.js");
+  for (const [, sub] of sk.matchAll(/`mark escrow ([a-z-]+)/g)) assert.ok(sub in ESCROW_USAGE, `unknown subcommand ${sub}`);
+  for (const [, c] of sk.matchAll(/`mark ([a-z]+)[ `]/g)) assert.ok(["escrow", "pubkey", "reputation", "backup", "init", "mcp"].includes(c), `unknown command ${c}`);
+  const tools = [...rd("../src/mcp.ts").matchAll(/s\.tool\("([a-z_]+)"/g)].map((m) => m[1]);
+  for (const [, t] of sk.matchAll(/`(escrow_[a-z_]+)`/g)) assert.ok(tools.includes(t), `unknown MCP tool ${t}`);
+  for (const s of ["npx -y @yuvlero/mark mcp", "3,300", "335 to 1,000,000", "max(5%, 330 sats)", "no timeout auto-release", "not a guarantee", "~/.mark"]) assert.ok(sk.includes(s), s);
+});

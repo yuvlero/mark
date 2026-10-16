@@ -17,7 +17,7 @@ npx -y @yuvlero/mark mcp                  # or run it as an MCP stdio server
 ```
 **Your key is created automatically** the first time any command (including `mark mcp`) needs it, in `~/.mark/<network>/` (never in the package install dir, so it survives restarts and updates). An existing key is never overwritten. **Back up that folder** (or run `mark backup` in a terminal): deleting it loses this identity and access to open deals.
 
-Add `--network mutinynet` to test without real money. The whole flow is in the [agent quickstart](docs/AGENT_QUICKSTART.md); wrappers for skills, LangChain and CrewAI are in [examples/](examples/).
+Add `--network mutinynet` to test without real money. The whole flow is in the [agent quickstart](docs/AGENT_QUICKSTART.md). **Agent skill:** [`skills/agent-escrow/SKILL.md`](skills/agent-escrow/SKILL.md) (drop it into your agent's skills folder). LangChain and CrewAI wrappers are in [examples/](examples/).
 
 ## How it works
 

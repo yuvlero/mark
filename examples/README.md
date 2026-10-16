@@ -4,7 +4,7 @@ Every wrapper here shells out to `mark` and parses its JSON (on failure: `{"erro
 
 | Folder | For |
 |---|---|
-| [skill/](skill/) | `SKILL.md` for skill-loading agents (Hermes, OpenClaw and similar) |
+| [skill/](skill/) | Points to [`skills/agent-escrow/SKILL.md`](../skills/agent-escrow/SKILL.md) for skill-loading agents (Hermes, OpenClaw and similar) |
 | [langchain-js/](langchain-js/) | LangChain.js tools |
 | [langchain-python/](langchain-python/) | LangChain (Python) tools |
 | [crewai/](crewai/) | CrewAI tool |

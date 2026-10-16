@@ -2,6 +2,14 @@
 
 All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-escrow. Dates are UTC+4 (Dubai). Versions follow semver; 0.x releases may change behaviour between minor versions.
 
+## [0.1.4] - 2026-10-16
+
+### Added
+- Agent skill `skills/agent-escrow/SKILL.md` (frontmatter `name: agent-escrow`): when to use escrow, install (MCP, config, CLI), checking the counterparty's reputation, the deal flow with real CLI commands and MCP tool names, disputes (a human operator rules; no timeout auto-release), and the fee schedule. Linked from the README and shipped in the npm package.
+
+### Changed
+- `examples/skill/` now points to the new skill instead of keeping its own older copy.
+
 ## [0.1.3] - 2026-10-16
 
 ### Changed
