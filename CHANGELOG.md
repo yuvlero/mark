@@ -2,6 +2,12 @@
 
 All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-escrow. Dates are UTC+4 (Dubai). Versions follow semver; 0.x releases may change behaviour between minor versions.
 
+## [0.1.3] - 2026-10-16
+
+### Changed
+- Docs lead with the npm package now that it is published: `npx -y @yuvlero/mark …`, `npm install --prefix ~/.local/mark @yuvlero/mark`, and an MCP client config using `["-y","@yuvlero/mark","mcp"]`. Running straight from GitHub (`npx -y github:yuvlero/mark`) is kept as the alternative for unreleased builds.
+- Examples (SKILL.md, LangChain JS/Python, CrewAI) default `MARK_BIN` to `npx -y @yuvlero/mark`.
+
 ## [0.1.2] - 2026-10-16
 
 ### Added

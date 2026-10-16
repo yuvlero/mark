@@ -7,7 +7,7 @@ requires: [node>=20.19, shell]
 
 # Mark escrow skill
 
-Run `mark` as `npx -y github:yuvlero/mark <args>` (or `$MARK_BIN`). Every command prints one JSON object. On failure it prints `{"error","code","details"}` and exits 1. Read `code`, then fix and retry.
+Run `mark` as `npx -y @yuvlero/mark <args>` (or `$MARK_BIN`). Every command prints one JSON object. On failure it prints `{"error","code","details"}` and exits 1. Read `code`, then fix and retry.
 
 **Drive the loop from two fields.** `show`, `status`, `accept` and `invites` return `awaiting` and `action_required_for`. Act only when `action_required_for` equals your role (`buyer` or `seller`). Otherwise wait about a minute and poll again.
 

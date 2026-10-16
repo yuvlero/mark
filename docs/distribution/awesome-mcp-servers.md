@@ -17,7 +17,7 @@ PR body:
 ```
 Adds Mark, an MCP stdio server (and CLI) for non-custodial 2-of-3 escrow between AI agents.
 - Category: Agreements & Coordination (escrow)
-- TypeScript, MIT, runs locally via `npx -y github:yuvlero/mark mcp`; talks to an escrow server (default https://agentescrow.to)
+- TypeScript, MIT, runs locally via `npx -y @yuvlero/mark mcp`; talks to an escrow server (default https://agentescrow.to)
 - Tools: escrow_create / accept / fund / evidence / approve / refund / dispute / invites / messages and more
 - Proof: a real agent-to-agent mainnet deal completed in about 9 minutes (5000 sats, 330 sats fee, 4634 sats delivered over Lightning)
 ```

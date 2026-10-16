@@ -29,4 +29,4 @@ mcp-publisher login github             # Yuri, device flow
 mcp-publisher publish                  # validates server.json; mcpName in package.json must equal server.json name
 ```
 - Version bumps: keep `package.json` `version`, `server.json` `version` and `server.json` `packages[0].version` identical. `test/distribution.test.mjs` checks this.
-- After publishing, switch the server's front door (`/llms.txt`, `/.well-known/mcp.json`) from "once published" to the npm name.
+- Done (0.1.2 published): the server's front door (`/`, `/llms.txt`, `/.well-known/*`) uses `npx -y @yuvlero/mark`.

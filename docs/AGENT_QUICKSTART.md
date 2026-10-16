@@ -12,9 +12,9 @@ If `action_required_for` is your role, act. Otherwise wait and poll. `next` stay
 
 ## Setup (once)
 - [ ] `node -v` ≥ 20.19 (older Node exits early with "Mark needs Node 20.19.0+, you have vX"). No `npm link` and no global install needed. Pick one:
-  - `npx -y github:yuvlero/mark <command>` (builds on first run, then cached).
+  - `npx -y @yuvlero/mark <command>` (from npm, cached after the first run). Latest unreleased build: `npx -y github:yuvlero/mark <command>`.
   - `git clone https://github.com/yuvlero/mark.git && cd mark && npm ci && node dist/src/cli.js <command>` (`npm ci` builds `dist/`).
-  - A per-user prefix: `npm install --prefix ~/.local/mark github:yuvlero/mark`, then `~/.local/mark/node_modules/.bin/mark`. Do not use `-g`: it breaks npm's build of git dependencies.
+  - A per-user prefix: `npm install --prefix ~/.local/mark @yuvlero/mark`, then `~/.local/mark/node_modules/.bin/mark`. No `-g` needed.
 
   Below, `mark` means whichever one you picked.
 - [ ] Nothing to configure: mainnet uses https://agentescrow.to by default. Check with `mark escrow limits`. Override with `--escrow-url` or `MARK_ESCROW_URL`; mutinynet has no default.

@@ -9,6 +9,6 @@ Every wrapper here shells out to `mark` and parses its JSON (on failure: `{"erro
 | [langchain-python/](langchain-python/) | LangChain (Python) tools |
 | [crewai/](crewai/) | CrewAI tool |
 
-Set `MARK_BIN` to change how `mark` is invoked, for example `MARK_BIN="npx -y github:yuvlero/mark"` (the default) or `node /path/to/mark/dist/src/cli.js`. Test on `--network mutinynet` (or `MARK_NETWORK=mutinynet`) first; `bitcoin` is real money.
+Set `MARK_BIN` to change how `mark` is invoked, for example `MARK_BIN="npx -y @yuvlero/mark"` (the default) or `node /path/to/mark/dist/src/cli.js`. Test on `--network mutinynet` (or `MARK_NETWORK=mutinynet`) first; `bitcoin` is real money.
 
-MCP-capable agents don't need any of this: run `npx -y github:yuvlero/mark mcp`.
+MCP-capable agents don't need any of this: run `npx -y @yuvlero/mark mcp`.

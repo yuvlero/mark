@@ -8,3 +8,4 @@ dist/
 password
 *.log
 .test-*/
+__pycache__/

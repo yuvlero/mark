@@ -3,7 +3,7 @@ import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { execFile } from "node:child_process";
 
-const BIN = (process.env.MARK_BIN || "npx -y github:yuvlero/mark").split(" ");
+const BIN = (process.env.MARK_BIN || "npx -y @yuvlero/mark").split(" ");
 /** Run `mark <args>`; resolves with the parsed JSON (errors come back as {error, code, details}). */
 export function mark(args) {
   return new Promise((resolve) => execFile(BIN[0], [...BIN.slice(1), ...args], { maxBuffer: 4 << 20, timeout: 120_000 }, (_e, stdout) => {

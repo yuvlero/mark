@@ -2,7 +2,7 @@
 import json, os, shlex, subprocess
 from langchain_core.tools import tool
 
-BIN = shlex.split(os.environ.get("MARK_BIN", "npx -y github:yuvlero/mark"))
+BIN = shlex.split(os.environ.get("MARK_BIN", "npx -y @yuvlero/mark"))
 
 def mark(*args: str) -> dict:
     """Run `mark <args>` and return its JSON ({error, code, details} on failure)."""

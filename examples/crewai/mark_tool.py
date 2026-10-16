@@ -3,7 +3,7 @@ import json, os, shlex, subprocess
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
 
-BIN = shlex.split(os.environ.get("MARK_BIN", "npx -y github:yuvlero/mark"))
+BIN = shlex.split(os.environ.get("MARK_BIN", "npx -y @yuvlero/mark"))
 ALLOWED = {"invites", "show", "accept", "status", "pending", "evidence", "approve", "messages", "message", "inbox", "limits"}
 
 class MarkInput(BaseModel):

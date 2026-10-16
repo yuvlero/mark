@@ -7,13 +7,13 @@
 ## Quickstart
 
 ```bash
-npx -y github:yuvlero/mark init                 # optional: any command auto-creates the key on first run
-npx -y github:yuvlero/mark pubkey               # share with the counterparty
-npx -y github:yuvlero/mark escrow limits --sats 5000
-npx -y github:yuvlero/mark escrow create --role buyer --counterparty <pubkey> --sats 5000 --deadline 86400 \
+npx -y @yuvlero/mark init                 # optional: any command auto-creates the key on first run
+npx -y @yuvlero/mark pubkey               # share with the counterparty
+npx -y @yuvlero/mark escrow limits --sats 5000
+npx -y @yuvlero/mark escrow create --role buyer --counterparty <pubkey> --sats 5000 --deadline 86400 \
   --title "Logo design" --description "3 concepts" --acceptance "SVG included"
 # counterparty: escrow invites -> show <id> -> accept <id>; buyer: fund <id>; seller: evidence --file, approve --payout-lnaddr
-npx -y github:yuvlero/mark mcp                  # or run it as an MCP stdio server
+npx -y @yuvlero/mark mcp                  # or run it as an MCP stdio server
 ```
 **Your key is created automatically** the first time any command (including `mark mcp`) needs it, in `~/.mark/<network>/` (never in the package install dir, so it survives restarts and updates). An existing key is never overwritten. **Back up that folder** (or run `mark backup` in a terminal): deleting it loses this identity and access to open deals.
 
@@ -37,8 +37,9 @@ Requirements: **Node.js ≥ 20.19** (22 LTS recommended) and npm. Mark is tested
 
 Pick one:
 ```bash
-# a) npx, nothing kept on PATH (builds on first run, then cached). Once published to npm: npx -y @yuvlero/mark
-npx -y github:yuvlero/mark escrow limits
+# a) npx from npm, nothing kept on PATH (cached after the first run)
+npx -y @yuvlero/mark escrow limits
+#    latest unreleased build straight from GitHub instead (builds on first run): npx -y github:yuvlero/mark escrow limits
 
 # b) a local clone
 git clone https://github.com/yuvlero/mark.git && cd mark
@@ -46,8 +47,8 @@ npm ci                       # installs and builds dist/ (prepare step)
 node dist/src/cli.js         # prints usage; alias mark="node $PWD/dist/src/cli.js"
 npm test                     # optional; offline, mocks the server
 
-# c) a per-user prefix (no sudo, no -g: npm's -g breaks git-dep builds)
-npm install --prefix ~/.local/mark github:yuvlero/mark && ~/.local/mark/node_modules/.bin/mark
+# c) a per-user prefix (no sudo, no -g)
+npm install --prefix ~/.local/mark @yuvlero/mark && ~/.local/mark/node_modules/.bin/mark
 ```
 Below, `mark` means any of these.
 
@@ -285,7 +286,7 @@ Usage mistakes return `{"code":"USAGE","error":"…","details":{"usage":…}}` b
 
 ## 8. Agent tools (MCP)
 
-Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example client config: `{"command":"mark","args":["mcp"]}` (mainnet uses https://agentescrow.to; add `"env":{"MARK_ESCROW_URL":"https://…"}` to override).
+Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example client config: `{"mcpServers":{"mark":{"command":"npx","args":["-y","@yuvlero/mark","mcp"]}}}` (or `{"command":"mark","args":["mcp"]}` if installed) (mainnet uses https://agentescrow.to; add `"env":{"MARK_ESCROW_URL":"https://…"}` to override).
 
 | Tool | Equivalent |
 |---|---|
