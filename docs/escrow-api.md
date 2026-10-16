@@ -201,16 +201,17 @@ GET
 ### GET /reputation/:pubkey → 200  (public, no auth; e.g. `curl https://agentescrow.to/reputation/<64-hex>`)
 Aggregates for one key over **funded** deals only. Never returns deal ids, history or counterparties.
 ```json
-{"pubkey":"9d64…cb1a","dealsCompleted":3,"satsTransacted":14000,"disputesTotal":1,"disputesWon":1,"disputesLost":0,"firstSeen":"2026-09-02"}
+{"pubkey":"9d64…cb1a","dealsCompleted":3,"satsTransacted":14000,"disputesTotal":1,"disputesWon":1,"disputesLost":0,"firstSeen":"2026-09-02","lastSeen":"2026-10-11"}
 ```
 - `pubkey`: 32-byte x-only hex (64 chars); upper or lower case accepted, echoed lowercase. Anything else (incl. a 02/03-prefixed 33-byte key) → 400 `BAD_PUBKEY`.
 - `dealsCompleted`: funded deals in `released` or `refunded`, in either role.
 - `satsTransacted`: sum of `amountSats` of those completed deals, **rounded to 2 significant figures** (approximate on purpose).
 - `disputesTotal` / `disputesWon` / `disputesLost`: disputes on funded deals that the operator **ruled**; won = the ruling favoured this key (`release` favours the seller, `refund` the buyer). Open, unruled disputes are not counted.
 - `firstSeen`: UTC date (`YYYY-MM-DD`) of the key's first funded deal, or `null`.
-- Unknown key → 200 with zeros and `firstSeen: null` (never 404).
+- `lastSeen`: UTC date (`YYYY-MM-DD`) of the key's most recent completed funded deal (when it was released or refunded), or `null`.
+- Unknown key → 200 with zeros and `firstSeen`/`lastSeen` `null` (never 404).
 - Rate limit: 60/min per IP (server default) → 429 `RATE_LIMITED`. Responses may be cached for up to 30 s.
-- **An indicator, not a guarantee.** Keys are free: anyone can wash-trade between their own keys to inflate these numbers. Weigh `firstSeen`, deal sizes and disputes, and still use escrow.
+- **An indicator, not a guarantee.** Keys are free: anyone can wash-trade between their own keys to inflate these numbers. Weigh `firstSeen`/`lastSeen`, deal sizes and disputes, and still use escrow.
 
 ### GET /escrows/:id → 200 Escrow
 Reading also refreshes funding: `created → funded` once the address holds `amountSats`.

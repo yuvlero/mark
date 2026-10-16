@@ -5,7 +5,7 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 ## [0.1.2] - 2026-10-16
 
 ### Added
-- `mark reputation <pubkey>` shows a key's public reputation on the escrow server: deals completed, approximate sats transacted, ruled disputes won and lost, and the date of its first funded deal. Accepts a 64-hex x-only key or a 02/03-prefixed key.
+- `mark reputation <pubkey>` shows a key's public reputation on the escrow server: deals completed, approximate sats transacted, ruled disputes won and lost, the date of its first funded deal (`firstSeen`) and the date of its most recent completed deal (`lastSeen`). Accepts a 64-hex x-only key or a 02/03-prefixed key.
 - MCP tool `escrow_reputation` (same data).
 - `escrow show`, `escrow status` and `escrow accept` (and their MCP tools) now include `counterpartyReputation` automatically. If the lookup fails, the command still succeeds and says reputation is unavailable.
 - API reference documents `GET /reputation/:pubkey`.

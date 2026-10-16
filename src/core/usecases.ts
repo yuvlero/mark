@@ -120,7 +120,7 @@ export async function reputation(c: Ctx, pubkey: string) {
   const r = await c.api.reputation(pk);
   return { ...pickReputation(r), isMe: pk === c.pubkey, note: REPUTATION_NOTE };
 }
-const pickReputation = (r: Reputation): Reputation => ({ pubkey: r.pubkey, dealsCompleted: r.dealsCompleted, satsTransacted: r.satsTransacted, disputesTotal: r.disputesTotal, disputesWon: r.disputesWon, disputesLost: r.disputesLost, firstSeen: r.firstSeen ?? null });
+const pickReputation = (r: Reputation): Reputation => ({ pubkey: r.pubkey, dealsCompleted: r.dealsCompleted, satsTransacted: r.satsTransacted, disputesTotal: r.disputesTotal, disputesWon: r.disputesWon, disputesLost: r.disputesLost, firstSeen: r.firstSeen ?? null, lastSeen: r.lastSeen ?? null });
 /** Best effort, short timeout: never fails the calling command. */
 export async function counterpartyReputation(c: Ctx, e: Pick<Escrow, "buyerPubkey" | "sellerPubkey">, role: Role) {
   const pk = role === "buyer" ? e.sellerPubkey : e.buyerPubkey;

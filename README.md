@@ -156,9 +156,9 @@ mark escrow accept <id>
 
 **Counterparty reputation.** `show`, `status` and `accept` also print `counterpartyReputation`, fetched from the server's public `GET /reputation/<pubkey>`:
 ```json
-"counterpartyReputation":{"available":true,"role":"buyer","pubkey":"feee…29ba","dealsCompleted":4,"satsTransacted":21000,"disputesTotal":1,"disputesWon":0,"disputesLost":1,"firstSeen":"2026-09-02","note":"… An indicator, not a guarantee …"}
+"counterpartyReputation":{"available":true,"role":"buyer","pubkey":"feee…29ba","dealsCompleted":4,"satsTransacted":21000,"disputesTotal":1,"disputesWon":0,"disputesLost":1,"firstSeen":"2026-09-02","lastSeen":"2026-10-11","note":"… An indicator, not a guarantee …"}
 ```
-If the lookup fails (old server, network), the command still succeeds and prints `{"available":false,"pubkey":…,"note":"reputation unavailable (…)"}`. Check any key yourself with `mark reputation <pubkey>`. The numbers cover **funded** deals on this server only; `satsTransacted` is approximate (2 significant figures); disputes count only ruled ones (won = the ruling favoured that key). **It is an indicator, not a guarantee:** keys are free, so anyone can wash-trade between their own keys to build a record. A brand-new key with zeros is normal. Keep deal sizes proportionate and still rely on the escrow.
+If the lookup fails (old server, network), the command still succeeds and prints `{"available":false,"pubkey":…,"note":"reputation unavailable (…)"}`. Check any key yourself with `mark reputation <pubkey>`. The numbers cover **funded** deals on this server only; `satsTransacted` is approximate (2 significant figures); disputes count only ruled ones (won = the ruling favoured that key); `firstSeen` is the first funded deal and `lastSeen` the latest released/refunded one (UTC dates). **It is an indicator, not a guarantee:** keys are free, so anyone can wash-trade between their own keys to build a record. A brand-new key with zeros is normal. Keep deal sizes proportionate and still rely on the escrow.
 
 ### 4.4 Buyer funds over Lightning
 ```bash
@@ -260,7 +260,7 @@ Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL`.
 |---|---|
 | `mark init [--escrow-url URL]` | Create the key and config for the network |
 | `mark pubkey` | Your x-only pubkey |
-| `mark reputation <pubkey>` | Public reputation of a key on this server: `dealsCompleted`, `satsTransacted` (≈, 2 significant figures), `disputesTotal/Won/Lost` (ruled), `firstSeen`. Funded deals only; an indicator, not a guarantee (wash trading is possible). Accepts 64-hex x-only or 02/03-prefixed keys |
+| `mark reputation <pubkey>` | Public reputation of a key on this server: `dealsCompleted`, `satsTransacted` (≈, 2 significant figures), `disputesTotal/Won/Lost` (ruled), `firstSeen`, `lastSeen` (latest completed deal). Funded deals only; an indicator, not a guarantee (wash trading is possible). Accepts 64-hex x-only or 02/03-prefixed keys |
 | `mark backup` | Show the backup phrase (interactive terminal only) |
 | `mark mcp` | Run as an MCP stdio server |
 | `mark escrow create --role buyer\|seller --counterparty <pubkey> --sats N --deadline <sec\|ISO> --title T --description D [--deliverable] [--acceptance] [--deliverable-sha256 <hex>] [--terms-file f.json] [--hash <sha256>] [--arbiter auto\|manual] [--webhook URL]` | Create and sign terms |

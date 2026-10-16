@@ -6,7 +6,7 @@ import { openCtx } from "../dist/src/core/context.js";
 import { tmpHome, mockFetch } from "./mockApi.mjs";
 
 const CP = "ab".repeat(32);
-const REP = (pk) => ({ pubkey: pk, dealsCompleted: 4, satsTransacted: 21000, disputesTotal: 1, disputesWon: 0, disputesLost: 1, firstSeen: "2026-09-02" });
+const REP = (pk) => ({ pubkey: pk, dealsCompleted: 4, satsTransacted: 21000, disputesTotal: 1, disputesWon: 0, disputesLost: 1, firstSeen: "2026-09-02", lastSeen: "2026-10-11" });
 async function ctx(routes) { tmpHome(); await uc.init("mutinynet"); const f = mockFetch(routes); const c = await openCtx("mutinynet", { escrowUrl: "http://escrow.test", fetchImpl: f, swapFactory: async () => { throw new Error("no"); } }); return { c, f }; }
 const deal = (me) => ({ id: "e1", state: "created", amountSats: 5000, deadline: "2026-12-01T00:00:00Z", address: "x", buyerPubkey: me, sellerPubkey: CP, arbiterPubkey: "cd".repeat(32), proposals: [], terms: null, termsHash: null, events: [] });
 
@@ -14,7 +14,8 @@ test("reputation: normalizes key (upper case, 02/03 prefix), GETs /reputation/<l
   const { c, f } = await ctx({ [`GET /reputation/${CP}`]: () => [200, { ...REP(CP), extra: "drop me" }] });
   const r = await uc.reputation(c, "02" + CP.toUpperCase());
   assert.equal(f.calls[0].key, `GET /reputation/${CP}`);
-  assert.deepEqual(Object.keys(r), ["pubkey", "dealsCompleted", "satsTransacted", "disputesTotal", "disputesWon", "disputesLost", "firstSeen", "isMe", "note"]);
+  assert.deepEqual(Object.keys(r), ["pubkey", "dealsCompleted", "satsTransacted", "disputesTotal", "disputesWon", "disputesLost", "firstSeen", "lastSeen", "isMe", "note"]);
+  assert.equal(r.lastSeen, "2026-10-11");
   assert.equal(r.dealsCompleted, 4); assert.equal(r.isMe, false); assert.match(r.note, /not a guarantee/); assert.match(r.note, /wash-trade/);
 });
 test("reputation: bad pubkey rejected locally (no request); server errors propagate for the explicit command", async () => {
@@ -28,7 +29,7 @@ test("show / status / accept include the counterparty's reputation", async () =>
   const f = mockFetch({ "GET /escrows/e1": () => [200, deal(me)], [`GET /reputation/${CP}`]: () => [200, REP(CP)] });
   const c = await openCtx("mutinynet", { escrowUrl: "http://escrow.test", fetchImpl: f, swapFactory: async () => { throw new Error("no"); } });
   for (const r of [await uc.show(c, "e1"), await uc.status(c, "e1")]) {
-    assert.equal(r.counterpartyReputation.available, true); assert.equal(r.counterpartyReputation.role, "seller"); assert.equal(r.counterpartyReputation.pubkey, CP); assert.equal(r.counterpartyReputation.dealsCompleted, 4);
+    assert.equal(r.counterpartyReputation.available, true); assert.equal(r.counterpartyReputation.role, "seller"); assert.equal(r.counterpartyReputation.pubkey, CP); assert.equal(r.counterpartyReputation.dealsCompleted, 4); assert.equal(r.counterpartyReputation.lastSeen, "2026-10-11");
   }
   assert.ok(!f.calls.some((x) => x.key.includes(`/reputation/${me}`)), "looks up the counterparty, not me");
 });

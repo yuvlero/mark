@@ -40,7 +40,7 @@ export interface PartyItem { id: string; role: "buyer" | "seller"; counterpartyP
 export interface PartyList { party: string; count: number; escrows: PartyItem[]; nextCursor: string | null }
 
 /** GET /reputation/:pubkey: public aggregates over funded deals (an indicator, not a guarantee). */
-export interface Reputation { pubkey: string; dealsCompleted: number; satsTransacted: number; disputesTotal: number; disputesWon: number; disputesLost: number; firstSeen: string | null }
+export interface Reputation { pubkey: string; dealsCompleted: number; satsTransacted: number; disputesTotal: number; disputesWon: number; disputesLost: number; firstSeen: string | null; lastSeen: string | null }
 
 export class EscrowApi {
   constructor(private baseUrl: string | undefined, private fetchImpl: typeof fetch = fetch, private timeoutMs = 180_000) {}
