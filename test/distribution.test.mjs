@@ -30,3 +30,9 @@ test("Node version gate: 20.19+ runs, older exits with a clear message", () => {
   for (const v of ["18.20.4", "v20.18.3", "20.0.0"]) assert.equal(nodeTooOld(v), true, v);
   assert.equal(nodeVersionMessage("v18.20.4"), "Mark needs Node 20.19.0+, you have v18.20.4. Install a newer Node (e.g. nvm install 22) and retry.");
 });
+
+test("MCP server version comes from package.json (no hard-coded version in src/mcp.ts)", async () => {
+  const { MARK_VERSION } = await import("../dist/src/version.js"); assert.equal(MARK_VERSION, pkg.version);
+  const src = rd("../src/mcp.ts"); assert.match(src, /new McpServer\(\{ name: "mark", version: MARK_VERSION \}\)/); assert.doesNotMatch(src, /version: "\d+\.\d+\.\d+"/);
+});
+test("CHANGELOG has an entry for the current version", () => { assert.match(rd("../CHANGELOG.md"), new RegExp(`^## \\[${pkg.version.replace(/\./g, "\\.")}\\] - \\d{4}-\\d{2}-\\d{2}$`, "m")); });

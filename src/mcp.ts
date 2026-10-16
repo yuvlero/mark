@@ -6,6 +6,7 @@ import { errorJson, toJson } from "./errors.js";
 import type { NetworkName } from "./config.js";
 import { openCtx, type CtxOptions } from "./core/context.js";
 import * as uc from "./core/usecases.js";
+import { MARK_VERSION } from "./version.js";
 
 const text = (o: unknown) => ({ content: [{ type: "text" as const, text: toJson(o, 0) }] });
 const wrap = (fn: () => Promise<unknown>) => fn().then(text).catch((e) => ({ ...text(errorJson(e)), isError: true }));
@@ -13,7 +14,7 @@ const payout = { payoutInvoice: z.string().optional(), payoutLnaddr: z.string().
 
 export async function runMcp(network: NetworkName, o: CtxOptions = {}) {
   const c = await openCtx(network, o);
-  const s = new McpServer({ name: "mark", version: "0.1.0" });
+  const s = new McpServer({ name: "mark", version: MARK_VERSION });
   s.tool("pubkey", "This agent's escrow public key (x-only hex)", {}, () => wrap(async () => uc.pubkey(c)));
   s.tool("escrow_create", "Create a 2-of-3 escrow (cap enforced)", { role: z.enum(["buyer", "seller"]), counterparty: z.string(), sats: z.number().int().positive(), deadline: z.string().describe("seconds from now or ISO time"), hash: z.string().optional(), arbiterMode: z.enum(["auto", "manual"]).optional(),
       terms: z.object({ title: z.string().max(120), description: z.string().max(4000), deliverable: z.string().max(1000).optional(), acceptance: z.string().max(2000).optional(), deliverableSha256: z.string().optional() }).describe("What is being traded; the arbiter rules disputes on this. Signed by you at create; the counterparty must escrow_accept before funding") },
