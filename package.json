@@ -1,6 +1,6 @@
 {
   "name": "@yuvlero/mark",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Mark: non-custodial 2-of-3 Bitcoin/Lightning escrow for AI agents. CLI + MCP stdio server for agent-escrow (Arkade, Lightning in/out).",
   "mcpName": "io.github.yuvlero/mark",
   "type": "module",

@@ -1,12 +1,12 @@
 {
   "name": "@yuvlero/mark",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
       "name": "@yuvlero/mark",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "license": "MIT",
       "dependencies": {
         "@arkade-os/sdk": "^0.4.79",

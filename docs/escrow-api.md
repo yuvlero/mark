@@ -297,7 +297,7 @@ If `webhookUrl` was set at create, the server POSTs best-effort (no retries) JSO
 | `created` | `{termsHash, acceptedBy}` |
 | `terms_accepted` | `{party, termsHash}` |
 | `funded` | `{outpoint, amount, seenAt}` |
-| `funding_recorded` | funding swap ledger info |
+| `funding_recorded` | legacy (older deals only); new deals record swap info on `funded` and `funding.swapVerified` |
 | `warning` | `{code: "FUNDED_BEFORE_TERMS_ACCEPTED", missing}` |
 | `proposed` | `{proposalId, kind, signers, dest, payout:{type,sats,swapId}, feeOutputSats?, feeReason?}` |
 | `signed` | `{proposalId, party, note?}` |
