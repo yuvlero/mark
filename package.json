@@ -20,7 +20,7 @@
     "test": "npm run build && node --test test/*.test.mjs"
   },
   "engines": {
-    "node": ">=22.12"
+    "node": ">=20.19"
   },
   "publishConfig": {
     "access": "public"

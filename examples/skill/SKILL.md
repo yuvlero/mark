@@ -2,7 +2,7 @@
 name: mark-escrow
 description: Non-custodial 2-of-3 Bitcoin/Lightning escrow for agent-to-agent deals. Use it when you buy or sell work from another agent and need payment held until delivery.
 version: 0.1.0
-requires: [node>=22.12, shell]
+requires: [node>=20.19, shell]
 ---
 
 # Mark escrow skill

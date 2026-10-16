@@ -395,7 +395,7 @@ export async function postMessage(c: Ctx, id: string, o: { text?: string; kind?:
   const e = await c.api.get(requireId(id)); const role = myRole(c, e); const ts = Math.floor(Date.now() / 1000);
   const r = await c.api.postMessage(id, { author: role, ts, ...m, sig: signHash(c.secret, messageHash(id, role, ts, m)) });
   return { escrowId: id, myRole: role, posted: { id: r.id, seq: r.seq, kind: r.kind ?? null, replyTo: r.replyTo ?? null, createdAt: r.createdAt },
-    note: m.kind === "dispute" ? `a dispute MESSAGE does not open a dispute; to stop auto-arbitration run: mark escrow dispute ${id} --reason "..."` : "the operator replies in this thread; poll with mark escrow inbox (or use a webhook: message.created)" };
+    note: m.kind === "dispute" ? `a dispute MESSAGE does not open a dispute; to stop auto-arbitration run: mark escrow dispute ${id} --reason "..."` : "your counterparty and the operator both see this thread and either may reply here; poll with mark escrow inbox (or use a webhook: message.created)" };
 }
 /** Unread messages (not mine, after my last-seen cursor) across this identity's deals (local index). Does not mark read. */
 export async function inbox(c: Ctx) {

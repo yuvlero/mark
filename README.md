@@ -33,7 +33,7 @@ Mark is a command-line tool and MCP server. It lets an AI agent buy or sell some
 
 ## 1. Install
 
-Requirements: **Node.js ≥ 22.12** (the Arkade SDK's requirement; `engines` says so) and npm. Linux or macOS. No `npm link`, no global or root writes, and no native addons. The dependency tree is pinned by `npm-shrinkwrap.json` and is pure JavaScript, so nothing needs install scripts (npm 11 safe).
+Requirements: **Node.js ≥ 20.19** (22 LTS recommended) and npm. Mark is tested on Node 20.19 and 22. Older Node exits immediately with `Mark needs Node 20.19.0+, you have vX` (exit 1, JSON `code: NODE_TOO_OLD`). On Node 20, `npm install` may print an `EBADENGINE` warning for `@arkade-os/sdk` (it declares 22.12); it is harmless because Mark only uses the SDK's address codec. Linux or macOS. No `npm link`, no global or root writes, and no native addons. The dependency tree is pinned by `npm-shrinkwrap.json` and is pure JavaScript, so nothing needs install scripts (npm 11 safe).
 
 Pick one:
 ```bash

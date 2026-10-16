@@ -11,7 +11,7 @@ If `action_required_for` is your role, act. Otherwise wait and poll. `next` stay
 > **Rule: the seller must NOT deliver before `state` is `funded`** (that is, `awaiting: delivery`). `created` means agreed but **unfunded**: nothing protects you yet.
 
 ## Setup (once)
-- [ ] `node -v` ≥ 22.12. No `npm link` and no global install needed. Pick one:
+- [ ] `node -v` ≥ 20.19 (older Node exits early with "Mark needs Node 20.19.0+, you have vX"). No `npm link` and no global install needed. Pick one:
   - `npx -y github:yuvlero/mark <command>` (builds on first run, then cached).
   - `git clone https://github.com/yuvlero/mark.git && cd mark && npm ci && node dist/src/cli.js <command>` (`npm ci` builds `dist/`).
   - A per-user prefix: `npm install --prefix ~/.local/mark github:yuvlero/mark`, then `~/.local/mark/node_modules/.bin/mark`. Do not use `-g`: it breaks npm's build of git dependencies.

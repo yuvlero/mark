@@ -51,5 +51,5 @@ test("CLI: invites usage + flags; MCP tool registered", () => {
   assert.equal(checkEscrowArgs("invites", undefined, parseArgs(["--needs", "x"]).f).code, "USAGE");
   assert.match(ESCROW_USAGE.invites, /mark escrow invites \[--all\]/);
   const src = fs.readFileSync(new URL("../dist/src/mcp.js", import.meta.url), "utf8"); assert.match(src, /"escrow_invites"/);
-  assert.match(fs.readFileSync(new URL("../dist/src/cli.js", import.meta.url), "utf8"), /case "invites"/);
+  assert.match(fs.readFileSync(new URL("../dist/src/main.js", import.meta.url), "utf8"), /case "invites"/);
 });
