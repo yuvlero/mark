@@ -13,7 +13,7 @@ import { normalizeTerms, termsDocument, termsHash, verifyTermsSig, normalizeEvid
 import { arkScript, payoutOutputs } from "../crypto/psbt.js";
 import { computeFees, expectedOutputs, outputsMatch, feeSchedule, feePreview, type FeeCalc } from "./fees.js";
 import { validatePayoutInvoice, decodeInvoice, maxOverpaySats, isAmountless } from "../lightning/invoice.js";
-import type { Escrow, Party, Payout, ProposalFull, Message, MessageList } from "../api/escrowApi.js";
+import type { Escrow, Party, Payout, ProposalFull, Message, MessageList, Reputation } from "../api/escrowApi.js";
 import { assertEscrowCap } from "./limits.js";
 import type { Ctx } from "./context.js";
 import { dealStatus, arbiterPolicy } from "./status.js";
@@ -106,13 +106,36 @@ function verifyDealTerms(c: Ctx, e: Escrow) {
 }
 
 /** Human/agent-readable deal: what it is for, who accepted, evidence. Read-only. */
+// ---------- counterparty reputation (GET /reputation/:pubkey) ----------
+export const REPUTATION_NOTE = "Aggregates over funded deals on this escrow server only. An indicator, not a guarantee: anyone can wash-trade between their own keys. satsTransacted is approximate (2 significant figures); disputes count only ruled ones.";
+/** Accepts 64-hex x-only (any case) or a 02/03-prefixed 33-byte key; returns lowercase x-only. */
+export function normalizePubkey(k: unknown): string {
+  const h = String(k ?? "").trim().toLowerCase().replace(/^0[23](?=[0-9a-f]{64}$)/, "");
+  if (!/^[0-9a-f]{64}$/.test(h)) throw new MarkError("BAD_PUBKEY", "pubkey must be 32-byte x-only hex (64 chars) or a 33-byte compressed key");
+  return h;
+}
+/** `mark reputation <pubkey>` / MCP escrow_reputation. */
+export async function reputation(c: Ctx, pubkey: string) {
+  const pk = normalizePubkey(pubkey);
+  const r = await c.api.reputation(pk);
+  return { ...pickReputation(r), isMe: pk === c.pubkey, note: REPUTATION_NOTE };
+}
+const pickReputation = (r: Reputation): Reputation => ({ pubkey: r.pubkey, dealsCompleted: r.dealsCompleted, satsTransacted: r.satsTransacted, disputesTotal: r.disputesTotal, disputesWon: r.disputesWon, disputesLost: r.disputesLost, firstSeen: r.firstSeen ?? null });
+/** Best effort, short timeout: never fails the calling command. */
+export async function counterpartyReputation(c: Ctx, e: Pick<Escrow, "buyerPubkey" | "sellerPubkey">, role: Role) {
+  const pk = role === "buyer" ? e.sellerPubkey : e.buyerPubkey;
+  try { return { available: true as const, role: role === "buyer" ? "seller" : "buyer", ...pickReputation(await c.api.reputation(pk, 5000)), note: REPUTATION_NOTE }; }
+  catch (x: any) { return { available: false as const, pubkey: pk, note: `reputation unavailable (${x?.code ?? "ERROR"}); the deal itself is unaffected` }; }
+}
+
 export async function show(c: Ctx, id: string) {
   const e = await c.api.get(requireId(id)); const role = myRole(c, e); const v = verifyDealTerms(c, e);
   const evidence = (e.evidence ?? []).map((x) => ({ ...x, signatureValid: verifyTermsSig(x.party === "buyer" ? e.buyerPubkey : e.sellerPubkey, evidenceHash(e.id, x.party, x.ts, { text: x.text, ...(x.sha256 ? { sha256: x.sha256 } : {}), ...(x.url ? { url: x.url } : {}) }), x.sig) }));
   const iAccepted = v.accepted ? (v.accepted as any)[role].accepted : null;
   const want = e.terms?.deliverableSha256;
   for (const x of evidence as any[]) if (want && x.sha256) x.deliverableMatch = x.sha256 === want;
-  return { id: e.id, state: e.state, myRole: role, ...statusOf(e), amountSats: e.amountSats, deadline: e.deadline, ...v, feeTerms: e.fees ?? null, feeSummary: feeSummary(e.fees ?? null, e.amountSats), evidence,
+  const rep = await counterpartyReputation(c, e, role);
+  return { id: e.id, state: e.state, myRole: role, counterpartyReputation: rep, ...statusOf(e), amountSats: e.amountSats, deadline: e.deadline, ...v, feeTerms: e.fees ?? null, feeSummary: feeSummary(e.fees ?? null, e.amountSats), evidence,
     dispute: e.dispute ?? null, ruling: e.ruling ?? null,
     next: v.legacy ? "legacy deal (no terms)" : !v.hashVerified ? "TERMS HASH MISMATCH: do not accept or fund" : !iAccepted ? `review the terms, then: mark escrow accept ${e.id}` : !v.agreed ? "waiting for the counterparty to accept" : e.state === "created" ? (role === "buyer" ? `both accepted; fund with: mark escrow fund ${e.id}` : "both accepted; waiting for the buyer to fund") : undefined };
 }
@@ -126,7 +149,8 @@ export async function accept(c: Ctx, id: string) {
   const r = (v.accepted as any)[role].signatureValid ? e : await c.api.accept(id, { party: role, termsHash: v.termsHash!, sig: signHash(c.secret, v.termsHash!) });
   const after = verifyDealTerms(c, r);
   const missing = (["buyer", "seller"] as const).filter((p) => !(after.accepted as any)[p].accepted);
-  return { escrowId: id, myRole: role, accepted: true, alreadyAccepted: r === e, state: r.state, ...statusOf(r),
+  const rep = await counterpartyReputation(c, r, role);
+  return { escrowId: id, myRole: role, counterpartyReputation: rep, accepted: true, alreadyAccepted: r === e, state: r.state, ...statusOf(r),
     status: !after.agreed ? `you accepted; waiting for the ${missing.join(" and ") || "counterparty"}` : r.state === "created" ? "both parties accepted the terms; not funded yet (state 'created' means waiting for the buyer's funding)" : `both accepted; escrow is ${r.state}`, terms: after.terms, termsHash: after.termsHash, acceptedBy: after.accepted, agreed: after.agreed,
     next: !after.agreed ? `waiting for the ${missing.join(" and ") || "counterparty"} to accept: mark escrow accept ${id}` : r.state === "created" ? (role === "buyer" ? `both accepted; fund with: mark escrow fund ${id}` : "both accepted; waiting for the buyer to fund") : undefined };
 }
@@ -216,7 +240,7 @@ export async function pendingAll(c: Ctx) {
 
 export async function status(c: Ctx, id: string) {
   const e = await c.api.get(requireId(id)); const l = c.index.get(id);
-  const r: any = { ...e, ...statusOf(e), myRole: myRole(c, e) };
+  const role = myRole(c, e); const r: any = { ...e, ...statusOf(e), myRole: role, counterpartyReputation: await counterpartyReputation(c, e, role) };
   if (l.fundSwap || l.payoutSwap) {
     const s = await c.swaps();
     const look = (sid: string) => s.get(sid).catch((x: any) => ({ id: sid, error: x.message }));

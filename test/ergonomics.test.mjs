@@ -46,11 +46,13 @@ test("evidence: --note works as --text (CLI maps it); empty text refused before 
 });
 test("accept prints the resulting state + next step", async () => {
   const T = { title: "t", description: "d" }; let d;
-  const { c } = await ctx({ "GET /escrows/e1": async () => [200, d], "POST /escrows/e1/accept": async (b) => { d.acceptances.buyer = { sig: b.sig, at: "now" }; return [200, d]; } });
+  const { c } = await ctx({ "GET /escrows/e1": async () => [200, d], "POST /escrows/e1/accept": async (b) => { d.acceptances.buyer = { sig: b.sig, at: "now" }; return [200, d]; },
+    [`GET /reputation/${other.p}`]: async () => [200, { pubkey: other.p, dealsCompleted: 2, satsTransacted: 7000, disputesTotal: 0, disputesWon: 0, disputesLost: 0, firstSeen: "2026-10-01" }] });
   d = { id: "e1", state: "created", amountSats: 1200, buyerPubkey: c.pubkey, sellerPubkey: other.p, arbiterPubkey: "22".repeat(32), proposals: [], terms: T,
     termsHash: termsHash(termsDocument(normalizeTerms(T), { network: "mutinynet", amountSats: 1200, buyerPubkey: c.pubkey, sellerPubkey: other.p })) };
   d.acceptances = { seller: { sig: hex.encode(schnorr.sign(hex.decode(d.termsHash), other.s)), at: "t0" } };
   const r = await uc.accept(c, "e1"); assert.equal(r.state, "created"); assert.equal(r.agreed, true); assert.equal(r.alreadyAccepted, false); assert.match(r.next, /mark escrow fund e1/); assert.match(r.status, /both parties accepted.*not funded yet/);
+  assert.equal(r.counterpartyReputation.available, true); assert.equal(r.counterpartyReputation.role, "seller"); assert.equal(r.counterpartyReputation.dealsCompleted, 2); // accepting an invite shows who I deal with
   const again = await uc.accept(c, "e1"); assert.equal(again.alreadyAccepted, true); assert.equal(again.state, "created");
 });
 test("limits --sats: fee preview (platform, possible dispute, swap estimate, min/max) + schedule examples", async () => {

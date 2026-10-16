@@ -19,13 +19,17 @@ function termsFrom(f: Record<string, string | boolean>): uc.TermsInput {
   for (const [flag, k] of [["title", "title"], ["description", "description"], ["deliverable", "deliverable"], ["acceptance", "acceptance"], ["deliverable-sha256", "deliverableSha256"]]) if (s(f[flag]) !== undefined) t[k] = s(f[flag]);
   return t;
 }
-const USAGE = "mark <init|pubkey|backup|mcp|escrow create|show|accept|evidence|fund|limits|quote|status|pending|approve|dispute|refund|refund-payout|messages|message|inbox|invites> [--network bitcoin|mutinynet] [--escrow-url URL]";
+const USAGE = "mark <init|pubkey|reputation <pubkey>|backup|mcp|escrow create|show|accept|evidence|fund|limits|quote|status|pending|approve|dispute|refund|refund-payout|messages|message|inbox|invites> [--network bitcoin|mutinynet] [--escrow-url URL]";
 async function main(): Promise<"keep" | void> {
   const { pos, f } = parseArgs(process.argv.slice(2));
   const network = normalizeNetwork(s(f.network)); const escrowUrl = s(f["escrow-url"]);
   switch (pos[0]) {
     case "init": return void out(await uc.init(network, { escrowUrl }));
     case "pubkey": return void out(uc.pubkey(await openCtx(network, { escrowUrl })));
+    case "reputation": {
+      if (!pos[1]) throw new MarkError("USAGE", "mark reputation <pubkey>  (64-hex x-only key; public aggregates from the escrow server)");
+      return void out(await uc.reputation(await openCtx(network, { escrowUrl }), String(pos[1])));
+    }
     case "backup": {
       const phrase = uc.revealBackupPhrase(network, !!process.stdout.isTTY && !!process.stdin.isTTY && !f.json);
       const rl = readline.createInterface({ input: process.stdin, output: process.stdout });

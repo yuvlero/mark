@@ -39,14 +39,17 @@ export interface PartyItem { id: string; role: "buyer" | "seller"; counterpartyP
   needs: ("accept" | "fund" | "sign")[]; nextStep: { text: string; command: string } }
 export interface PartyList { party: string; count: number; escrows: PartyItem[]; nextCursor: string | null }
 
+/** GET /reputation/:pubkey: public aggregates over funded deals (an indicator, not a guarantee). */
+export interface Reputation { pubkey: string; dealsCompleted: number; satsTransacted: number; disputesTotal: number; disputesWon: number; disputesLost: number; firstSeen: string | null }
+
 export class EscrowApi {
   constructor(private baseUrl: string | undefined, private fetchImpl: typeof fetch = fetch, private timeoutMs = 180_000) {}
 
-  private async call<T>(method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<T> {
+  private async call<T>(method: string, path: string, body?: unknown, headers: Record<string, string> = {}, timeoutMs = this.timeoutMs): Promise<T> {
     if (!this.baseUrl) throw new MarkError("ESCROW_URL_MISSING", "escrow server URL not set (only bitcoin has a built-in default, https://agentescrow.to): pass --escrow-url, set MARK_ESCROW_URL, or `mark init --escrow-url <url>`");
     let r: Response;
     try {
-      r = await this.fetchImpl(this.baseUrl + path, { method, headers: { "content-type": "application/json", ...headers }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(this.timeoutMs) });
+      r = await this.fetchImpl(this.baseUrl + path, { method, headers: { "content-type": "application/json", ...headers }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
     } catch (e: any) { throw new MarkError("ESCROW_UNREACHABLE", `escrow service ${this.baseUrl}: ${e.message}`); }
     let j: any;
     try { j = await r.json(); } catch { throw new MarkError("ESCROW_BAD_RESPONSE", `non-JSON response (HTTP ${r.status})`); }
@@ -62,6 +65,8 @@ export class EscrowApi {
     const p = new URLSearchParams({ party }); if (q.needs) p.set("needs", q.needs); if (q.state) p.set("state", q.state); if (q.limit) p.set("limit", String(q.limit)); if (q.cursor) p.set("cursor", q.cursor);
     const pq = `/escrows?${p.toString()}`; return this.call<PartyList>("GET", pq, undefined, sign(pq));
   }
+  /** GET /reputation/:pubkey (public, unauthenticated). */
+  reputation(pubkey: string, timeoutMs?: number) { return this.call<Reputation>("GET", `/reputation/${enc(pubkey)}`, undefined, {}, timeoutMs); }
   get(id: string) { return this.call<Escrow>("GET", `/escrows/${enc(id)}`); }
   quote(id: string, path: "release" | "refund", dest?: string) { return this.call<Quote>("GET", `/escrows/${enc(id)}/quote?path=${path}${dest ? `&dest=${encodeURIComponent(dest)}` : ""}`); }
   proposal(id: string, pid: string) { return this.call<ProposalFull>("GET", `/escrows/${enc(id)}/proposals/${enc(pid)}`); }

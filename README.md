@@ -154,6 +154,12 @@ mark escrow accept <id>
 ```
 `state: "created"` after accept is correct: it means "agreed, not funded".
 
+**Counterparty reputation.** `show`, `status` and `accept` also print `counterpartyReputation`, fetched from the server's public `GET /reputation/<pubkey>`:
+```json
+"counterpartyReputation":{"available":true,"role":"buyer","pubkey":"feee…29ba","dealsCompleted":4,"satsTransacted":21000,"disputesTotal":1,"disputesWon":0,"disputesLost":1,"firstSeen":"2026-09-02","note":"… An indicator, not a guarantee …"}
+```
+If the lookup fails (old server, network), the command still succeeds and prints `{"available":false,"pubkey":…,"note":"reputation unavailable (…)"}`. Check any key yourself with `mark reputation <pubkey>`. The numbers cover **funded** deals on this server only; `satsTransacted` is approximate (2 significant figures); disputes count only ruled ones (won = the ruling favoured that key). **It is an indicator, not a guarantee:** keys are free, so anyone can wash-trade between their own keys to build a record. A brand-new key with zeros is normal. Keep deal sizes proportionate and still rely on the escrow.
+
 ### 4.4 Buyer funds over Lightning
 ```bash
 mark escrow fund <id>
@@ -254,10 +260,11 @@ Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL`.
 |---|---|
 | `mark init [--escrow-url URL]` | Create the key and config for the network |
 | `mark pubkey` | Your x-only pubkey |
+| `mark reputation <pubkey>` | Public reputation of a key on this server: `dealsCompleted`, `satsTransacted` (≈, 2 significant figures), `disputesTotal/Won/Lost` (ruled), `firstSeen`. Funded deals only; an indicator, not a guarantee (wash trading is possible). Accepts 64-hex x-only or 02/03-prefixed keys |
 | `mark backup` | Show the backup phrase (interactive terminal only) |
 | `mark mcp` | Run as an MCP stdio server |
 | `mark escrow create --role buyer\|seller --counterparty <pubkey> --sats N --deadline <sec\|ISO> --title T --description D [--deliverable] [--acceptance] [--deliverable-sha256 <hex>] [--terms-file f.json] [--hash <sha256>] [--arbiter auto\|manual] [--webhook URL]` | Create and sign terms |
-| `mark escrow show <id>` | Terms, fee terms, acceptances (verified), evidence (with `deliverableMatch`), `awaiting`, `action_required_for`, `arbiterPolicy`, next step |
+| `mark escrow show <id>` | Terms, fee terms, acceptances (verified), evidence (with `deliverableMatch`), `awaiting`, `action_required_for`, `arbiterPolicy`, `counterpartyReputation`, next step |
 | `mark escrow accept <id>` | Verify `termsHash` locally and sign it (prints `awaiting`, `action_required_for`) |
 | `mark escrow limits [--sats N]` | Limits, fee schedule, fee preview |
 | `mark escrow fund <id> [--wait] [--timeout sec]` | Lightning invoice to fund; `--wait` claims into the escrow |
@@ -284,7 +291,8 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 |---|---|
 | `pubkey` | `mark pubkey` |
 | `escrow_create` (role, counterparty, sats, deadline, terms{…}, hash?, arbiterMode?, webhookUrl?) | `escrow create` |
-| `escrow_show`, `escrow_accept`, `escrow_status` | same names |
+| `escrow_show`, `escrow_accept`, `escrow_status` | same names (each includes `counterpartyReputation`, best effort) |
+| `escrow_reputation` (pubkey) | `reputation <pubkey>` |
 | `escrow_pending` (id? — omit for all my deals) | `escrow pending [<id>]` |
 | `escrow_limits` (sats?) | `escrow limits` |
 | `escrow_fund` (id, wait?) | `escrow fund` |

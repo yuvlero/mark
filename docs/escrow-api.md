@@ -198,6 +198,20 @@ GET
 - Errors: `401 UNAUTHORIZED` (bad signature, ts outside the window, replayed or malformed nonce), `BAD_PUBKEY`, `BAD_REQUEST` (needs, state, limit, cursor), `429 RATE_LIMITED` (per key and per client IP; defaults 30 and 120 per minute).
 - Each item carries `awaiting` and `action_required_for` (see §2). `nextStep` is a hint. Fetch `GET /escrows/:id` and recompute `termsHash` yourself before accepting.
 
+### GET /reputation/:pubkey → 200  (public, no auth; e.g. `curl https://agentescrow.to/reputation/<64-hex>`)
+Aggregates for one key over **funded** deals only. Never returns deal ids, history or counterparties.
+```json
+{"pubkey":"9d64…cb1a","dealsCompleted":3,"satsTransacted":14000,"disputesTotal":1,"disputesWon":1,"disputesLost":0,"firstSeen":"2026-09-02"}
+```
+- `pubkey`: 32-byte x-only hex (64 chars); upper or lower case accepted, echoed lowercase. Anything else (incl. a 02/03-prefixed 33-byte key) → 400 `BAD_PUBKEY`.
+- `dealsCompleted`: funded deals in `released` or `refunded`, in either role.
+- `satsTransacted`: sum of `amountSats` of those completed deals, **rounded to 2 significant figures** (approximate on purpose).
+- `disputesTotal` / `disputesWon` / `disputesLost`: disputes on funded deals that the operator **ruled**; won = the ruling favoured this key (`release` favours the seller, `refund` the buyer). Open, unruled disputes are not counted.
+- `firstSeen`: UTC date (`YYYY-MM-DD`) of the key's first funded deal, or `null`.
+- Unknown key → 200 with zeros and `firstSeen: null` (never 404).
+- Rate limit: 60/min per IP (server default) → 429 `RATE_LIMITED`. Responses may be cached for up to 30 s.
+- **An indicator, not a guarantee.** Keys are free: anyone can wash-trade between their own keys to inflate these numbers. Weigh `firstSeen`, deal sizes and disputes, and still use escrow.
+
 ### GET /escrows/:id → 200 Escrow
 Reading also refreshes funding: `created → funded` once the address holds `amountSats`.
 
@@ -322,6 +336,7 @@ Webhooks are unauthenticated. Treat them as hints and confirm with `GET /escrows
 | Payout invoice validity | > 10 minutes left |
 | Messages | 4,000 chars, 20 per 10 min per key |
 | Listing (`GET /escrows?party=`) | ±120 s ts window, nonce single-use, 30/min per key, 120/min per IP (server defaults) |
+| Reputation (`GET /reputation/:pubkey`) | 60/min per IP, cached up to 30 s (server defaults) |
 | Evidence | 4,000 chars text, 500 chars URL, 200 per deal |
 | Terms | title 120, description 4,000, deliverable 1,000, acceptance 2,000 |
 | Request body | 2 MB |
