@@ -42,7 +42,7 @@ test("agent skill: frontmatter, ships in the package, uses only real CLI command
   assert.match(sk, /^---\nname: agent-escrow\ndescription: [^\n]+\n---\n/); assert.ok(pkg.files.includes("skills"));
   const { ESCROW_USAGE } = await import("../dist/src/cliArgs.js");
   for (const [, sub] of sk.matchAll(/`mark escrow ([a-z-]+)/g)) assert.ok(sub in ESCROW_USAGE, `unknown subcommand ${sub}`);
-  for (const [, c] of sk.matchAll(/`mark ([a-z]+)[ `]/g)) assert.ok(["escrow", "pubkey", "reputation", "backup", "init", "mcp"].includes(c), `unknown command ${c}`);
+  for (const [, c] of sk.matchAll(/`mark ([a-z]+)[ `]/g)) assert.ok(["escrow", "pubkey", "reputation", "backup", "init", "mcp", "demo"].includes(c), `unknown command ${c}`);
   const tools = [...rd("../src/mcp.ts").matchAll(/s\.tool\("([a-z_]+)"/g)].map((m) => m[1]);
   for (const [, t] of sk.matchAll(/`(escrow_[a-z_]+)`/g)) assert.ok(tools.includes(t), `unknown MCP tool ${t}`);
   for (const s of ["npx -y @yuvlero/mark mcp", "3,300", "335 to 1,000,000", "max(5%, 330 sats)", "no timeout auto-release", "not a guarantee", "~/.mark"]) assert.ok(sk.includes(s), s);

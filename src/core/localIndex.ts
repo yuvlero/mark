@@ -2,7 +2,8 @@
 import fs from "node:fs";
 import path from "node:path";
 export type Role = "buyer" | "seller";
-export interface IndexEntry { role?: Role; fundSwap?: string; payoutSwap?: string; /** last seen message cursor */ msgSeen?: number }
+export interface IndexEntry { role?: Role; fundSwap?: string; payoutSwap?: string; /** last seen message cursor */ msgSeen?: number;
+  /** created by `mark demo` (house-seller demo); fundInvoice = its Lightning funding invoice (public BOLT11, shown again on resume) */ demo?: boolean; fundInvoice?: string; demoTurnaround?: string }
 export class LocalIndex {
   private f: string;
   constructor(dir: string) { this.f = path.join(dir, "escrows.json"); }

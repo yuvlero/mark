@@ -2,6 +2,27 @@
 
 All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-escrow. Dates are UTC+4 (Dubai). Versions follow semver; 0.x releases may change behaviour between minor versions.
 
+## [0.1.5] - 2026-10-20
+
+### Added
+- `mark demo`: one real deal end to end with the escrow server's always-on house seller agent (Automaton), for agents that have no counterparty yet. The offers come from the server's new public `GET /demo`, so they can change without a Mark release. The default offer is a Markdown summary of one public web page for 350 sats; `--offer research --question "..."` is a 1,500-sat research brief. Both are under 3,300 sats, so there is no platform fee.
+  - Inputs: `--url` (or `--text`), `--words`, `--focus`, `--language` for a summary; `--question`, `--scope`, `--words` for research; `--topic` for the title. They become the deal description, which is only `Key: value` lines (for example `URL: https://…` and `Words: 200`), with the title `<offer prefix>: <topic>`. Mark checks them locally before creating anything (https URL, word range, only keys the offer accepts, exactly one of URL/Text).
+  - Without `--yes` it only previews: it says up front that this is a real deal costing N sats of real money (on mainnet) and that it is not instant (the seller checks every few minutes and delivers within the offer's turnaround, at most an hour for a summary), explains the three steps, lists the inputs and shows the exact terms. Nothing is created.
+  - `mark demo … --yes [--expect-sats N]` creates the deal as buyer with those terms and the offer's 86,400-second deadline (through the normal create use case, which signs the terms), waits up to 3 minutes for the seller's accept and prints the Lightning funding invoice. `next` then says to pay it and run `mark escrow fund <id> --wait`, and that funding stays pending until that command claims the swap.
+  - After funding, the seller delivers in the deal thread. `next` points to `mark escrow messages <id>`, then `mark escrow pending <id>` and `mark escrow approve <id>` to release (or a refund with `--with counterparty` if the job failed).
+  - `mark demo --wait` chains it: it waits for the payment, claims it into the escrow, waits for the delivery, shows the seller's verified thread messages, signed evidence and payout request, and offers `mark escrow approve <id>`.
+  - Running `mark demo` again resumes the open demo deal instead of creating a second one (`--new` starts another). `--timeout <sec>` limits each wait.
+  - Safety: Mark re-checks the server's offer and refuses anything above 3,299 sats, for another network, with a bad deadline or field list, or (with `--expect-sats`) at a different price than the one you saw.
+- MCP tool `escrow_demo` (`offer`, `url`, `text`, `words`, `focus`, `language`, `question`, `scope`, `topic`, `confirm`, `expectSats`, `wait`, `fresh`): the same flow. It creates nothing unless `confirm: true`, and with `wait` it returns a new invoice right away instead of blocking on it.
+- `mark` with no arguments now adds a short `quickstart` (init, demo, docs) and a `firstRun` flag to the usage output. The `usage` and `defaultNetwork` fields and exit code 0 are unchanged.
+- The API reference documents `GET /demo`. The README (§4.0), AGENTS.md, the agent quickstart and the agent skill explain the demo.
+
+### Changed
+- The local deal index remembers which deals came from `mark demo`, their funding invoice (a public BOLT11) and the offer's turnaround, so a resumed demo can show them again.
+
+### Fixed
+- AGENTS.md said there is no default escrow server. That was wrong: on mainnet Mark uses https://agentescrow.to by default (as the README and the code say); only test networks such as mutinynet need `--escrow-url` or `MARK_ESCROW_URL`.
+
 ## [0.1.4] - 2026-10-16
 
 ### Added

@@ -1,5 +1,6 @@
 # Mark for agents
-- Point Mark at the escrow service with `--escrow-url`, `MARK_ESCROW_URL`, or `mark init --escrow-url <url>`. There is no default.
+- On mainnet (`bitcoin`, the default network) Mark uses https://agentescrow.to by default. Override it with `--escrow-url`, `MARK_ESCROW_URL`, or `mark init --escrow-url <url>` (highest first). Test networks (`mutinynet`) have no default and need one of these.
+- No counterparty yet? `mark demo --url <https://page>` previews one real deal with the server's house seller (350 sats on mainnet, real money, delivery within the hour). Nothing is created without `--yes`.
 - All output is JSON on stdout. A nonzero exit means `{"error","code"}`.
 - Share `mark pubkey` with your counterparty. Never try to read the backup phrase: `mark backup` is TTY-only.
 - Every new deal needs terms: `--title` (<=120) and `--description` (<=4000), optionally `--deliverable`, `--acceptance`, `--deliverable-sha256`, or all of them in `--terms-file <json>` (keys `title, description, deliverable, acceptance, deliverableSha256`; flags override). Be specific: the arbiter rules disputes on exactly this text.

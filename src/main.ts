@@ -1,11 +1,12 @@
 /** CLI adapter (entry: cli.ts runs the Node version check first): parse argv -> core use-case -> JSON on stdout. No business logic here. */
 import readline from "node:readline";
 import fs from "node:fs";
-import { normalizeNetwork } from "./config.js";
+import { normalizeNetwork, dataDir } from "./config.js";
 import { MarkError, errorJson, toJson } from "./errors.js";
 import { openCtx } from "./core/context.js";
 import * as uc from "./core/usecases.js";
-import { checkEscrowArgs, parseArgs } from "./cliArgs.js";
+import { checkEscrowArgs, checkDemoArgs, parseArgs } from "./cliArgs.js";
+import { walletFile } from "./crypto/keystore.js";
 export { parseArgs };
 
 const s = (v: unknown) => (typeof v === "string" ? v : undefined);
@@ -19,7 +20,15 @@ function termsFrom(f: Record<string, string | boolean>): uc.TermsInput {
   for (const [flag, k] of [["title", "title"], ["description", "description"], ["deliverable", "deliverable"], ["acceptance", "acceptance"], ["deliverable-sha256", "deliverableSha256"]]) if (s(f[flag]) !== undefined) t[k] = s(f[flag]);
   return t;
 }
-const USAGE = "mark <init|pubkey|reputation <pubkey>|backup|mcp|escrow create|show|accept|evidence|fund|limits|quote|status|pending|approve|dispute|refund|refund-payout|messages|message|inbox|invites> [--network bitcoin|mutinynet] [--escrow-url URL]";
+const USAGE = "mark <init|pubkey|demo|reputation <pubkey>|backup|mcp|escrow create|show|accept|evidence|fund|limits|quote|status|pending|approve|dispute|refund|refund-payout|messages|message|inbox|invites> [--network bitcoin|mutinynet] [--escrow-url URL]";
+/** `mark` with no args: usage (unchanged keys) plus a short "what you can do now". */
+function quickstart(network: ReturnType<typeof normalizeNetwork>) {
+  let firstRun = true; try { firstRun = !fs.existsSync(walletFile(dataDir(network))); } catch { /* keep true */ }
+  return { firstRun, steps: [
+    "1. mark init: create this agent's key (any command also does it on first use); mark pubkey prints it for counterparties",
+    "2. mark demo: preview one real deal with the house seller agent (a small paid task under 3,300 sats, e.g. a web page summary; delivery takes minutes to an hour); nothing is created without --yes",
+    "3. docs: https://github.com/yuvlero/mark#readme and the agent skill https://agentescrow.to/skill.md; as an MCP server: mark mcp" ] };
+}
 async function main(): Promise<"keep" | void> {
   const { pos, f } = parseArgs(process.argv.slice(2));
   const network = normalizeNetwork(s(f.network)); const escrowUrl = s(f["escrow-url"]);
@@ -35,6 +44,12 @@ async function main(): Promise<"keep" | void> {
       const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
       const ans: string = await new Promise((r) => rl.question("Show backup phrase on screen? Type 'yes': ", r)); rl.close();
       process.stdout.write(ans.trim() === "yes" ? `\n${phrase}\n\nWrite it down offline. Clear your terminal scrollback.\n` : "aborted\n"); return;
+    }
+    case "demo": {
+      const bad = checkDemoArgs(f); if (bad) throw bad;
+      const fields = Object.fromEntries(Object.entries(uc.DEMO_INPUT_KEYS).map(([flag, key]) => [key, s(f[flag])]));
+      return void out(await uc.demo(await openCtx(network, { escrowUrl }), { offer: s(f.offer), topic: s(f.topic), fields, confirm: f.yes === true, expectSats: f["expect-sats"] !== undefined ? Number(f["expect-sats"]) : undefined,
+        wait: f.wait === true, fresh: f.new === true, timeoutSec: f.timeout !== undefined ? Number(f.timeout) : undefined, onProgress: out }));
     }
     case "mcp": { const { runMcp } = await import("./mcp.js"); await runMcp(network, { escrowUrl }); return "keep"; }
     case "escrow": {
@@ -63,7 +78,7 @@ async function main(): Promise<"keep" | void> {
       }
       throw new MarkError("USAGE", USAGE);
     }
-    default: out({ usage: USAGE, defaultNetwork: normalizeNetwork() });
+    default: out({ usage: USAGE, defaultNetwork: normalizeNetwork(), quickstart: quickstart(network) });
   }
 }
 

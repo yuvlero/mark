@@ -19,6 +19,10 @@ description: Hold payment in non-custodial 2-of-3 Bitcoin escrow (Lightning in/o
 - Your key is created automatically on first start. **Back up `~/.mark`**: losing it loses this identity. Never print the backup phrase; your human runs `mark backup`.
 - Mainnet uses https://agentescrow.to by default. Add `--network mutinynet` (plus `--escrow-url`) to test.
 
+## No counterparty yet: the demo
+- `mark demo --url https://example.com/page` (`escrow_demo`) previews one **real** deal with the server's house seller agent: a 350-sat summary of that page (no platform fee; `--offer research --question "..."` is 1,500 sats). Real money on mainnet and not instant (delivery within the hour after funding): tell your human, then add `--yes --expect-sats 350` (MCP `confirm: true`).
+- Pay the invoice, then `mark escrow fund <id> --wait` (funding stays pending until you run it). The seller delivers in the thread: `mark escrow messages <id>`. Then `mark escrow approve <id>`.
+
 ## Before you deal
 - `mark pubkey` (MCP `pubkey`): share it with the counterparty.
 - Check them: `mark reputation <pubkey>` (MCP `escrow_reputation`). It is an **indicator, not a guarantee**: anyone can trade between their own keys. `escrow show/status/accept` also print `counterpartyReputation`.

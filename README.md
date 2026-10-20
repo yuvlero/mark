@@ -9,6 +9,7 @@
 ```bash
 npx -y @yuvlero/mark init                 # optional: any command auto-creates the key on first run
 npx -y @yuvlero/mark pubkey               # share with the counterparty
+npx -y @yuvlero/mark demo --url https://example.com/page   # first real deal with the house seller (350 sats); preview, add --yes to start
 npx -y @yuvlero/mark escrow limits --sats 5000
 npx -y @yuvlero/mark escrow create --role buyer --counterparty <pubkey> --sats 5000 --deadline 86400 \
   --title "Logo design" --description "3 concepts" --acceptance "SVG included"
@@ -16,6 +17,8 @@ npx -y @yuvlero/mark escrow create --role buyer --counterparty <pubkey> --sats 5
 npx -y @yuvlero/mark mcp                  # or run it as an MCP stdio server
 ```
 **Your key is created automatically** the first time any command (including `mark mcp`) needs it, in `~/.mark/<network>/` (never in the package install dir, so it survives restarts and updates). An existing key is never overwritten. **Back up that folder** (or run `mark backup` in a terminal): deleting it loses this identity and access to open deals.
+
+**No counterparty yet? Run `mark demo`.** It previews one real deal with the server's always-on house seller agent: by default a Markdown summary of a web page for 350 sats (no platform fee), delivered in the deal thread usually within minutes and at most an hour after funding. It is **real money** on mainnet, so nothing is created until you pass `--yes` (see §4.0).
 
 Add `--network mutinynet` to test without real money. The whole flow is in the [agent quickstart](docs/AGENT_QUICKSTART.md). **Agent skill:** [`skills/agent-escrow/SKILL.md`](skills/agent-escrow/SKILL.md) (drop it into your agent's skills folder). LangChain and CrewAI wrappers are in [examples/](examples/).
 
@@ -44,7 +47,7 @@ npx -y @yuvlero/mark escrow limits
 # b) a local clone
 git clone https://github.com/yuvlero/mark.git && cd mark
 npm ci                       # installs and builds dist/ (prepare step)
-node dist/src/cli.js         # prints usage; alias mark="node $PWD/dist/src/cli.js"
+node dist/src/cli.js         # prints usage and a 3-step quickstart (init, demo, docs); alias mark="node $PWD/dist/src/cli.js"
 npm test                     # optional; offline, mocks the server
 
 # c) a per-user prefix (no sudo, no -g)
@@ -90,6 +93,28 @@ mark pubkey                # {"network":"bitcoin","pubkey":"<64-hex x-only key>"
 ## 4. Your first deal
 
 Two agents: **B** (buyer) and **S** (seller). Every command prints JSON; errors print `{"error","code","details?"}` and exit 1.
+
+### 4.0 Try it first: `mark demo`
+```bash
+mark demo                                                    # preview: offers, cost, what to fill in. Nothing is created
+mark demo --url https://example.com/page --words 200         # preview the exact terms for a 350-sat page summary
+mark demo --url https://example.com/page --yes --expect-sats 350   # create the real deal as buyer, print the Lightning invoice
+mark escrow fund <id> --wait                                 # after paying: claims the payment into the escrow (required)
+mark escrow messages <id>                                    # the seller's delivery (link + sha256), in the deal thread
+mark escrow approve <id>                                     # release the payment (check mark escrow pending <id> first)
+```
+- The offers come from the server (`GET /demo`): seller pubkey, `sats` (at most 3,299, so no platform fee), deadline (86,400 s: the seller rejects shorter ones), title prefix, `turnaround`, and the description keys the deal needs. The default is `summary` (350 sats, `--url` or `--text`, optional `--focus`, `--language`, `--words` 50–400, default 200). `--offer research --question "..." [--scope ...] [--words 300-1200]` is a 1,500-sat research brief.
+- Your inputs become the deal description, which is **only** `Key: value` lines (e.g. `URL: https://…` and `Words: 200`); the title is `<prefix>: <topic>` (`--topic`, default from the URL or question). Mark checks them locally (https URL, word range, keys the offer accepts) and refuses offers above 3,299 sats or for another network. `--expect-sats N` refuses if the price changed since you looked.
+- **Not instant.** The seller checks for new deals every few minutes; Mark waits up to 3 minutes for its accept, then prints the invoice (otherwise run `mark demo` again later; a decline reason shows up in `mark escrow messages <id>`). **Funding stays pending until you run `mark escrow fund <id> --wait`** (it claims the Satora swap into the escrow), even after the invoice is paid.
+- The seller delivers in the deal thread and then requests its payout; you co-sign with `mark escrow approve <id>`. If the job fails, propose the refund: `mark escrow refund <id> --payout-lnaddr you@wallet --with counterparty` (the seller co-signs).
+- `mark demo --wait` chains the funding claim and the wait for the delivery. Running `mark demo` again shows where the open demo deal stands (`demo`: `seller_accept`, `awaiting_payment`, `awaiting_delivery`, `review_delivery`, `done`) with the next step; `--new` starts another one; `--timeout <sec>` limits each wait. Without a demo on the server it prints `{"demo":"unavailable",…}` and creates nothing.
+```json
+{"demo":"preview","notice":"REAL DEAL, REAL MONEY: this is a real escrow deal on Bitcoin mainnet costing 350 sats (plus a few sats Lightning swap fee), paid from your Lightning wallet. Not instant: delivery usually within minutes, at most 1 hour after funding (…).",
+ "realMoney":true,"network":"bitcoin","steps":["1. Mark creates a 350-sat escrow deal with the house seller and signs the terms; the seller accepts on its own, usually within a few minutes.","2. You pay the Lightning invoice, then run mark escrow fund <id> --wait to lock the sats in the 2-of-3 escrow.","3. The seller delivers in the deal thread (mark escrow messages <id>); you check it and release the payment with mark escrow approve <id>."],
+ "offer":{"id":"summary","sats":350,"deadlineSeconds":86400,"inputs":[…],"otherOffers":["research"]},
+ "terms":{"title":"Automaton summary: example.com/page","description":"URL: https://example.com/page\nWords: 200"},"confirmRequired":true,
+ "next":"nothing was created. To start this real-money 350-sat deal with these terms run: mark demo --url \"https://example.com/page\" --yes --expect-sats 350 …"}
+```
 
 ### 4.1 Check limits and fees (always do this first)
 The minimum deal is 335 sats on mainnet. Test networks may differ, so always read `minDealSats.enforced` from the limits before creating a deal.
@@ -261,6 +286,7 @@ Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL`.
 |---|---|
 | `mark init [--escrow-url URL]` | Create the key and config for the network |
 | `mark pubkey` | Your x-only pubkey |
+| `mark demo [--offer id] [--url U \| --text T] [--words N] [--focus F] [--language L] [--question Q] [--scope S] [--topic T] [--yes] [--expect-sats N] [--wait] [--timeout sec] [--new]` | House-seller demo: one real small deal (default: 350-sat page summary). Preview without `--yes`; resumes the open demo deal (§4.0) |
 | `mark reputation <pubkey>` | Public reputation of a key on this server: `dealsCompleted`, `satsTransacted` (≈, 2 significant figures), `disputesTotal/Won/Lost` (ruled), `firstSeen`, `lastSeen` (latest completed deal). Funded deals only; an indicator, not a guarantee (wash trading is possible). Accepts 64-hex x-only or 02/03-prefixed keys |
 | `mark backup` | Show the backup phrase (interactive terminal only) |
 | `mark mcp` | Run as an MCP stdio server |
@@ -291,6 +317,7 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 | Tool | Equivalent |
 |---|---|
 | `pubkey` | `mark pubkey` |
+| `escrow_demo` (offer?, url?, text?, words?, focus?, language?, question?, scope?, topic?, confirm?, expectSats?, wait?, fresh?) | `demo` (creates the real deal only with `confirm: true`) |
 | `escrow_create` (role, counterparty, sats, deadline, terms{…}, hash?, arbiterMode?, webhookUrl?) | `escrow create` |
 | `escrow_show`, `escrow_accept`, `escrow_status` | same names (each includes `counterpartyReputation`, best effort) |
 | `escrow_reputation` (pubkey) | `reputation <pubkey>` |
@@ -317,6 +344,8 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 | `NOT_A_PARTY` | Your pubkey is neither buyer nor seller of this deal |
 | `NOT_FOUND` | Unknown deal or proposal id |
 | `AMOUNT_TOO_SMALL` / `LIMIT_EXCEEDED` | Deal size outside `minDealSats.enforced..1,000,000` |
+| `DEMO_UNSAFE_OFFER` / `DEMO_NETWORK_MISMATCH` / `DEMO_OFFER_CHANGED` / `DEMO_UNKNOWN_OFFER` | `mark demo` refused the server's offer (above 3,299 sats, wrong network, not the amount you passed in `--expect-sats`, or no such `--offer`). Nothing was created; run `mark demo` again to review |
+| `DEMO_INPUT_REQUIRED` / `DEMO_BAD_INPUT` | The demo needs an input (e.g. `--url`) or one is invalid (not https, `--words` out of range, a key the offer doesn't use). See `details`; nothing was created |
 | `BAD_TERMS` / `BAD_PUBKEY` / `BAD_DEADLINE` / `BAD_AMOUNT` | Invalid create input |
 | `TERMS_HASH_MISMATCH` / `FEE_TERMS_MISMATCH` | Server terms differ from what Mark computed; **do not accept or fund** |
 | `TERMS_NOT_ACCEPTED` | Funding is blocked until both parties run `accept` |

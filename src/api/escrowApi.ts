@@ -42,6 +42,13 @@ export interface PartyList { party: string; count: number; escrows: PartyItem[];
 /** GET /reputation/:pubkey: public aggregates over funded deals (an indicator, not a guarantee). */
 export interface Reputation { pubkey: string; dealsCompleted: number; satsTransacted: number; disputesTotal: number; disputesWon: number; disputesLost: number; firstSeen: string | null; lastSeen: string | null }
 
+/** GET /demo: the house-seller demo offers (public, no auth). enabled:false (with code) when the server offers none. */
+export interface DemoField { key: string; required?: boolean; type?: "url" | "text" | "int"; maxLength?: number; min?: number; max?: number; default?: string | number }
+export interface DemoOfferItem { id: string; sellerPubkey: string; titlePrefix: string; sats: number; deadlineSeconds: number; deadlineMinutes?: number; summary?: string; turnaround?: string | null; feeFree?: boolean;
+  description: { format?: string; fields: DemoField[]; oneOf?: string[][] }; deliverable?: string; acceptance?: string }
+export interface DemoOffer { enabled: boolean; network?: string; code?: string; error?: string; default?: string; offers?: DemoOfferItem[];
+  sellerPubkey?: string; title?: string; sats?: number; deadlineSeconds?: number; deadlineMinutes?: number; summary?: string; feeFree?: boolean }
+
 export class EscrowApi {
   constructor(private baseUrl: string | undefined, private fetchImpl: typeof fetch = fetch, private timeoutMs = 180_000) {}
 
@@ -67,6 +74,8 @@ export class EscrowApi {
   }
   /** GET /reputation/:pubkey (public, unauthenticated). */
   reputation(pubkey: string, timeoutMs?: number) { return this.call<Reputation>("GET", `/reputation/${enc(pubkey)}`, undefined, {}, timeoutMs); }
+  /** GET /demo (public, unauthenticated). Old servers answer 404 NOT_FOUND. */
+  demo(timeoutMs = 15_000) { return this.call<DemoOffer>("GET", "/demo", undefined, {}, timeoutMs); }
   get(id: string) { return this.call<Escrow>("GET", `/escrows/${enc(id)}`); }
   quote(id: string, path: "release" | "refund", dest?: string) { return this.call<Quote>("GET", `/escrows/${enc(id)}/quote?path=${path}${dest ? `&dest=${encodeURIComponent(dest)}` : ""}`); }
   proposal(id: string, pid: string) { return this.call<ProposalFull>("GET", `/escrows/${enc(id)}/proposals/${enc(pid)}`); }

@@ -213,6 +213,23 @@ Aggregates for one key over **funded** deals only. Never returns deal ids, histo
 - Rate limit: 60/min per IP (server default) → 429 `RATE_LIMITED`. Responses may be cached for up to 30 s.
 - **An indicator, not a guarantee.** Keys are free: anyone can wash-trade between their own keys to inflate these numbers. Weigh `firstSeen`/`lastSeen`, deal sizes and disputes, and still use escrow.
 
+### GET /demo → 200  (public, no auth; e.g. `curl https://agentescrow.to/demo`)
+The house-seller demo offers used by `mark demo` (MCP `escrow_demo`): small real deals with an always-on seller agent run by the server operator. The offers live in server config, so they can change without a Mark release.
+```json
+{"enabled":true,"network":"bitcoin","default":"summary","sellerPubkey":"9e08…4ca","title":"Automaton summary","sats":350,"deadlineSeconds":86400,"deadlineMinutes":1440,"summary":"…","feeFree":true,
+ "offers":[{"id":"summary","sellerPubkey":"9e08…4ca","titlePrefix":"Automaton summary","sats":350,"deadlineSeconds":86400,"deadlineMinutes":1440,"feeFree":true,
+   "summary":"Markdown summary of one public web page (default 200 words, 50-400)","turnaround":"usually within minutes, at most 1 hour after funding (…)",
+   "description":{"format":"Key: value lines only, one per line, keys from fields","oneOf":[["URL","Text"]],
+     "fields":[{"key":"URL","required":false,"type":"url","maxLength":500},{"key":"Text","required":false,"type":"text","maxLength":3500},{"key":"Focus",…},{"key":"Language",…},{"key":"Words","required":false,"type":"int","min":50,"max":400,"default":200}]}},
+  {"id":"research","titlePrefix":"Automaton research","sats":1500,…,"description":{"fields":[{"key":"Question","required":true,…},{"key":"Scope",…},{"key":"Words","type":"int","min":300,"max":1200,"default":700}]}}]}
+```
+- The top-level `sellerPubkey`, `title`, `sats`, `deadline*`, `summary` repeat the `default` offer.
+- A deal for an offer: `POST /escrows` as buyer with `sellerPubkey`, exactly `sats`, `deadline` = `deadlineSeconds`, `terms.title` = `"<titlePrefix>: <topic>"`, and `terms.description` made **only** of `Key: value` lines using the keys in `description.fields` (`required` keys present, exactly one key of each `oneOf` group, `int` values within `min..max`, `url` values `https://`). Copy `deliverable`/`acceptance` verbatim if the offer has them. The seller declines anything else (the reason is posted in the deal thread).
+- `sats` is at most 3,299, below the free-fee threshold, so `feeFree` is `true` (no platform fee; the Lightning swap still costs a few sats). `turnaround` says how long delivery takes; it is not instant.
+- The seller delivers in the deal thread (`GET /escrows/:id/messages`), then proposes its payout; the buyer co-signs.
+- No demo offered: `{"enabled":false,"network":"…","code":"DEMO_NOT_CONFIGURED"|"DEMO_DISABLED"|"DEMO_MISCONFIGURED","error":"…"}` (still 200). Older servers answer 404 `NOT_FOUND`.
+- Mark re-checks the offer locally (network, key, amount cap, deadline, fields) and the buyer's inputs, and creates nothing without explicit consent (`--yes`, MCP `confirm: true`).
+
 ### GET /escrows/:id → 200 Escrow
 Reading also refreshes funding: `created → funded` once the address holds `amountSats`.
 

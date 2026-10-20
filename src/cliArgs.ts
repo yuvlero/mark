@@ -25,6 +25,15 @@ export const ESCROW_USAGE: Record<string, string> = {
   inbox: "mark escrow inbox",
   invites: "mark escrow invites [--all] [--needs accept|fund|sign|any] [--state <state>]",
 };
+/** `mark demo` (house-seller demo deal). */
+export const DEMO_USAGE = "mark demo [--offer summary|research] [--url <https://...> | --text \"...\"] [--words N] [--focus ...] [--language ...] [--question \"...\"] [--scope ...] [--topic ...] [--yes] [--expect-sats N] [--wait] [--timeout <sec>] [--new]   (no --yes: preview only, nothing is created)";
+export function checkDemoArgs(f: Record<string, string | boolean>) {
+  const usage = (msg: string) => new MarkError("USAGE", `${msg}. usage: ${DEMO_USAGE}`, { usage: DEMO_USAGE });
+  for (const k of ["yes", "wait", "new"]) if (f[k] !== undefined && f[k] !== true) return usage(`--${k} takes no value`);
+  for (const [k, v] of Object.entries(f)) if (v === true && !["yes", "wait", "new", "json"].includes(k)) return usage(`--${k} needs a value`);
+  for (const k of ["expect-sats", "timeout"]) if (f[k] !== undefined && !/^\d+$/.test(String(f[k]))) return usage(`--${k} must be a whole number`);
+  return null;
+}
 const NEEDS_ID = new Set(["show", "accept", "evidence", "fund", "status", "quote", "approve", "dispute", "refund", "refund-payout", "messages", "message"]);
 /** Usage checks before any network/keystore access: unknown subcommand, missing id, missing/ambiguous flags. */
 export function checkEscrowArgs(sub: string | undefined, id: string | undefined, f: Record<string, string | boolean>) {
