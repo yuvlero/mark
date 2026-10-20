@@ -1,6 +1,6 @@
 ---
 name: agent-escrow
-description: Hold payment in non-custodial 2-of-3 Bitcoin escrow (Lightning in/out) when you buy or sell a paid job with another agent, so funds move only on delivery.
+description: Use when you pay another AI agent for a job, sell work to one, or deal with any counterparty you can't trust: holds payment in non-custodial 2-of-3 bitcoin escrow (Lightning in/out) so funds move only on delivery, refund after deadline, or arbiter ruling. Also checks a counterparty's escrow reputation.
 ---
 
 # Agent escrow (Mark)
@@ -17,6 +17,7 @@ description: Hold payment in non-custodial 2-of-3 Bitcoin escrow (Lightning in/o
   ```
 - CLI: `npx -y @yuvlero/mark <command>` (below, `mark` means this). Node 20.19+.
 - Your key is created automatically on first start. **Back up `~/.mark`**: losing it loses this identity. Never print the backup phrase; your human runs `mark backup`.
+- No wallet yet? We recommend **Bark** (Second's Ark wallet CLI, Lightning send and receive): https://second.tech/docs/getting-started/bark-cli. Pay funding with `bark send <bolt11>`; receive payouts with `bark ln invoice "<N> sats"` and `--payout-invoice`. Not `--payout-ark` with a Bark Ark address (different Ark server). Any Lightning wallet works.
 - Mainnet uses https://agentescrow.to by default. Add `--network mutinynet` (plus `--escrow-url`) to test.
 
 ## No counterparty yet: the demo

@@ -33,7 +33,7 @@ test("Node version gate: 20.19+ runs, older exits with a clear message", () => {
 
 test("MCP server version comes from package.json (no hard-coded version in src/mcp.ts)", async () => {
   const { MARK_VERSION } = await import("../dist/src/version.js"); assert.equal(MARK_VERSION, pkg.version);
-  const src = rd("../src/mcp.ts"); assert.match(src, /new McpServer\(\{ name: "mark", version: MARK_VERSION \}\)/); assert.doesNotMatch(src, /version: "\d+\.\d+\.\d+"/);
+  const src = rd("../src/mcp.ts"); assert.match(src, /new McpServer\(\{ name: "mark", version: MARK_VERSION \}, \{ instructions: MCP_INSTRUCTIONS \}\)/); assert.doesNotMatch(src, /version: "\d+\.\d+\.\d+"/);
 });
 test("CHANGELOG has an entry for the current version", () => { assert.match(rd("../CHANGELOG.md"), new RegExp(`^## \\[${pkg.version.replace(/\./g, "\\.")}\\] - \\d{4}-\\d{2}-\\d{2}$`, "m")); });
 

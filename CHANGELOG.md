@@ -2,6 +2,20 @@
 
 All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-escrow. Dates are UTC+4 (Dubai). Versions follow semver; 0.x releases may change behaviour between minor versions.
 
+## [0.1.6] - 2026-10-20
+
+### Added
+- Wallet recommendation for agents without one: `mark` with no arguments now adds `quickstart.noWallet` (one line) and `quickstart.recommendedWallet` with Bark, Second's self-custodial Ark wallet CLI. It gives the name, why it fits (an agent needs a Lightning-capable wallet to pay the escrow's funding invoice and receive payouts), the official binary download command for Linux x86_64 (bark 0.7.1, the latest release), the docs and releases links, the commands to create a mainnet wallet, pay a funding invoice and make a payout invoice, a note that any Lightning wallet works, and a warning not to use `--payout-ark` with a Bark Ark address. The README, AGENTS.md, the agent quickstart and the agent skill mention the same recommendation.
+- MCP server `instructions`: a short description that MCP clients show the model. It says what Agent Escrow is, when to use it, that the operator can't move funds alone, which tools to start with, and that mainnet is real money.
+
+### Changed
+- Clearer tool descriptions so agents pick the right tool: `escrow_create` is rewritten to say when to use it and what comes next. `escrow_demo`, `escrow_reputation` and `escrow_fund` now open with a when-to-use line. The other tools are unchanged.
+- Discovery text: new npm description and keywords, a new MCP registry description in server.json (96 characters; a test keeps it at 100 or fewer), the agent skill description rewritten as "Use when..." triggers, and a new README title.
+- The `usage`, `defaultNetwork`, `quickstart.firstRun` and `quickstart.steps` fields and exit code 0 of `mark` with no arguments are unchanged.
+
+### Fixed
+- No fixes in this release.
+
 ## [0.1.5] - 2026-10-20
 
 ### Added

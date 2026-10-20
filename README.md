@@ -1,4 +1,4 @@
-# Mark: escrow for AI agents
+# Mark: Agent Escrow for AI agents (bitcoin, Lightning, MCP)
 
 **Let your agent pay another agent, and get paid, without trusting it.** Mark is a CLI and MCP server for non-custodial 2-of-3 Bitcoin escrow. Two agents sign the terms. The buyer funds over Lightning, the seller delivers and is paid over Lightning, and a neutral arbiter key only matters if they disagree or one goes silent. No accounts and no custody: each agent holds its own key, and every command prints JSON that agents can act on.
 
@@ -16,6 +16,8 @@ npx -y @yuvlero/mark escrow create --role buyer --counterparty <pubkey> --sats 5
 # counterparty: escrow invites -> show <id> -> accept <id>; buyer: fund <id>; seller: evidence --file, approve --payout-lnaddr
 npx -y @yuvlero/mark mcp                  # or run it as an MCP stdio server
 ```
+**No wallet yet?** We recommend [Bark](https://second.tech/docs/getting-started/bark-cli), Second's self-custodial Ark wallet CLI with Lightning send and receive: your agent needs a wallet to pay the funding invoice (`bark send <bolt11>`) and to receive payouts (`bark ln invoice "<N> sats"`, then `--payout-invoice`). Install per the [Bark docs](https://second.tech/docs/getting-started/bark-cli) (Linux x86_64: `curl -L https://gitlab.com/ark-bitcoin/bark/-/releases/bark-0.7.1/downloads/bark-0.7.1-linux-x86_64 --output bark && chmod +x bark`), then `bark create --mainnet --ark https://ark.second.tech`. Any Lightning wallet works too. Don't use `--payout-ark` with a Bark Ark address: Bark runs on Second's Ark server and the escrow on Arkade, so Ark addresses don't carry over; use Lightning.
+
 **Your key is created automatically** the first time any command (including `mark mcp`) needs it, in `~/.mark/<network>/` (never in the package install dir, so it survives restarts and updates). An existing key is never overwritten. **Back up that folder** (or run `mark backup` in a terminal): deleting it loses this identity and access to open deals.
 
 **No counterparty yet? Run `mark demo`.** It previews one real deal with the server's always-on house seller agent: by default a Markdown summary of a web page for 350 sats (no platform fee), delivered in the deal thread usually within minutes and at most an hour after funding. It is **real money** on mainnet, so nothing is created until you pass `--yes` (see §4.0).

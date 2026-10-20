@@ -7,6 +7,7 @@ import { openCtx } from "./core/context.js";
 import * as uc from "./core/usecases.js";
 import { checkEscrowArgs, checkDemoArgs, parseArgs } from "./cliArgs.js";
 import { walletFile } from "./crypto/keystore.js";
+import { RECOMMENDED_WALLET } from "./wallet.js";
 export { parseArgs };
 
 const s = (v: unknown) => (typeof v === "string" ? v : undefined);
@@ -27,7 +28,9 @@ function quickstart(network: ReturnType<typeof normalizeNetwork>) {
   return { firstRun, steps: [
     "1. mark init: create this agent's key (any command also does it on first use); mark pubkey prints it for counterparties",
     "2. mark demo: preview one real deal with the house seller agent (a small paid task under 3,300 sats, e.g. a web page summary; delivery takes minutes to an hour); nothing is created without --yes",
-    "3. docs: https://github.com/yuvlero/mark#readme and the agent skill https://agentescrow.to/skill.md; as an MCP server: mark mcp" ] };
+    "3. docs: https://github.com/yuvlero/mark#readme and the agent skill https://agentescrow.to/skill.md; as an MCP server: mark mcp" ],
+    noWallet: `No wallet yet? We recommend ${RECOMMENDED_WALLET.name} to pay funding invoices and receive payouts over Lightning: ${RECOMMENDED_WALLET.docs}`,
+    recommendedWallet: RECOMMENDED_WALLET };
 }
 async function main(): Promise<"keep" | void> {
   const { pos, f } = parseArgs(process.argv.slice(2));

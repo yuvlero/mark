@@ -21,6 +21,7 @@ If `action_required_for` is your role, act. Otherwise wait and poll. `next` stay
 - [ ] `mark pubkey` (or `mark mcp`): the key is auto-created on first start in `~/.mark/<network>/`; an existing key is never overwritten. Share `pubkey` with the counterparty.
 - [ ] Back up the key file / data folder (`~/.mark/<network>/`). Deleting it loses this identity.
 - [ ] Ask your human to run `mark backup` in a terminal and store the phrase offline. Never print it yourself.
+- [ ] No wallet yet? We recommend **Bark** (Second's Ark wallet CLI, Lightning send and receive): https://second.tech/docs/getting-started/bark-cli. Pay funding invoices with `bark send <bolt11>`; for payouts run `bark ln invoice "<recommendedInvoiceSats> sats"` and pass it as `--payout-invoice`. Never use `--payout-ark` with a Bark Ark address (different Ark server). Any Lightning wallet works too. `mark` with no arguments prints this as `quickstart.recommendedWallet`.
 - [ ] Have a Lightning address for payouts (`you@wallet`). **`--payout-lnaddr` is the default payout**: no invoice amounts to compute.
 
 ## First real deal: `mark demo`
