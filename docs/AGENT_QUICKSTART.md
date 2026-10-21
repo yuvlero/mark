@@ -37,6 +37,8 @@ If `action_required_for` is your role, act. Otherwise wait and poll. `next` stay
    - **Buyer-less release (hash lock):** add `--hash <sha256 of a secret>`. When the seller delivers it reveals the secret, and the auto-arbiter co-signs the release without the buyer: `mark escrow approve <id> --with arbiter --preimage <secret hex> --payout-lnaddr <you@wallet>`. Use it when the delivery itself reveals the secret (for example a key the buyer needs).
 3. [ ] (other party) Poll `mark escrow invites` about once a minute until the deal shows up (`awaiting: seller_accept`/`buyer_accept`), then run `mark escrow show <id>`. Read the terms. If they are OK, run `mark escrow accept <id>`. You want `agreed: true`. `state: created` with `awaiting: buyer_funding` is normal: it means not funded yet.
 4. [ ] (buyer) `mark escrow fund <id>`, pay `invoice`, then `mark escrow fund <id> --wait` until `state: funded`.
+   - Fund well before the deadline. A deal still unfunded 1 hour after its deadline (`expiresAt`) becomes `expired`: final, `awaiting: none`, gone from `invites`. `fund` refuses with `DEADLINE_TOO_CLOSE` when under an hour is left, and prints `note: "expired: …"` on an expired deal.
+   - Paid too late or only partly? The deal is not revived. Get the sats back with `mark escrow refund <id> --payout-lnaddr <you@wallet>` (buyer + arbiter).
 5. [ ] (seller) **Only once `state: funded`**, deliver **off-band** by whatever channel you both agreed on (email, a link, a Nostr DM…). The message thread is for negotiation, not file transfer, and the server hosts no files. Then post the deliverable's hash as signed evidence:
    - `mark escrow evidence <id> --file <path>` hashes the file locally (it is never uploaded) and signs its sha256.
    - If the terms set `deliverableSha256`, the output shows `deliverableMatch: true|false`.
@@ -52,7 +54,8 @@ If `action_required_for` is your role, act. Otherwise wait and poll. `next` stay
 - `mark escrow invites` shows **only** deals waiting for **my** accept.
 - `mark escrow invites --all` shows every deal this key is in, each with `needs`, `awaiting` and `action_required_for`.
 - `--needs fund` shows deals I must fund. `--needs sign` shows proposals waiting for my signature. `--needs any` shows anything that needs me.
-- `--state funded` (or `created`, `disputed`…) filters by state, and combines with `--all` or `--needs`.
+- `--state funded` (or `created`, `disputed`, `expired`…) filters by state, and combines with `--all` or `--needs`.
+- Expired deals never show up under the default or any `--needs`; only `--all` (without `--needs`) or `--state expired` lists them.
 
 ## Arbiter: `rule` vs `arbiterMode`
 - `rule` (`manual | hash | webhook`) is the condition under which the auto-arbiter co-signs a **release**. `rule: manual` means **no automatic release condition**: a release needs buyer + seller. It does **not** mean a human must act.

@@ -30,6 +30,19 @@ export interface TermsInput { title?: string; description?: string; deliverable?
 export interface CreateOpts { role: Role; counterparty: string; sats: number; deadline: string | number; hash?: string; arbiterMode?: "auto" | "manual"; webhookUrl?: string; terms?: TermsInput }
 export interface ApproveOpts extends PayoutOpts { kind?: Kind; with?: "counterparty" | "arbiter"; preimage?: string }
 
+// ---------- expiry of unfunded deals ----------
+/** Server default: an unfunded deal expires at deadline + 1 h (servers that report `expiresAt` override this). */
+export const DEFAULT_EXPIRY_GRACE_SEC = 3600;
+/** Lifetime assumed for a Lightning funding invoice (BOLT11 default expiry). */
+export const FUND_INVOICE_LIFETIME_SEC = 3600;
+/** When this unfunded deal expires (ms): the server's `expiresAt`, else deadline + the default grace. */
+export function expiresAtMs(e: Escrow): number { const x = typeof e.expiresAt === "string" ? Date.parse(e.expiresAt) : NaN; return Number.isFinite(x) ? x : Date.parse(e.deadline) + DEFAULT_EXPIRY_GRACE_SEC * 1000; }
+/** Expired deal that still holds sats (late or partial payment): the buyer refunds them (buyer + arbiter). */
+export const expiredWithFunds = (e: Escrow) => e.state === "expired" && !!(e.funding || e.partialFunding || e.fundedAfterExpiry);
+const expiredNote = (e: Escrow) => expiredWithFunds(e)
+  ? `expired: not funded by the deadline, but sats reached the escrow address afterwards. The deal is not revived; refund them with: mark escrow refund ${e.id} --payout-lnaddr <you@wallet>`
+  : "expired: not funded by the deadline (+ grace). Do not fund it; create a new deal if you still want one";
+
 // ---------- shared validation ----------
 const XONLY = /^[0-9a-f]{64}$/;
 export function requireId(id?: string): string { if (!id) throw new MarkError("BAD_REQUEST", "escrow id required"); return id; }
@@ -137,7 +150,7 @@ export async function show(c: Ctx, id: string) {
   const rep = await counterpartyReputation(c, e, role);
   return { id: e.id, state: e.state, myRole: role, counterpartyReputation: rep, ...statusOf(e), amountSats: e.amountSats, deadline: e.deadline, ...v, feeTerms: e.fees ?? null, feeSummary: feeSummary(e.fees ?? null, e.amountSats), evidence,
     dispute: e.dispute ?? null, ruling: e.ruling ?? null,
-    next: v.legacy ? "legacy deal (no terms)" : !v.hashVerified ? "TERMS HASH MISMATCH: do not accept or fund" : !iAccepted ? `review the terms, then: mark escrow accept ${e.id}` : !v.agreed ? "waiting for the counterparty to accept" : e.state === "created" ? (role === "buyer" ? `both accepted; fund with: mark escrow fund ${e.id}` : "both accepted; waiting for the buyer to fund") : undefined };
+    next: e.state === "expired" ? expiredNote(e) : v.legacy ? "legacy deal (no terms)" : !v.hashVerified ? "TERMS HASH MISMATCH: do not accept or fund" : !iAccepted ? `review the terms, then: mark escrow accept ${e.id}` : !v.agreed ? "waiting for the counterparty to accept" : e.state === "created" ? (role === "buyer" ? `both accepted; fund with: mark escrow fund ${e.id}` : "both accepted; waiting for the buyer to fund") : undefined };
 }
 
 /** Accept the deal terms: verify termsHash locally, then BIP340-sign it with this wallet's escrow key. */
@@ -262,10 +275,15 @@ async function reportFunding(c: Ctx, id: string, swapId: string) {
 export async function fund(c: Ctx, id: string, o: { wait?: boolean; timeoutSec?: number; onInvoice?: (x: unknown) => void } = {}) {
   const e = await c.api.get(requireId(id));
   assertEscrowCap(c.cfg, e.amountSats);
+  if (e.state === "expired") return { escrowId: id, state: e.state, expiredAt: e.expiredAt ?? null, note: expiredNote(e) };
   if (e.state !== "created") return { escrowId: id, state: e.state, note: "already funded" };
   const v = verifyDealTerms(c, e); // legacy deals (terms null) fund as before
   if (!v.agreed) throw new MarkError("TERMS_NOT_ACCEPTED", v.hashVerified === false ? "terms hash mismatch; refusing to fund" : `both parties must accept the terms before funding (buyer: ${(v.accepted as any).buyer.accepted}, seller: ${(v.accepted as any).seller.accepted}). Run: mark escrow accept ${id}`, { accepted: v.accepted });
-  const s = await c.swaps(); const l = c.index.get(id);
+  const l = c.index.get(id);
+  // a new invoice must be payable (and claimed) before the deal expires at deadline + grace; else the payment would land on an expired deal
+  const left = Math.floor((expiresAtMs(e) - Date.now()) / 1000);
+  if (!l.fundSwap && left < FUND_INVOICE_LIFETIME_SEC) throw new MarkError("DEADLINE_TOO_CLOSE", `refusing to fund: the deal expires in ${Math.max(0, left)} s (deadline ${e.deadline} + grace), less than a funding invoice's lifetime (${FUND_INVOICE_LIFETIME_SEC} s). A late payment would land on an expired deal and need a refund. Create a new deal with a later deadline.`, { deadline: e.deadline, expiresAt: new Date(expiresAtMs(e)).toISOString(), secondsLeft: Math.max(0, left), invoiceLifetimeSec: FUND_INVOICE_LIFETIME_SEC });
+  const s = await c.swaps();
   let swapId = l.fundSwap, invoice: string | undefined;
   if (!swapId) { const r = await s.createReceive(e.amountSats, e.address); swapId = r.id; invoice = r.invoice; c.index.set(id, { fundSwap: swapId, role: l.role ?? myRole(c, e) }); }
   const base = { escrowId: id, escrowAddress: e.address, amountSats: e.amountSats, swapId, invoice };
@@ -274,7 +292,12 @@ export async function fund(c: Ctx, id: string, o: { wait?: boolean; timeoutSec?:
   const end = Date.now() + (o.timeoutSec ?? 900) * 1000;
   while (Date.now() < end) {
     const i = await s.get(swapId!);
-    if (i.status === "serverfunded") { const claim = await s.claim(swapId!, e.address); return { ...base, claim, escrow: await reportFunding(c, id, swapId!) }; }
+    if (i.status === "serverfunded") {
+      // never claim into a deal that expired meanwhile: left unclaimed, the swap times out and the Lightning payment is not settled
+      const now_ = await c.api.get(id);
+      if (now_.state === "expired") return { ...base, state: "expired", swapStatus: i.status, note: "expired: the deal expired before the payment could be claimed; NOT claimed into the escrow. The swap provider releases the Lightning payment when the swap times out." };
+      const claim = await s.claim(swapId!, e.address); return { ...base, claim, escrow: await reportFunding(c, id, swapId!) };
+    }
     if (i.status === "clientredeemed" || i.status === "serverredeemed") return { ...base, swapStatus: i.status, escrow: await reportFunding(c, id, swapId!) };
     if (i.status === "expired" || i.status === "clientrefunded") return { ...base, swapStatus: i.status, note: "swap expired" };
     await new Promise((r) => setTimeout(r, 3000));
@@ -344,7 +367,7 @@ export async function approve(c: Ctx, id: string, o: ApproveOpts = {}) {
   }
   const kind = requireKind(o.kind, role === "seller" ? "release" : "refund");
   if (role !== payeeOf(kind)) throw new MarkError("NOTHING_TO_SIGN", `no pending ${kind} proposal for me to sign; the ${payeeOf(kind)} must propose it with a payout`);
-  if (!["funded", "disputed", "releasing", "refunding"].includes(e.state)) throw new MarkError("BAD_STATE", `escrow is ${e.state}`);
+  if (!["funded", "disputed", "releasing", "refunding"].includes(e.state) && !(kind === "refund" && expiredWithFunds(e))) throw new MarkError("BAD_STATE", e.state === "expired" ? (expiredWithFunds(e) ? "expired deal: only a refund to the buyer is possible" : "expired deal: nothing was funded, nothing to pay out") : `escrow is ${e.state}`);
   const spec = await payoutSpec(c, e, kind, o);
   const signers: Party[] = o.with === "arbiter" ? [role, "arbiter"] : ["buyer", "seller"];
   const auth = { party: role, ...signAuth(c.secret, id, `propose:${kind}:${spec.authDest}`) };
@@ -384,7 +407,8 @@ async function listMine(c: Ctx, q: { needs?: string; state?: string }) {
 export async function invites(c: Ctx, o: { all?: boolean; needs?: string; state?: string } = {}) {
   const needs = o.all ? o.needs : o.needs ?? "accept";
   if (needs && !["accept", "fund", "sign", "any"].includes(needs)) throw new MarkError("USAGE", "--needs must be accept|fund|sign|any");
-  const items = await listMine(c, { needs, state: o.state });
+  // expired deals are final: never an invite or something to fund; shown only by --all (no --needs) or --state expired
+  const items = (await listMine(c, { needs, state: o.state })).filter((it) => it.state !== "expired" || o.state === "expired" || (o.all && !needs));
   return { pubkey: c.pubkey, filter: o.all ? (needs ?? "all") : needs, count: items.length, escrows: items,
     next: items.length ? (needs === "accept" ? "review each: mark escrow show <id>, then mark escrow accept <id> (the server's nextStep is a hint; Mark re-verifies terms on show/accept)" : "follow each item's nextStep") : (o.all ? "no deals for this key yet" : "no invites waiting for your accept") };
 }

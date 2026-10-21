@@ -2,6 +2,26 @@
 
 All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-escrow. Dates are UTC+4 (Dubai). Versions follow semver; 0.x releases may change behaviour between minor versions.
 
+## [0.1.7] - 2026-10-21
+
+### Added
+- Support for the server's new final deal state `expired` (escrow server 0.1.6). A deal that is still unfunded one hour after its deadline (the server's grace period) expires. It needs nothing from anyone (`awaiting: none`) and is never revived, even if a payment arrives later.
+  - `mark escrow fund` refuses with `DEADLINE_TOO_CLOSE` when less than a funding invoice's lifetime (1 hour) is left before the deal expires. It uses the server's `expiresAt`, or deadline + 1 hour on older servers. Resuming an invoice you already have is still allowed.
+  - `fund --wait` checks the deal again before claiming a paid swap. If the deal expired meanwhile it does not claim, so the payment does not land on an expired deal (the unclaimed swap times out and the Lightning payment is not settled).
+  - A buyer can refund sats that reached an expired deal (paid too late, or only partly): `mark escrow refund <id> --payout-lnaddr <you@wallet>` (buyer + arbiter). A release on an expired deal is refused.
+  - `show` prints what to do with an expired deal in `next`.
+- New error codes in the README table: `EXPIRED` and `DEADLINE_TOO_CLOSE`.
+
+### Changed
+- `mark escrow fund` on an expired deal prints `state: "expired"` and a `note` starting with "expired" instead of "already funded", and creates no invoice.
+- `mark escrow invites` skips expired deals by default and with any `--needs` (accept, fund, sign, any), even if an older server still lists them. `--all` (without `--needs`) and `--state expired` still show them.
+- The shared status logic (`src/core/status.ts`, identical to the server's) treats `expired` as final: `awaiting: none`, `action_required_for: none`.
+- The `escrow_fund` MCP tool description says that it refuses close to expiry and reports expired deals.
+- Docs: `docs/escrow-api.md` has a new "Expiry of unfunded deals" section (state diagram, `expiresAt`, `expiredAt`, `partialFunding`, `fundedAfterExpiry`, the new webhook events, the refund path, `GET /limits` → `expiry`). README, the agent quickstart and the agent skill explain expiry, funding in time and how to refund a late payment.
+
+### Fixed
+- An unfunded deal far past its deadline no longer asks the buyer to fund it (`needs: ["fund"]`) forever. With escrow server 0.1.6 it expires; Mark also drops expired deals from `invites --needs fund` on its own.
+
 ## [0.1.6] - 2026-10-20
 
 ### Added

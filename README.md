@@ -148,6 +148,7 @@ mark escrow create --role buyer --counterparty <S pubkey> --sats 5000 --deadline
  "next":"share the escrow id with your counterparty; they must run: mark escrow show 0129… then mark escrow accept 0129…. Funding is blocked until both accepted."}
 ```
 - `--deadline` is seconds from now or an ISO time. After it passes, the buyer can get a refund co-signed by the arbiter.
+- **Unfunded deals expire.** If the deal is still not funded 1 hour after the deadline (`expiresAt`; the server's grace is in `mark escrow limits` → `expiry`), it becomes `expired`: final, needing nothing from anyone, and it drops out of `invites`. Create a new deal if you still want one.
 - Terms are immutable. The creator signs `termsHash` at create time, and that hash covers the terms, amount, both pubkeys, the network and the fee terms.
 - `--terms-file terms.json` (`{title, description, deliverable?, acceptance?, deliverableSha256?}`) works instead of the flags.
 - `--arbiter auto|manual` (default `auto`) sets `arbiterMode`.
@@ -162,7 +163,8 @@ The counterparty doesn't need the id: it polls its invites. A bare `invites` sho
 ```bash
 mark escrow invites         # S: [{id, role, counterpartyPubkey, sats, terms{title,deliverable,acceptance,termsHash}, termsAccepted{mine,theirs}, nextStep}]
 mark escrow invites --all   # every deal this key is in, each with needs (accept|fund|sign), awaiting, action_required_for, nextStep
-mark escrow invites --needs fund    # deals I must fund (also: --needs sign | any)
+mark escrow invites --needs fund    # deals I must fund (also: --needs sign | any); expired deals never show here
+mark escrow invites --all --state expired   # expired deals are listed only by --all or --state expired
 mark escrow invites --all --state funded
 ```
 ```json
@@ -199,9 +201,11 @@ mark escrow fund <id>
 - Pay the invoice from any Lightning wallet. It is slightly **above** the deal amount (here 5,002) because it includes the swap fee.
 - Then run `mark escrow fund <id> --wait`. It waits for the payment and claims the coins into the escrow. Keep it running; it times out after `--timeout` seconds (default 900).
 - `mark escrow status <id>` should now show `state: "funded"`.
+- **Fund in time.** `fund` refuses with `DEADLINE_TOO_CLOSE` when less than an invoice lifetime (1 hour) is left before the deal expires (deadline + 1 h grace). On an expired deal it prints `"note":"expired: …"` instead of creating an invoice, and `fund --wait` never claims a payment into a deal that expired meanwhile (the unclaimed swap times out and the Lightning payment is not settled).
+- **Paid too late or only partly?** The deal stays `expired`: it is never revived. The server records the sats (`fundedAfterExpiry` or `partialFunding`) and alerts the operator. As the buyer, get them back with `mark escrow refund <id> --payout-lnaddr you@wallet` (buyer + arbiter; the auto arbiter co-signs, a manual-mode deal waits for the operator's refund ruling).
 
 ### 4.5 Seller delivers
-**Do NOT deliver before `state` is `funded`** (`awaiting: delivery`). `created` means agreed but unfunded.
+**Do NOT deliver before `state` is `funded`** (`awaiting: delivery`). `created` means agreed but unfunded; `expired` means it was never funded and never will be.
 
 Deliver **off-band**, by whatever channel you both agreed on (email, a link, a Nostr DM, an API result). The message thread is for negotiation, not file transfer, and the server hosts no files. Then post the deliverable's sha256 as signed evidence:
 ```bash
@@ -352,7 +356,9 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 | `TERMS_HASH_MISMATCH` / `FEE_TERMS_MISMATCH` | Server terms differ from what Mark computed; **do not accept or fund** |
 | `TERMS_NOT_ACCEPTED` | Funding is blocked until both parties run `accept` |
 | `NO_TERMS` | Legacy deal without terms (nothing to accept) |
-| `BAD_STATE` | Action not allowed in the current state (e.g. dispute before funding) |
+| `BAD_STATE` | Action not allowed in the current state (e.g. dispute before funding, release on an expired deal) |
+| `EXPIRED` | The deal expired unfunded (deadline + grace passed); it cannot be accepted or funded. Create a new deal |
+| `DEADLINE_TOO_CLOSE` | `fund` refused: less than an invoice lifetime (1 h) left before the deal expires. Create a new deal with a later deadline |
 | `AMOUNT_MISMATCH` | Invoice amount out of range; use `details.recommendedInvoiceSats` |
 | `AMOUNTLESS_INVOICE_UNSUPPORTED` | Put `details.setInvoiceAmountSats` on the invoice, or use a Lightning address |
 | `INVOICE_EXPIRED` | Invoice expires in under 10 min; make a new one |

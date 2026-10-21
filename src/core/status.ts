@@ -15,7 +15,8 @@ export interface StatusInput {
 }
 export function dealStatus(d: StatusInput): { awaiting: Awaiting; action_required_for: Actor } {
   const s = (awaiting: Awaiting, action_required_for: Actor) => ({ awaiting, action_required_for });
-  if (d.state === "released" || d.state === "refunded") return s("none", "none");
+  // final: paid out, or expired (never funded by deadline + grace; a late payment never revives it)
+  if (d.state === "released" || d.state === "refunded" || d.state === "expired") return s("none", "none");
   if (d.accepted && !d.accepted.buyer) return s("buyer_accept", "buyer");
   if (d.accepted && !d.accepted.seller) return s("seller_accept", "seller");
   if (d.state === "created") return s("buyer_funding", "buyer");

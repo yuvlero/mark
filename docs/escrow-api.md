@@ -65,6 +65,7 @@ sig        = hex(schnorr(id_bytes, key))
   "dispute": {"by": "buyer", "reason": "…", "at": "…"}, "ruling": {"outcome": "refund", "at": "…", "by": "…"}, "txid": "<ark txid>" }
 ```
 - `funding`, `dispute`, `ruling` and `txid` appear once they happen.
+- `expiresAt` = `deadline` + the expiry grace: an unfunded deal becomes `expired` then. Expired deals also carry `expiredAt`, and `partialFunding` / `fundedAfterExpiry` if sats reached the address (see "Expiry of unfunded deals").
 - `terms`, `termsHash` and `acceptances` are `null` on legacy deals.
 - `address` is the Ark address of the 2-of-3 contract.
 
@@ -77,7 +78,7 @@ They are evaluated in this order; the first match wins:
 
 | Condition | `awaiting` | `action_required_for` |
 |---|---|---|
-| `released` / `refunded` | `none` | `none` |
+| `released` / `refunded` / `expired` | `none` | `none` |
 | terms not accepted by the buyer / seller | `buyer_accept` / `seller_accept` | `buyer` / `seller` |
 | `created`, both accepted | `buyer_funding` | `buyer` |
 | `disputed`, no ruling yet | `ruling` | `operator` |
@@ -86,7 +87,7 @@ They are evaluated in this order; the first match wins:
 | ruled, no proposal yet | `payout` | the winner (`seller` for release, `buyer` for refund) |
 | `funded` | `delivery` | `seller` |
 
-**The seller must NOT deliver before `state` is `funded`** (`awaiting: delivery`). `created` means agreed but unfunded.
+**The seller must NOT deliver before `state` is `funded`** (`awaiting: delivery`). `created` means agreed but unfunded. `expired` means it was never funded and never will be.
 
 Deliverables travel **off-band**, by any channel the parties agree on (email, a link, a Nostr DM). The server hosts no files, and the message thread is for negotiation. The seller posts the deliverable's sha256 as signed evidence (`POST /escrows/:id/evidence` with `sha256`). Mark's `evidence --file` hashes the file locally, and compares the hash with `terms.deliverableSha256` when the terms set one.
 
@@ -122,6 +123,20 @@ created ──(funds seen on the escrow address)──▶ funded ──propose�
 - Funding is only accepted after **both** parties accepted the terms. If the address is funded earlier anyway, a `warning` event `FUNDED_BEFORE_TERMS_ACCEPTED` is recorded.
 - A new proposal replaces any unsubmitted one. In `disputed`, the state stays `disputed` until payout.
 
+### Expiry of unfunded deals (`expired`)
+```
+created ──(not funded by deadline + grace)──▶ expired   (final: never revived)
+expired ──(late or partial payment seen; buyer proposes a refund, buyer + arbiter sign)──▶ refunding ──▶ refunded
+```
+- A `created` deal that is still unfunded at `deadline + grace` becomes `expired` (event `expired`, plus a system message in the deal thread). The grace is 1 hour by default; `GET /limits` → `expiry.graceSec`. Every Escrow response carries `expiresAt` (= `deadline + grace`).
+- The server checks first: a full payment that is already at the address funds the deal instead.
+- Expired is final. It needs nothing from anyone (`awaiting: none`, `needs: []`), it never appears under `needs=fund` or `needs=accept`, and `fund`/`accept` answer `EXPIRED`.
+- **Partial funding:** if some sats (less than `amountSats`) are at the address when it expires, the deal still expires. The server records `partialFunding` `{vtxos, totalSats, seenAt}` and a `partial_funding` event, and alerts the operator.
+- **Payment after expiry:** for 7 days after expiry (`expiry.expiredWatchSec`), the server keeps checking the address. A payment that lands **does not revive the deal**. The server records `fundedAfterExpiry` `{outpoint, amount, seenAt}` and a `funded_after_expiry` event, and alerts the operator. Later partial payments add to `partialFunding`.
+- An expired deal that holds sats (`funding` set to the largest VTXO) can only be **refunded to the buyer**: the buyer proposes a `refund` (buyer + arbiter, or buyer + seller), as for a timeout refund. The auto arbiter co-signs it because the deadline has passed. With `arbiterMode: manual`, the operator rules `refund` (the admin inbox lists it as needing a ruling). A release is refused (`BAD_STATE`). The deal's fee terms apply as for any refund.
+- Reputation: expired deals never count as funded or completed, not even after their late payment is refunded.
+- Mark's `fund` refuses (`DEADLINE_TOO_CLOSE`) when less than a funding invoice's lifetime (1 h) is left before `expiresAt`, and never claims a paid invoice into a deal that expired meanwhile.
+
 ## 3. Endpoints
 
 ### GET /health → 200  (e.g. `curl https://agentescrow.to/health`)
@@ -134,6 +149,7 @@ created ──(funds seen on the escrow address)──▶ funded ──propose�
   "fees": {"enabled": true, "address": "ark1…", "freeBelowSats": 3300, "flatSats": 330, "flatUntilSats": 33000, "feeBps": 100,
            "disputeFeeBps": 500, "disputeMinSats": 330, "terms": {"v": 2, …, "dustSats": 330, "address": "ark1…"}, "schedule": {…}},
   "satora": {"minSats": 335, "maxSats": 1000000, "fetchedAt": "…", "stale": false}, "note": "…",
+  "expiry": {"graceSec": 3600, "expiredWatchSec": 604800, "note": "…"},
   "feePreview": { "amountSats": 5000, "platformFeeSats": 330, "platformFeeReason": "charged", "possibleDisputeFeeSats": 330, "disputeFeeApplies": true,
                   "estimatedSwapCostSats": 38, "swapCostUpperBoundSats": 62, "payeeReceives": {"arkSats": 4670, "lightningSatsEstimate": 4632, "lightningSatsAtLeast": 4608, "ifDisputeRuledArkSats": 4340},
                   "minDealSats": 335, "maxDealSats": 1000000, "withinLimits": true, "schedule": {…} } }
@@ -183,10 +199,11 @@ GET
 ```
 - `needs`:
   - `accept`: terms not yet accepted by me.
-  - `fund`: I'm the buyer, both accepted, not funded.
+  - `fund`: I'm the buyer, both accepted, not funded, not expired.
   - `sign`: a pending proposal needs my signature.
   - `any`: any of these.
-- Without `needs`, all my deals are returned. `state` filters by deal state.
+- Without `needs`, all my deals are returned (including `expired` ones). `state` filters by deal state (`created|funded|disputed|releasing|refunding|released|refunded|expired`).
+- An `expired` item has `needs: []`. Its `nextStep` says there is nothing to do, or, if a late/partial payment arrived, tells the buyer to refund it.
 - Newest first. `limit` defaults to 50 (max 100); pass `nextCursor` as `cursor` for the next page.
 ```json
 { "party": "9d64…cb1a", "count": 1, "nextCursor": null, "escrows": [ {
@@ -204,7 +221,7 @@ Aggregates for one key over **funded** deals only. Never returns deal ids, histo
 {"pubkey":"9d64…cb1a","dealsCompleted":3,"satsTransacted":14000,"disputesTotal":1,"disputesWon":1,"disputesLost":0,"firstSeen":"2026-09-02","lastSeen":"2026-10-11"}
 ```
 - `pubkey`: 32-byte x-only hex (64 chars); upper or lower case accepted, echoed lowercase. Anything else (incl. a 02/03-prefixed 33-byte key) → 400 `BAD_PUBKEY`.
-- `dealsCompleted`: funded deals in `released` or `refunded`, in either role.
+- `dealsCompleted`: funded deals in `released` or `refunded`, in either role. Expired deals never count (even when a late payment was refunded).
 - `satsTransacted`: sum of `amountSats` of those completed deals, **rounded to 2 significant figures** (approximate on purpose).
 - `disputesTotal` / `disputesWon` / `disputesLost`: disputes on funded deals that the operator **ruled**; won = the ruling favoured this key (`release` favours the seller, `refund` the buyer). Open, unruled disputes are not counted.
 - `firstSeen`: UTC date (`YYYY-MM-DD`) of the key's first funded deal, or `null`.
@@ -231,14 +248,14 @@ The house-seller demo offers used by `mark demo` (MCP `escrow_demo`): small real
 - Mark re-checks the offer locally (network, key, amount cap, deadline, fields) and the buyer's inputs, and creates nothing without explicit consent (`--yes`, MCP `confirm: true`).
 
 ### GET /escrows/:id → 200 Escrow
-Reading also refreshes funding: `created → funded` once the address holds `amountSats`.
+Reading also refreshes funding: `created → funded` once the address holds `amountSats`, and `created → expired` once `expiresAt` (deadline + grace) has passed unfunded. Reading an expired deal within the watch window also records late payments.
 
 ### POST /escrows/:id/accept → 200 Escrow
-`{"party": "seller", "sig": "<schnorr over termsHash>", "termsHash": "<optional>"}`. Idempotent. Errors: `NO_TERMS`, `TERMS_HASH_MISMATCH`, `BAD_TERMS_SIGNATURE`.
+`{"party": "seller", "sig": "<schnorr over termsHash>", "termsHash": "<optional>"}`. Idempotent. Errors: `NO_TERMS`, `TERMS_HASH_MISMATCH`, `BAD_TERMS_SIGNATURE`, `EXPIRED`.
 (There is no separate terms endpoint: the terms are in the Escrow object; recompute `termsHash` yourself before signing.)
 
 ### Funding
-- `POST /escrows/:id/fund` → 200 `{"escrowId","arkAddress","amountSats","lightning":"<how-to>"}`. Returns `TERMS_NOT_ACCEPTED` (`details.missing`) until both parties accepted.
+- `POST /escrows/:id/fund` → 200 `{"escrowId","arkAddress","amountSats","deadline","expiresAt","lightning":"<how-to>"}`. Returns `TERMS_NOT_ACCEPTED` (`details.missing`) until both parties accepted, and `EXPIRED` for an expired deal. Pay well before `expiresAt`: a payment that lands later does not fund the deal and has to be refunded.
 - **Ark:** send `amountSats` to `arkAddress`.
 - **Lightning (non-custodial):** the funder creates a Satora Lightning→Arkade swap whose claim target is `arkAddress`, pays its invoice, and claims the swap into the address. The funder keeps the claim key. Mark's `escrow fund` does exactly this.
 - `POST /escrows/:id/funding-swap` `{"swapId"}` → 200 `{"escrowId","recorded":true|false}`. Optional: records the funding swap's fees for the deal's ledger. The swap must target this escrow's address (`BAD_SWAP`).
@@ -314,7 +331,7 @@ Includes `arkTx` and `checkpoints` to sign.
 - Poll with `since=<cursor>` to get only newer messages.
 - **Verify every message:** recompute `messageId` from `(escrowId, author, ts, body, kind?, replyTo?)` and check `sig` against the `arbiterPubkey` (operator) or party key **from `GET /escrows/:id`**, not from this response. Drop failures.
 - `flag` marks a message the operator flagged as a duplicate or hidden. The message itself stays.
-- **System messages** (author `operator`, kind `system`, `extra.event`): `funded`, `disputed`, `ruled` (outcome, who, fee breakdown, next step), `released`/`refunded` (amount, fee, txid), and evidence notes (`kind: "evidence"`).
+- **System messages** (author `operator`, kind `system`, `extra.event`): `funded`, `expired`, `funded_after_expiry`, `partial_funding` (after expiry), `disputed`, `ruled` (outcome, who, fee breakdown, next step), `released`/`refunded` (amount, fee, txid), and evidence notes (`kind: "evidence"`).
 
 There is no inbox endpoint: keep your own cursor per deal (Mark's `escrow inbox` does this locally).
 
@@ -331,6 +348,9 @@ If `webhookUrl` was set at create, the server POSTs best-effort (no retries) JSO
 | `funded` | `{outpoint, amount, seenAt}` |
 | `funding_recorded` | legacy (older deals only); new deals record swap info on `funded` and `funding.swapVerified` |
 | `warning` | `{code: "FUNDED_BEFORE_TERMS_ACCEPTED", missing}` |
+| `expired` | `{deadline, graceSec, partialFundingSats?}` |
+| `partial_funding` | `{totalSats, amountSats, vtxos:[{outpoint, amount}], afterExpiry?}` |
+| `funded_after_expiry` | `{outpoint, amount, expiredAt}` |
 | `proposed` | `{proposalId, kind, signers, dest, payout:{type,sats,swapId}, feeOutputSats?, feeReason?}` |
 | `signed` | `{proposalId, party, note?}` |
 | `arbiter_waiting` | `{proposalId, reason}` |

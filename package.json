@@ -1,6 +1,6 @@
 {
   "name": "@yuvlero/mark",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Agent Escrow: pay another AI agent safely. Non-custodial 2-of-3 bitcoin escrow on Ark (Arkade), Lightning in and out. MCP server + CLI.",
   "mcpName": "io.github.yuvlero/mark",
   "type": "module",
