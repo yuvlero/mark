@@ -4,20 +4,27 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 
 ## [Unreleased]
 
-### Security
-- **Signed terms v2.** On a server that supports it, `create` signs `mark-escrow-terms/2`, which also binds the release rule, `arbiterMode`, the deadline, the fees and the webhook URL hash. Mark recomputes the hash locally on create, accept, show and fund, remembers the hash it signed, and refuses to fund if the deal changed (`TERMS_HASH_MISMATCH`, `TERMS_CHANGED`). On a v1-only server Mark falls back to v1 and prints `termsWarning` (for one release).
-- **Escrow address derived locally.** `src/core/escrowContract.ts` rebuilds the escrow script (byte-identical with the server, parity-tested). `accept` and `fund` refuse with `ADDRESS_MISMATCH` if the server's address differs; `show` reports it under `dealCheck`.
-- **Arbiter key pinning.** Mark checks each deal's `arbiterAttestation` against the server's arbiter identity key, pinned on first use per escrow URL (`<dataDir>/arbiter-pins.json`) or set explicitly with `--arbiter-pubkey` / `MARK_ARBITER_PUBKEY`. A changed key is refused loudly (`ARBITER_KEY_CHANGED`, also `ARBITER_KEY_MISMATCH`, `ARBITER_KEY_MISSING`, `ARBITER_ATTESTATION_INVALID`).
-- `http:` escrow URLs are refused except for localhost (`BAD_ESCROW_URL`).
-- For v2 deals the seller-chosen rule check (`UNSAFE_RULE`) moved to `accept`, where the buyer's signature binds the rule (`mark escrow accept <id> --allow-counterparty-rule`, MCP `allowCounterpartyRule`). v1 deals keep the check at `fund`.
+## [0.2.0] - 2026-10-22
 
-### Fixed
-- `--allow-counterparty-rule` was rejected by the CLI parser ("needs a value"); it now works as a plain flag.
-- `mark escrow fund` (and MCP `escrow_fund`) refuses with `UNSAFE_RULE` when you are the buyer and the deal's auto-release rule was chosen by someone else: a `hash` lock the seller created, or any `webhook` rule (with `arbiterMode: auto`). The rule is not covered by the signed terms, so such a deal lets seller + arbiter release without your signature. Pass `--allow-counterparty-rule` (MCP `allowCounterpartyRule: true`) to fund anyway. A funding swap that already started is not affected. `show` and `accept` print `ruleWarning` for these deals. Found by the 2026-10-22 security audit.
+### Breaking
+- **Needs escrow server 0.2.0 for v2 deals.** New deals use signed terms v2. Against an older server Mark falls back to v1 and prints `termsWarning` (this release only). Mark 0.1.7 and older can't accept the v2 deals that Mark 0.2.0 creates.
+- **`http:` escrow URLs are refused** except for localhost (`BAD_ESCROW_URL`). Use `https://`.
+- **The arbiter key is pinned.** The first time Mark talks to an escrow server, it saves that server's arbiter identity key. If the key later changes, Mark refuses (`ARBITER_KEY_CHANGED`).
+- **The escrow address is checked.** Mark works out the escrow address itself and refuses to accept or fund if the server's address differs (`ADDRESS_MISMATCH`).
+
+### Added
+- Signed terms v2 (`mark-escrow-terms/2`). `create` signs the release rule, `arbiterMode`, the deadline, the fees and the webhook URL hash together with the terms. Mark recomputes the hash on create, accept, show and fund, remembers the hash it signed, and refuses to fund if the deal changed (`TERMS_HASH_MISMATCH`, `TERMS_CHANGED`).
+- Local escrow-address derivation (`src/core/escrowContract.ts`, byte-identical with the server, parity-tested). `show` reports the result under `dealCheck`.
+- Arbiter key pinning. Mark checks each deal's `arbiterAttestation` against the server's arbiter identity key. The key is pinned per escrow URL in `<dataDir>/arbiter-pins.json` on first use, or set explicitly with `--arbiter-pubkey` / `MARK_ARBITER_PUBKEY`. Errors: `ARBITER_KEY_CHANGED`, `ARBITER_KEY_MISMATCH`, `ARBITER_KEY_MISSING`, `ARBITER_ATTESTATION_INVALID`.
+- `mark escrow fund` (and MCP `escrow_fund`) refuses with `UNSAFE_RULE` when you are the buyer and the auto-release rule was chosen by someone else: a `hash` lock the seller created, or any `webhook` rule (with `arbiterMode: auto`). Pass `--allow-counterparty-rule` (MCP `allowCounterpartyRule: true`) to go ahead anyway. `show` and `accept` print `ruleWarning` for these deals.
 
 ### Changed
-- Docs (API doc): matching the next escrow-server release, public deal responses omit `webhookUrl` (new `hasWebhook`), `POST /escrows` can return `429 RATE_LIMITED` (per IP, default 60 per hour), and the server verifies submitted signatures cryptographically (`BAD_SIGNATURE` for a listed key with an invalid signature).
-- Docs (API doc and README): webhook URL rules of the next escrow-server release. `webhookUrl` and `rule.url` must be public `https://` URLs (new error `BAD_WEBHOOK_URL`). The server refuses private or internal addresses (also via DNS), does not follow redirects, uses a 5 s timeout and a 64 KB answer cap, and refuses compressed answers. No code change in Mark.
+- For v2 deals, the seller-chosen rule check (`UNSAFE_RULE`) runs at `accept`, because the buyer's signature binds the rule there: `mark escrow accept <id> --allow-counterparty-rule` (MCP `escrow_accept.allowCounterpartyRule`). v1 deals keep the check at `fund`.
+- Docs (API doc, README, skill, quickstart): terms v2, address and arbiter checks, the new error codes, and the escrow server 0.2.0 changes. Those changes are: public deal responses omit `webhookUrl` (new `hasWebhook`); `POST /escrows` can return `429 RATE_LIMITED`; submitted signatures are verified (`BAD_SIGNATURE`); webhook URLs must be public `https://` URLs (`BAD_WEBHOOK_URL`).
+- npm package: `docs/distribution` (internal notes) is no longer published.
+
+### Fixed
+- `--allow-counterparty-rule` was rejected by the CLI parser ("needs a value"). It now works as a plain flag.
 
 ## [0.1.7] - 2026-10-21
 

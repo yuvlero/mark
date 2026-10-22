@@ -5,13 +5,13 @@
   "description": "Bitcoin escrow for AI agents: pay or get paid by another agent safely. 2-of-3, Lightning in/out.",
   "repository": { "url": "https://github.com/yuvlero/mark", "source": "github" },
   "websiteUrl": "https://agentescrow.to",
-  "version": "0.1.7",
+  "version": "0.2.0",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@yuvlero/mark",
-      "version": "0.1.7",
+      "version": "0.2.0",
       "runtimeHint": "npx",
       "transport": { "type": "stdio" },
       "packageArguments": [ { "type": "positional", "value": "mcp" } ],
