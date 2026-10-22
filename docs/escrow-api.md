@@ -68,6 +68,7 @@ sig        = hex(schnorr(id_bytes, key))
 - `expiresAt` = `deadline` + the expiry grace: an unfunded deal becomes `expired` then. Expired deals also carry `expiredAt`, and `partialFunding` / `fundedAfterExpiry` if sats reached the address (see "Expiry of unfunded deals").
 - `terms`, `termsHash` and `acceptances` are `null` on legacy deals.
 - `address` is the Ark address of the 2-of-3 contract.
+- `webhookUrl` is never returned by the public API (it often carries a secret). `hasWebhook: true|false` says whether one is set.
 
 - Every Escrow response (GET/POST, accept, …) also carries `awaiting`, `action_required_for` and `arbiterPolicy` (see below). They are derived fields and are not signed.
 
@@ -173,7 +174,7 @@ expired ──(late or partial payment seen; buyer proposes a refund, buyer + ar
 - `deadline`: seconds from now (number) or an ISO string; it must be in the future.
 - `terms` is optional only for legacy compatibility. With terms, `creatorAcceptance` is required.
 - `arbiterMode` defaults to `auto` unless you send `manual`.
-- Errors: `BAD_AMOUNT`, `AMOUNT_TOO_SMALL` (`details.minDealSats`), `LIMIT_EXCEEDED`, `BAD_PUBKEY`, `BAD_DEADLINE`, `BAD_RULE` (also a `rule.url` that is not a public https URL), `BAD_WEBHOOK_URL` (`webhookUrl` not a public https URL), `BAD_TERMS`, `TERMS_SIGNATURE_REQUIRED`, `TERMS_HASH_MISMATCH` (`details.termsHash`, `details.fees`), `BAD_TERMS_SIGNATURE`.
+- Errors: `BAD_AMOUNT`, `AMOUNT_TOO_SMALL` (`details.minDealSats`), `LIMIT_EXCEEDED`, `BAD_PUBKEY`, `BAD_DEADLINE`, `BAD_RULE` (also a `rule.url` that is not a public https URL), `BAD_WEBHOOK_URL` (`webhookUrl` not a public https URL), `BAD_TERMS`, `TERMS_SIGNATURE_REQUIRED`, `TERMS_HASH_MISMATCH` (`details.termsHash`, `details.fees`), `BAD_TERMS_SIGNATURE`, `429 RATE_LIMITED` (deal creation is limited per client IP; server default 60 per hour).
 
 **Rules (auto arbiter):**
 - `manual`: the operator decides.
@@ -301,7 +302,8 @@ Includes `arkTx` and `checkpoints` to sign.
 `{"party": "buyer", "arkTx": "<base64 PSBT signed by you>", "checkpoints": ["<base64 PSBT signed by you>", …]}`
 - Sign input 0 of `arkTx` and every checkpoint with your key (Arkade escrow tapscript leaf for the proposal's signer set).
 - Once 2 signers have signed, the server submits the tx to the Ark server, sets `submittedTxid`, and moves the deal to `released`/`refunded`.
-- Errors: `BAD_SIGNATURE` (tx mismatch, missing your sig, checkpoint count), `BAD_SIGNERS`, `FEE_MISMATCH` (a ruling added the dispute fee: the payee must propose again).
+- The server verifies each signature cryptographically (BIP341 script-path sighash for your key on input 0 of `arkTx` and of every checkpoint), and each checkpoint must be the proposal's own checkpoint. Listing your key with an invalid signature is refused.
+- Errors: `BAD_SIGNATURE` (tx or checkpoint mismatch, missing or invalid signature, checkpoint count), `BAD_SIGNERS`, `FEE_MISMATCH` (a ruling added the dispute fee: the payee must propose again).
 
 ### POST /escrows/:id/dispute → 200 Escrow
 `{"auth": {"party", "ts", "sig"}, "reason": "≤500 chars"}`. Allowed in `funded`, `releasing` and `refunding`. It stops automatic arbiter signing; the operator rules.
@@ -384,6 +386,7 @@ Webhooks are unauthenticated. Treat them as hints and confirm with `GET /escrows
 | Messages | 4,000 chars, 20 per 10 min per key |
 | Listing (`GET /escrows?party=`) | ±120 s ts window, nonce single-use, 30/min per key, 120/min per IP (server defaults) |
 | Reputation (`GET /reputation/:pubkey`) | 60/min per IP, cached up to 30 s (server defaults) |
+| Deal creation (`POST /escrows`) | 60 per hour per IP (server default) |
 | Evidence | 4,000 chars text, 500 chars URL, 200 per deal |
 | Terms | title 120, description 4,000, deliverable 1,000, acceptance 2,000 |
 | Request body | 2 MB |

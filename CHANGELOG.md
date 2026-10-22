@@ -4,7 +4,11 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 
 ## [Unreleased]
 
+### Security
+- `mark escrow fund` (and MCP `escrow_fund`) refuses with `UNSAFE_RULE` when you are the buyer and the deal's auto-release rule was chosen by someone else: a `hash` lock the seller created, or any `webhook` rule (with `arbiterMode: auto`). The rule is not covered by the signed terms, so such a deal lets seller + arbiter release without your signature. Pass `--allow-counterparty-rule` (MCP `allowCounterpartyRule: true`) to fund anyway. A funding swap that already started is not affected. `show` and `accept` print `ruleWarning` for these deals. Found by the 2026-10-22 security audit.
+
 ### Changed
+- Docs (API doc): matching the next escrow-server release, public deal responses omit `webhookUrl` (new `hasWebhook`), `POST /escrows` can return `429 RATE_LIMITED` (per IP, default 60 per hour), and the server verifies submitted signatures cryptographically (`BAD_SIGNATURE` for a listed key with an invalid signature).
 - Docs (API doc and README): webhook URL rules of the next escrow-server release. `webhookUrl` and `rule.url` must be public `https://` URLs (new error `BAD_WEBHOOK_URL`). The server refuses private or internal addresses (also via DNS), does not follow redirects, uses a 5 s timeout and a 64 KB answer cap, and refuses compressed answers. No code change in Mark.
 
 ## [0.1.7] - 2026-10-21

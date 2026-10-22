@@ -65,7 +65,7 @@ async function main(): Promise<"keep" | void> {
         case "show": return void out(await uc.show(c, id));
         case "accept": return void out(await uc.accept(c, id));
         case "evidence": return void out(await uc.addEvidence(c, id, { text: s(f.text) ?? s(f.note), sha256: s(f.sha256), url: s(f.url), file: s(f.file) }));
-        case "fund": return void out(await uc.fund(c, id, { wait: !!f.wait, timeoutSec: Number(f.timeout || 900), onInvoice: out }));
+        case "fund": return void out(await uc.fund(c, id, { wait: !!f.wait, timeoutSec: Number(f.timeout || 900), onInvoice: out, allowCounterpartyRule: f["allow-counterparty-rule"] === true || f["allow-counterparty-rule"] === "true" }));
         case "status": return void out(await uc.status(c, id));
         case "limits": return void out(await uc.limits(c, f.sats !== undefined ? Number(f.sats) : undefined));
         case "quote": return void out(await uc.quote(c, id, uc.requireKind(s(f.path), "release"), s(f.dest)));

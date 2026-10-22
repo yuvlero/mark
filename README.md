@@ -156,6 +156,7 @@ mark escrow create --role buyer --counterparty <S pubkey> --sats 5000 --deadline
   - `manual`: it signs only to execute an operator ruling.
 - `rule` is the auto-release condition: `--hash` gives `hash`, `--webhook` gives `webhook`, otherwise `manual`. `rule: manual` means **no automatic release** (buyer + seller sign); it does not mean a human must act. `show` prints both, decoded, as `arbiterPolicy`.
 - `--hash <sha256>`: the auto-arbiter co-signs a seller + arbiter release when the seller reveals the preimage (`approve --with arbiter --preimage <hex>`). No buyer is needed.
+- The rule is **not** part of the signed terms. A buyer's Mark therefore refuses to fund (`UNSAFE_RULE`) a deal whose release rule the seller chose: a hash lock the seller created (the seller knows the preimage from the start) or any `webhook` rule (someone else's URL decides). `show` and `accept` print `ruleWarning` for such deals. Fund anyway only on purpose: `mark escrow fund <id> --allow-counterparty-rule` (MCP: `allowCounterpartyRule: true`).
 - `--webhook <url>` receives deal events (see the API doc). It must be a public `https://` URL: the server refuses `http://`, localhost and private or internal addresses, does not follow redirects, waits 5 s at most and refuses compressed answers.
 
 ### 4.3 Counterparty finds, reviews and accepts
@@ -300,7 +301,7 @@ Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL`.
 | `mark escrow show <id>` | Terms, fee terms, acceptances (verified), evidence (with `deliverableMatch`), `awaiting`, `action_required_for`, `arbiterPolicy`, `counterpartyReputation`, next step |
 | `mark escrow accept <id>` | Verify `termsHash` locally and sign it (prints `awaiting`, `action_required_for`) |
 | `mark escrow limits [--sats N]` | Limits, fee schedule, fee preview |
-| `mark escrow fund <id> [--wait] [--timeout sec]` | Lightning invoice to fund; `--wait` claims into the escrow |
+| `mark escrow fund <id> [--wait] [--timeout sec] [--allow-counterparty-rule]` | Lightning invoice to fund; `--wait` claims into the escrow. Refuses (`UNSAFE_RULE`) a deal whose auto-release rule the seller chose (its own hash lock, or any webhook rule) unless `--allow-counterparty-rule` |
 | `mark escrow status <id>` | Full deal state, proposals, events, local swap status, `awaiting`, `action_required_for`, `arbiterPolicy` |
 | `mark escrow quote <id> [--path release\|refund] [--dest <lnaddr\|bolt11>]` | Payout amounts; exact with `--dest` |
 | `mark escrow pending [<id>]` | Pending payout proposals and payout details. **No id:** across all my deals (local + server listing `needs=sign`), with `awaiting`, `needsMySignature` and the co-sign command |
@@ -329,7 +330,7 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 | `escrow_reputation` (pubkey) | `reputation <pubkey>` |
 | `escrow_pending` (id? — omit for all my deals) | `escrow pending [<id>]` |
 | `escrow_limits` (sats?) | `escrow limits` |
-| `escrow_fund` (id, wait?) | `escrow fund` |
+| `escrow_fund` (id, wait?, allowCounterpartyRule?) | `escrow fund` |
 | `escrow_quote` (id, path?, dest?) | `escrow quote` |
 | `escrow_approve` (id, payoutInvoice? / payoutLnaddr? / payoutArk?, kind?, with?, preimage?) | `escrow approve` |
 | `escrow_refund` (id, payout…, with?) | `escrow refund` |

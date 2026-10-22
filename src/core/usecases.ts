@@ -102,10 +102,26 @@ export async function create(c: Ctx, o: CreateOpts) {
   });
   if (e.termsHash !== h) throw new MarkError("TERMS_HASH_MISMATCH", `server recorded termsHash ${e.termsHash} but I signed ${h}; do not fund escrow ${e.id}`);
   if (JSON.stringify(e.fees ?? null) !== JSON.stringify(fees)) throw new MarkError("FEE_TERMS_MISMATCH", `server stamped different fee terms than it published; do not fund escrow ${e.id}`);
-  c.index.set(e.id, { role });
+  c.index.set(e.id, { role, created: true });
   // upfront fee preview: server's (with live swap estimate) if present, else computed locally from the published terms
   const preview = (e as any).feePreview ?? (lim ? feePreview(fees, o.sats, { minDealSats: lim.minDealSats.enforced, maxDealSats: lim.maxDealSats, swapEstimateSats: null }) : null);
   return { ...e, feeTerms: fees, feeSummary: feeSummary(fees, o.sats), feePreview: preview, next: `share the escrow id with your counterparty; they must run: mark escrow show ${e.id} then mark escrow accept ${e.id}. Funding is blocked until both accepted.` };
+}
+
+/** Buyer-side consent check on the auto-release rule. The rule is NOT covered by the signed terms (termsHash), so a seller-created
+ *  deal can carry a `hash` lock whose preimage the seller already knows, or a `webhook` rule pointing at a URL the seller runs: either
+ *  lets seller + arbiter release without the buyer's signature. Returns a warning for the buyer, or null when the rule is safe for it. */
+export function counterpartyRule(c: Ctx, e: Escrow, role: Role) {
+  const rule = (e.rule ?? { type: "manual" }) as { type: string; url?: string; sha256?: string };
+  if (role !== "buyer" || e.arbiterMode === "manual" || (rule.type !== "hash" && rule.type !== "webhook")) return null;
+  const createdEv = ((e.events as any[] | undefined) ?? []).find((x) => x?.type === "created");
+  const iCreated = c.index.get(e.id).created === true || (Array.isArray(createdEv?.data?.acceptedBy) && createdEv.data.acceptedBy[0] === "buyer");
+  if (rule.type === "hash" && iCreated) return null; // my own hash lock: only I can know the preimage
+  return { releaseRule: rule.type, ...(rule.url ? { url: rule.url } : {}), ...(rule.sha256 ? { sha256: rule.sha256 } : {}),
+    warning: rule.type === "hash"
+      ? "the seller set this hash lock: whoever knows the preimage (the seller) can be paid by seller + arbiter WITHOUT your signature, at any time after funding. Fund only if revealing the preimage is itself the delivery to you."
+      : `release is decided by a webhook you do not control (${rule.url ?? "rule.url"}): if it answers approve, the seller is paid WITHOUT your signature.`,
+    toProceed: "mark escrow fund <id> --allow-counterparty-rule (MCP: escrow_fund allowCounterpartyRule=true)" };
 }
 
 /** Recompute termsHash locally from the deal and check every recorded acceptance signature (never trust the server's word). */
@@ -147,8 +163,8 @@ export async function show(c: Ctx, id: string) {
   const iAccepted = v.accepted ? (v.accepted as any)[role].accepted : null;
   const want = e.terms?.deliverableSha256;
   for (const x of evidence as any[]) if (want && x.sha256) x.deliverableMatch = x.sha256 === want;
-  const rep = await counterpartyReputation(c, e, role);
-  return { id: e.id, state: e.state, myRole: role, counterpartyReputation: rep, ...statusOf(e), amountSats: e.amountSats, deadline: e.deadline, ...v, feeTerms: e.fees ?? null, feeSummary: feeSummary(e.fees ?? null, e.amountSats), evidence,
+  const rep = await counterpartyReputation(c, e, role); const ruleWarning = counterpartyRule(c, e, role);
+  return { id: e.id, state: e.state, myRole: role, counterpartyReputation: rep, ...(ruleWarning ? { ruleWarning } : {}), ...statusOf(e), amountSats: e.amountSats, deadline: e.deadline, ...v, feeTerms: e.fees ?? null, feeSummary: feeSummary(e.fees ?? null, e.amountSats), evidence,
     dispute: e.dispute ?? null, ruling: e.ruling ?? null,
     next: e.state === "expired" ? expiredNote(e) : v.legacy ? "legacy deal (no terms)" : !v.hashVerified ? "TERMS HASH MISMATCH: do not accept or fund" : !iAccepted ? `review the terms, then: mark escrow accept ${e.id}` : !v.agreed ? "waiting for the counterparty to accept" : e.state === "created" ? (role === "buyer" ? `both accepted; fund with: mark escrow fund ${e.id}` : "both accepted; waiting for the buyer to fund") : undefined };
 }
@@ -162,8 +178,8 @@ export async function accept(c: Ctx, id: string) {
   const r = (v.accepted as any)[role].signatureValid ? e : await c.api.accept(id, { party: role, termsHash: v.termsHash!, sig: signHash(c.secret, v.termsHash!) });
   const after = verifyDealTerms(c, r);
   const missing = (["buyer", "seller"] as const).filter((p) => !(after.accepted as any)[p].accepted);
-  const rep = await counterpartyReputation(c, r, role);
-  return { escrowId: id, myRole: role, counterpartyReputation: rep, accepted: true, alreadyAccepted: r === e, state: r.state, ...statusOf(r),
+  const rep = await counterpartyReputation(c, r, role); const ruleWarning = counterpartyRule(c, r, role);
+  return { escrowId: id, myRole: role, counterpartyReputation: rep, ...(ruleWarning ? { ruleWarning } : {}), accepted: true, alreadyAccepted: r === e, state: r.state, ...statusOf(r),
     status: !after.agreed ? `you accepted; waiting for the ${missing.join(" and ") || "counterparty"}` : r.state === "created" ? "both parties accepted the terms; not funded yet (state 'created' means waiting for the buyer's funding)" : `both accepted; escrow is ${r.state}`, terms: after.terms, termsHash: after.termsHash, acceptedBy: after.accepted, agreed: after.agreed,
     next: !after.agreed ? `waiting for the ${missing.join(" and ") || "counterparty"} to accept: mark escrow accept ${id}` : r.state === "created" ? (role === "buyer" ? `both accepted; fund with: mark escrow fund ${id}` : "both accepted; waiting for the buyer to fund") : undefined };
 }
@@ -272,7 +288,7 @@ async function reportFunding(c: Ctx, id: string, swapId: string) {
 }
 
 /** Fund via Lightning: Satora LN->Arkade swap targeting the escrow address; THIS Mark holds the claim key and claims into the escrow. */
-export async function fund(c: Ctx, id: string, o: { wait?: boolean; timeoutSec?: number; onInvoice?: (x: unknown) => void } = {}) {
+export async function fund(c: Ctx, id: string, o: { wait?: boolean; timeoutSec?: number; onInvoice?: (x: unknown) => void; allowCounterpartyRule?: boolean } = {}) {
   const e = await c.api.get(requireId(id));
   assertEscrowCap(c.cfg, e.amountSats);
   if (e.state === "expired") return { escrowId: id, state: e.state, expiredAt: e.expiredAt ?? null, note: expiredNote(e) };
@@ -280,6 +296,9 @@ export async function fund(c: Ctx, id: string, o: { wait?: boolean; timeoutSec?:
   const v = verifyDealTerms(c, e); // legacy deals (terms null) fund as before
   if (!v.agreed) throw new MarkError("TERMS_NOT_ACCEPTED", v.hashVerified === false ? "terms hash mismatch; refusing to fund" : `both parties must accept the terms before funding (buyer: ${(v.accepted as any).buyer.accepted}, seller: ${(v.accepted as any).seller.accepted}). Run: mark escrow accept ${id}`, { accepted: v.accepted });
   const l = c.index.get(id);
+  // never start funding a deal whose auto-release rule the buyer did not choose, unless explicitly allowed (an existing swap continues)
+  const risk = l.fundSwap ? null : counterpartyRule(c, e, l.role ?? myRole(c, e));
+  if (risk && !o.allowCounterpartyRule) throw new MarkError("UNSAFE_RULE", `refusing to fund: ${risk.warning} To fund anyway: mark escrow fund ${id} --allow-counterparty-rule`, risk);
   // a new invoice must be payable (and claimed) before the deal expires at deadline + grace; else the payment would land on an expired deal
   const left = Math.floor((expiresAtMs(e) - Date.now()) / 1000);
   if (!l.fundSwap && left < FUND_INVOICE_LIFETIME_SEC) throw new MarkError("DEADLINE_TOO_CLOSE", `refusing to fund: the deal expires in ${Math.max(0, left)} s (deadline ${e.deadline} + grace), less than a funding invoice's lifetime (${FUND_INVOICE_LIFETIME_SEC} s). A late payment would land on an expired deal and need a refund. Create a new deal with a later deadline.`, { deadline: e.deadline, expiresAt: new Date(expiresAtMs(e)).toISOString(), secondsLeft: Math.max(0, left), invoiceLifetimeSec: FUND_INVOICE_LIFETIME_SEC });
