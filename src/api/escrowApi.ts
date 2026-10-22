@@ -76,7 +76,10 @@ export class EscrowApi {
   /** GET /escrows?party=: signed listing of my deals. `sign(pathAndQuery)` returns the x-mark-* auth headers. */
   partyList(party: string, q: { needs?: string; state?: string; limit?: number; cursor?: string }, sign: (pathAndQuery: string) => Record<string, string>) {
     const p = new URLSearchParams({ party }); if (q.needs) p.set("needs", q.needs); if (q.state) p.set("state", q.state); if (q.limit) p.set("limit", String(q.limit)); if (q.cursor) p.set("cursor", q.cursor);
-    const pq = `/escrows?${p.toString()}`; return this.call<PartyList>("GET", pq, undefined, sign(pq));
+    // sign() runs per attempt: every attempt gets a fresh ts + random nonce. A read-only listing is safe to repeat, so a
+    // replay refusal (the same signed request reached the server twice, e.g. re-sent by a proxy) is retried once, freshly signed.
+    const pq = `/escrows?${p.toString()}`;
+    return this.call<PartyList>("GET", pq, undefined, sign(pq)).catch((e) => { if (!isReplayError(e)) throw e; return this.call<PartyList>("GET", pq, undefined, sign(pq)); });
   }
   /** GET /reputation/:pubkey (public, unauthenticated). */
   reputation(pubkey: string, timeoutMs?: number) { return this.call<Reputation>("GET", `/reputation/${enc(pubkey)}`, undefined, {}, timeoutMs); }
@@ -97,3 +100,5 @@ export class EscrowApi {
   dispute(id: string, b: { reason?: string; auth: Auth }) { return this.call<Escrow>("POST", `/escrows/${enc(id)}/dispute`, b); }
 }
 const enc = encodeURIComponent;
+/** The server's signed-listing replay refusal (401 UNAUTHORIZED "nonce already used (replay)"). */
+export const isReplayError = (e: unknown) => e instanceof MarkError && e.code === "UNAUTHORIZED" && /nonce already used/i.test(e.message);

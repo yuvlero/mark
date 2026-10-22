@@ -3,6 +3,7 @@ import { mnemonicToSeedSync } from "@scure/bip39";
 import { schnorr } from "@noble/curves/secp256k1.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { hex } from "@scure/base";
+import { randomBytes } from "node:crypto";
 
 /** m/86'/coin'/0'/9/0 — dedicated escrow branch (BIP86 account 0, change index 9 = Mark escrow). */
 export async function escrowKey(mnemonic: string, isMainnet: boolean) {
@@ -24,8 +25,11 @@ export function signAuth(secret: Uint8Array, escrowId: string, action: string) {
 /** BIP340 Schnorr over a 32-byte hash (termsHash / evidence hash). */
 /** Signed listing request (GET /escrows?party=): BIP340 over sha256("mark-escrow-list:v1\nGET\n<path?query>\n<ts>\n<nonce>"). */
 export const listSigningString = (method: string, pathAndQuery: string, ts: number, nonce: string) => ["mark-escrow-list:v1", method.toUpperCase(), pathAndQuery, String(ts), nonce].join("\n");
+/** Listing nonce: 16 bytes from the OS CSPRNG as 32 hex chars (the server accepts 16..64 chars [A-Za-z0-9_-]). Never derived from the clock. */
+export const LIST_NONCE_BYTES = 16;
+export const listNonce = () => hex.encode(randomBytes(LIST_NONCE_BYTES));
 export function signListRequest(secret: Uint8Array, method: string, pathAndQuery: string) {
-  const ts = Math.floor(Date.now() / 1000); const nonce = hex.encode(crypto.getRandomValues(new Uint8Array(16)));
+  const ts = Math.floor(Date.now() / 1000); const nonce = listNonce();
   const sig = hex.encode(schnorr.sign(sha256(new TextEncoder().encode(listSigningString(method, pathAndQuery, ts, nonce))), secret));
   return { "x-mark-ts": String(ts), "x-mark-nonce": nonce, "x-mark-sig": sig };
 }

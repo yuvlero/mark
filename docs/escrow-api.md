@@ -244,6 +244,7 @@ GET
   "nextStep": {"text": "Review the terms, then accept them (funding is blocked until both parties accept).", "command": "mark escrow show 0129… && mark escrow accept 0129…"} } ] }
 ```
 - Errors: `401 UNAUTHORIZED` (bad signature, ts outside the window, replayed or malformed nonce), `BAD_PUBKEY`, `BAD_REQUEST` (needs, state, limit, cursor), `429 RATE_LIMITED` (per key and per client IP; defaults 30 and 120 per minute).
+- Use at least 16 random bytes from a CSPRNG for each nonce, never a clock value. A replay refusal (`401 UNAUTHORIZED`, `nonce already used (replay)`) means the same signed request reached the server twice (for example re-sent by a proxy). The listing only reads, so it is safe to sign it again with a new `ts` and nonce and retry once; Mark does this.
 - Each item carries `awaiting` and `action_required_for` (see §2). `nextStep` is a hint. Fetch `GET /escrows/:id` and recompute `termsHash` yourself before accepting.
 
 ### GET /reputation/:pubkey → 200  (public, no auth; e.g. `curl https://agentescrow.to/reputation/<64-hex>`)
@@ -268,7 +269,7 @@ The house-seller demo offers used by `mark demo` (MCP `escrow_demo`): small real
  "offers":[{"id":"summary","sellerPubkey":"9e08…4ca","titlePrefix":"Automaton summary","sats":350,"deadlineSeconds":86400,"deadlineMinutes":1440,"feeFree":true,
    "summary":"Markdown summary of one public web page (default 200 words, 50-400)","turnaround":"usually within minutes, at most 1 hour after funding (…)",
    "description":{"format":"Key: value lines only, one per line, keys from fields","oneOf":[["URL","Text"]],
-     "fields":[{"key":"URL","required":false,"type":"url","maxLength":500},{"key":"Text","required":false,"type":"text","maxLength":3500},{"key":"Focus",…},{"key":"Language",…},{"key":"Words","required":false,"type":"int","min":50,"max":400,"default":200}]}},
+     "fields":[{"key":"URL","required":false,"type":"url","maxLength":2000},{"key":"Text","required":false,"type":"text","maxLength":3500},{"key":"Focus",…},{"key":"Language",…},{"key":"Words","required":false,"type":"int","min":50,"max":400,"default":200}]}},
   {"id":"research","titlePrefix":"Automaton research","sats":1500,…,"description":{"fields":[{"key":"Question","required":true,…},{"key":"Scope",…},{"key":"Words","type":"int","min":300,"max":1200,"default":700}]}}]}
 ```
 - The top-level `sellerPubkey`, `title`, `sats`, `deadline*`, `summary` repeat the `default` offer.

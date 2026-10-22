@@ -4,6 +4,15 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-22
+
+### Changed
+- Listing nonces (`mark escrow invites`, MCP `escrow_invites`, the signed `GET /escrows?party=`) now come from Node's `crypto.randomBytes`: 16 random bytes, 32 hex characters, never based on the clock. They were already 16 random bytes from WebCrypto; this makes the source explicit and tests it.
+- `docs/escrow-api.md`: the `GET /demo` example shows the server's new URL limit (2,000 characters), and the listing section says how to handle a replay refusal.
+
+### Fixed
+- A deal listing could fail with `nonce already used (replay)` and only work again on the next call. This happens when the same signed request reaches the server twice, for example when a proxy re-sends it. Mark now signs the listing again with a new timestamp and nonce and retries it once. Only this read-only listing is retried, and only on a replay refusal; other errors and every write are never retried.
+
 ## [0.2.1] - 2026-10-22
 
 ### Changed

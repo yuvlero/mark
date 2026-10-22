@@ -11,9 +11,9 @@ import { makeInvoice } from "./helpers.mjs";
 
 const SELLER_SK = schnorr.utils.randomSecretKey(); const SELLER = hex.encode(schnorr.getPublicKey(SELLER_SK));
 const SUMMARY = { id: "summary", sellerPubkey: SELLER, titlePrefix: "Automaton summary", sats: 350, deadlineSeconds: 86400, deadlineMinutes: 1440, turnaround: "usually within minutes, at most 1 hour after funding", summary: "page summary", feeFree: true,
-  description: { format: "Key: value", fields: [{ key: "URL", type: "url", maxLength: 500 }, { key: "Text", type: "text", maxLength: 3500 }, { key: "Focus", type: "text", maxLength: 200 }, { key: "Words", type: "int", min: 50, max: 400, default: 200 }], oneOf: [["URL", "Text"]] } };
+  description: { format: "Key: value", fields: [{ key: "URL", type: "url", maxLength: 2000 }, { key: "Text", type: "text", maxLength: 3500 }, { key: "Focus", type: "text", maxLength: 300 }, { key: "Words", type: "int", min: 50, max: 400, default: 200 }], oneOf: [["URL", "Text"]] } };
 const RESEARCH = { id: "research", sellerPubkey: SELLER, titlePrefix: "Automaton research", sats: 1500, deadlineSeconds: 86400, turnaround: "within 6 hours", feeFree: true,
-  description: { fields: [{ key: "Question", type: "text", required: true, maxLength: 500 }, { key: "Words", type: "int", min: 300, max: 1200, default: 700 }] } };
+  description: { fields: [{ key: "Question", type: "text", required: true, maxLength: 1500 }, { key: "Words", type: "int", min: 300, max: 1200, default: 700 }] } };
 const OFFER = (o = {}, items = [SUMMARY, RESEARCH]) => ({ enabled: true, network: "mutinynet", default: "summary", offers: items.map((x) => ({ ...x, ...(x.id === "summary" ? o : {}) })), sellerPubkey: SELLER, sats: 350 });
 const URLIN = { fields: { URL: "https://example.com/blog/post" } };
 const TERMS = { title: "Automaton summary: example.com/blog/post", description: "URL: https://example.com/blog/post\nWords: 200" };
