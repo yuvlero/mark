@@ -4,6 +4,11 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-22
+
+### Changed
+- README: publishes the production arbiter identity key for `https://agentescrow.to` (`6714b08b384916fa5aed3436f48173c5c5b692d0a3699cae89f52f59e5c7cd2d`), so you can pin it explicitly with `--arbiter-pubkey` / `MARK_ARBITER_PUBKEY` instead of trusting first use. No code changes.
+
 ## [0.2.0] - 2026-10-22
 
 ### Breaking

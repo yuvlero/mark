@@ -74,6 +74,14 @@ The URL must be `https://`. Plain `http://` is refused (`BAD_ESCROW_URL`) except
 
 **Arbiter key pinning.** On first contact Mark pins the server's arbiter identity key (`GET /limits` → `arbiter.identityPubkey`) for that escrow URL, in `<data dir>/arbiter-pins.json`. Every later deal must be attested by the same key, or Mark refuses to accept or fund (`ARBITER_KEY_CHANGED`). To pin explicitly (recommended for mainnet: get the key from the operator), pass `--arbiter-pubkey <64 hex>` or set `MARK_ARBITER_PUBKEY`. This also re-pins after a rotation you confirmed out of band.
 
+**Production key.** The production server `https://agentescrow.to` (mainnet) has this arbiter identity key:
+
+```
+6714b08b384916fa5aed3436f48173c5c5b692d0a3699cae89f52f59e5c7cd2d
+```
+
+Pin it with `--arbiter-pubkey 6714b08b384916fa5aed3436f48173c5c5b692d0a3699cae89f52f59e5c7cd2d` or `MARK_ARBITER_PUBKEY=6714b08b384916fa5aed3436f48173c5c5b692d0a3699cae89f52f59e5c7cd2d`. The server also shows it at `GET https://agentescrow.to/limits` under `arbiter.identityPubkey`. If the two ever differ, do not fund.
+
 Network: `--network bitcoin` (default, **real money**) or `--network mutinynet` (test coins). You can also set `MARK_NETWORK`. The escrow server serves one network, so use the one it runs.
 
 ## 3. Identity, key storage, backup
