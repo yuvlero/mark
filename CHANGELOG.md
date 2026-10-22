@@ -4,6 +4,15 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 
 ## [Unreleased]
 
+### Added
+- Mark sends its version on every request to the escrow server: the header `x-mark-version: <version>` and `User-Agent: mark/<version>`. The version is read from `package.json` at runtime, so the CLI and the MCP server always send the installed version.
+- Update notice. Mark reads the server's version policy from `GET /limits` (`client.minMarkVersion`, `client.latestMarkVersion`) and caches it per escrow URL for 6 hours in `<data dir>/version-policy.json`. Commands that already read `/limits` refresh it; otherwise Mark makes at most one extra `/limits` request every 6 hours. When this Mark is older than the latest version, the CLI prints one `mark: …` line on stderr (stdout stays JSON) and MCP results get an `updateNotice` field, with the update command (`npx -y @yuvlero/mark@latest`) and how to update an MCP config. Mark never updates itself.
+- New error code `UPGRADE_REQUIRED` (HTTP 426): the server no longer accepts this Mark version. The error says how to update. See the README error table and `docs/escrow-api.md` §7.
+- `docs/escrow-api.md` §7 "Client versions & deprecation policy"; README: how to update, and the `UPGRADE_REQUIRED` row in the error table.
+
+### Changed
+- `TERMS_HASH_MISMATCH` in the README error table now says to update Mark first if it printed an update notice.
+
 ## [0.2.2] - 2026-10-22
 
 ### Changed

@@ -57,6 +57,8 @@ npm install --prefix ~/.local/mark @yuvlero/mark && ~/.local/mark/node_modules/.
 ```
 Below, `mark` means any of these.
 
+**Updating.** Mark never updates itself. When the escrow server recommends a newer Mark (its `GET /limits` → `client`, cached 6 h per escrow URL in `<data dir>/version-policy.json`), commands print one `mark: Mark x.y.z is available …` line on stderr (MCP results get an `updateNotice` field); a version below the server's minimum is refused with `UPGRADE_REQUIRED`. Update with `npx -y @yuvlero/mark@latest …` (a: plain `npx -y @yuvlero/mark` can keep an old cached copy), `git pull && npm ci` (b) or `npm install --prefix ~/.local/mark @yuvlero/mark@latest` (c). MCP clients: put `@yuvlero/mark@latest` in the npx args and restart the client. Mark sends its version (`x-mark-version`, `User-Agent: mark/<version>`) with every request so the server can tell.
+
 ## 2. Configure the escrow URL
 
 **It works out of the box:** on mainnet (`bitcoin`, the default network) Mark uses the production server **https://agentescrow.to**. Sanity check (read-only):
@@ -368,13 +370,14 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 | `NOT_INITIALIZED` | Rare: the key is auto-created; run `mark init --network <n>` |
 | `ESCROW_URL_MISSING` | Only on networks without a default (e.g. mutinynet): set `MARK_ESCROW_URL` or `--escrow-url` |
 | `ESCROW_UNREACHABLE` / `ESCROW_BAD_RESPONSE` | Server down or wrong URL; retry later |
+| `UPGRADE_REQUIRED` | This Mark is older than the escrow server accepts (HTTP 426). Update: `npx -y @yuvlero/mark@latest` (or `npm install -g @yuvlero/mark@latest`). MCP: set the args to `["-y", "@yuvlero/mark@latest", "mcp"]` and restart the MCP client. Nothing was changed on the server; repeat the command after updating. A softer `mark: Mark x.y.z is available` stderr line (MCP: `updateNotice`) means update soon ([API §7](docs/escrow-api.md#7-client-versions--deprecation-policy)) |
 | `NOT_A_PARTY` | Your pubkey is neither buyer nor seller of this deal |
 | `NOT_FOUND` | Unknown deal or proposal id |
 | `AMOUNT_TOO_SMALL` / `LIMIT_EXCEEDED` | Deal size outside `minDealSats.enforced..1,000,000` |
 | `DEMO_UNSAFE_OFFER` / `DEMO_NETWORK_MISMATCH` / `DEMO_OFFER_CHANGED` / `DEMO_UNKNOWN_OFFER` | `mark demo` refused the server's offer (above 3,299 sats, wrong network, not the amount you passed in `--expect-sats`, or no such `--offer`). Nothing was created; run `mark demo` again to review |
 | `DEMO_INPUT_REQUIRED` / `DEMO_BAD_INPUT` | The demo needs an input (e.g. `--url`) or one is invalid (not https, `--words` out of range, a key the offer doesn't use). See `details`; nothing was created |
 | `BAD_TERMS` / `BAD_PUBKEY` / `BAD_DEADLINE` / `BAD_AMOUNT` | Invalid create input |
-| `TERMS_HASH_MISMATCH` / `FEE_TERMS_MISMATCH` | Server terms differ from what Mark computed; **do not accept or fund** |
+| `TERMS_HASH_MISMATCH` / `FEE_TERMS_MISMATCH` | Server terms differ from what Mark computed; **do not accept or fund**. If Mark printed an update notice, update Mark first and retry |
 | `TERMS_NOT_ACCEPTED` | Funding is blocked until both parties run `accept` (v2: also when the server's deal no longer matches the signatures) |
 | `TERMS_CHANGED` | The server's deal hash is not the one you signed; **do not fund** |
 | `ADDRESS_MISMATCH` | The server's escrow address is not the contract of the deal's keys; **do not fund**, report it |

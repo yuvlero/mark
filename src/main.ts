@@ -3,13 +3,18 @@ import readline from "node:readline";
 import fs from "node:fs";
 import { normalizeNetwork, dataDir } from "./config.js";
 import { MarkError, errorJson, toJson } from "./errors.js";
-import { openCtx } from "./core/context.js";
+import { openCtx as openCtx_, type Ctx, type CtxOptions } from "./core/context.js";
+import { updateNotice } from "./core/clientVersion.js";
+import type { NetworkName } from "./config.js";
 import * as uc from "./core/usecases.js";
 import { checkEscrowArgs, checkDemoArgs, parseArgs } from "./cliArgs.js";
 import { walletFile } from "./crypto/keystore.js";
 import { RECOMMENDED_WALLET } from "./wallet.js";
 export { parseArgs };
 
+/** The context the command opened (if any): after the command, its escrow server's version policy decides the update notice. */
+let ctx: Ctx | undefined;
+const openCtx = async (n: NetworkName, o: CtxOptions) => (ctx = await openCtx_(n, o));
 const s = (v: unknown) => (typeof v === "string" ? v : undefined);
 const out = (o: unknown) => process.stdout.write(toJson(o) + "\n");
 const payout = (f: Record<string, unknown>) => ({ payoutInvoice: s(f["payout-invoice"]), payoutLnaddr: s(f["payout-lnaddr"]), payoutArk: s(f["payout-ark"]) });
@@ -37,7 +42,7 @@ async function main(): Promise<"keep" | void> {
   const network = normalizeNetwork(s(f.network)); const escrowUrl = s(f["escrow-url"]); const arbiterPubkey = s(f["arbiter-pubkey"]);
   switch (pos[0]) {
     case "init": return void out(await uc.init(network, { escrowUrl }));
-    case "pubkey": return void out(uc.pubkey(await openCtx(network, { escrowUrl, arbiterPubkey })));
+    case "pubkey": return void out(uc.pubkey(await openCtx_(network, { escrowUrl, arbiterPubkey }))); // local only: no version check request
     case "reputation": {
       if (!pos[1]) throw new MarkError("USAGE", "mark reputation <pubkey>  (64-hex x-only key; public aggregates from the escrow server)");
       return void out(await uc.reputation(await openCtx(network, { escrowUrl, arbiterPubkey }), String(pos[1])));
@@ -85,4 +90,13 @@ async function main(): Promise<"keep" | void> {
   }
 }
 
-main().then((r) => { if (r !== "keep") process.exit(0); }).catch((e) => { process.stdout.write(JSON.stringify(errorJson(e)) + "\n"); process.exit(1); });
+/** Soft "update available" line on stderr (stdout stays pure JSON). After a connection error only the cached policy is used. */
+async function notice(e?: unknown) {
+  const code = (e as any)?.code;
+  if (code === "UPGRADE_REQUIRED") { process.stderr.write(`mark: ${(e as Error).message}\n`); return; }
+  if (!ctx) return;
+  const n = await updateNotice(ctx, { fetch: !["ESCROW_UNREACHABLE", "ESCROW_URL_MISSING", "ESCROW_BAD_RESPONSE"].includes(code) });
+  if (n) process.stderr.write(`mark: ${n}\n`);
+}
+main().then(async (r) => { if (r !== "keep") { await notice(); process.exit(0); } })
+  .catch(async (e) => { process.stdout.write(JSON.stringify(errorJson(e)) + "\n"); await notice(e); process.exit(1); });

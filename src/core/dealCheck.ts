@@ -12,6 +12,7 @@ import { arbiterAttestationHash } from "./terms.js";
 import { escrowAddress } from "./escrowContract.js";
 import type { Ctx } from "./context.js";
 import type { Escrow, Limits } from "../api/escrowApi.js";
+import { rememberPolicy } from "./clientVersion.js";
 
 type Pins = Record<string, { identityPubkey: string; pinnedAt: string; source: "first-use" | "explicit" }>;
 const pinFile = (c: Ctx) => path.join(c.dir, "arbiter-pins.json");
@@ -23,7 +24,7 @@ const limitsCache = new WeakMap<Ctx, Promise<Limits | null>>();
 /** GET /limits once per context (null on servers without it). */
 export function serverLimits(c: Ctx): Promise<Limits | null> {
   let p = limitsCache.get(c);
-  if (!p) { p = c.api.limits().catch((x: any) => { if (x?.code === "NOT_FOUND") return null; throw x; }); limitsCache.set(c, p); }
+  if (!p) { p = c.api.limits().catch((x: any) => { if (x?.code === "NOT_FOUND") return null; throw x; }); limitsCache.set(c, p); p.then((l) => rememberPolicy(c, l), () => {}); } // refreshes the version-policy cache too
   return p;
 }
 export const supportsTermsV2 = (l: Limits | null) => Array.isArray((l as any)?.termsVersions) && (l as any).termsVersions.includes(2);

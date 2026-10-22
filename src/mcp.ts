@@ -4,19 +4,29 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { errorJson, toJson } from "./errors.js";
 import type { NetworkName } from "./config.js";
-import { openCtx, type CtxOptions } from "./core/context.js";
+import { openCtx, type Ctx, type CtxOptions } from "./core/context.js";
+import { updateNotice } from "./core/clientVersion.js";
 import * as uc from "./core/usecases.js";
 import { MARK_VERSION } from "./version.js";
 
 const text = (o: unknown) => ({ content: [{ type: "text" as const, text: toJson(o, 0) }] });
-const wrap = (fn: () => Promise<unknown>) => fn().then(text).catch((e) => ({ ...text(errorJson(e)), isError: true }));
+/** Adds `updateNotice` (this Mark is older than the escrow server's latestMarkVersion) to an object result. `notice` is taken
+ *  (demo / evidence results). A non-object result gets the notice as a second text item. */
+export function withNotice(o: unknown, n: string | null) {
+  if (!n) return text(o);
+  if (o && typeof o === "object" && !Array.isArray(o)) return text({ ...(o as object), updateNotice: n });
+  const t = text(o); return { content: [...t.content, { type: "text" as const, text: toJson({ updateNotice: n }, 0) }] };
+}
+let ctx: Ctx | undefined;
+const notice = (e?: any) => (ctx && e?.code !== "UPGRADE_REQUIRED" ? updateNotice(ctx, { fetch: !["ESCROW_UNREACHABLE", "ESCROW_URL_MISSING", "ESCROW_BAD_RESPONSE"].includes(e?.code) }) : Promise.resolve(null));
+const wrap = (fn: () => Promise<unknown>) => fn().then(async (o) => withNotice(o, await notice())).catch(async (e) => ({ ...withNotice(errorJson(e), await notice(e)), isError: true }));
 const payout = { payoutInvoice: z.string().optional(), payoutLnaddr: z.string().optional(), payoutArk: z.string().optional() };
 
 /** Server-level description that MCP clients show the model (tool search / selection). */
 export const MCP_INSTRUCTIONS = "Agent Escrow (Mark): non-custodial 2-of-3 bitcoin escrow for deals between AI agents, with Lightning in and out. Use it when you pay another agent for a job or get paid by one and neither side should have to trust the other: funds are locked until delivery, released when both sign, refunded after the deadline, or ruled by a neutral arbiter on dispute. The operator holds only the arbiter key and cannot move funds alone. Start: escrow_limits (fees: free under 3,300 sats, 330 sats to 33,000, 1% above), escrow_reputation (check the counterparty), escrow_create (buyer or seller), then act on awaiting and action_required_for in each response. No counterparty yet: escrow_demo. Mainnet is real money.";
 
 export async function runMcp(network: NetworkName, o: CtxOptions = {}) {
-  const c = await openCtx(network, o);
+  const c = (ctx = await openCtx(network, o));
   const s = new McpServer({ name: "mark", version: MARK_VERSION }, { instructions: MCP_INSTRUCTIONS });
   s.tool("pubkey", "This agent's escrow public key (x-only hex)", {}, () => wrap(async () => uc.pubkey(c)));
   s.tool("escrow_create", "Start an escrowed deal with another agent so you can pay it (role buyer) or get paid by it (role seller) without trusting it: non-custodial 2-of-3 bitcoin escrow, funded and paid out over Lightning. Terms you write here are signed by both sides and are what the arbiter rules on. Check escrow_limits and escrow_reputation first; next the counterparty calls escrow_accept, then the buyer calls escrow_fund.", { role: z.enum(["buyer", "seller"]), counterparty: z.string(), sats: z.number().int().positive(), deadline: z.string().describe("seconds from now or ISO time"), hash: z.string().optional(), arbiterMode: z.enum(["auto", "manual"]).optional(),

@@ -30,7 +30,7 @@ export function mockFetch(routes) {
   const calls = [];
   const f = async (url, init = {}) => {
     const u = new URL(url); const key = `${init.method || "GET"} ${u.pathname}${u.search}`;
-    const body = init.body ? JSON.parse(init.body) : undefined; calls.push({ key, body, url: String(url) });
+    const body = init.body ? JSON.parse(init.body) : undefined; calls.push({ key, body, url: String(url), headers: init.headers ?? {} });
     const h = routes[key] ?? routes[`${init.method || "GET"} ${u.pathname}`];
     if (!h) return new Response(JSON.stringify({ error: "no route", code: "NOT_FOUND" }), { status: 404 });
     const [status, json] = await h(body); return new Response(JSON.stringify(sealBody(json)), { status });

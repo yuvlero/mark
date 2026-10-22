@@ -4,7 +4,8 @@ This is the public API an agent uses to run a deal. Mark implements all of it, b
 
 - **Base URL:** production (mainnet, `bitcoin`): **`https://agentescrow.to`**, which is Mark's built-in default. Other deployments: Mark's `--escrow-url` / `MARK_ESCROW_URL`. One deployment serves one network. Example: `curl -s https://agentescrow.to/limits`.
 - **Transport:** JSON bodies, `content-type: application/json`. Requests carry no auth headers; authorization is a Schnorr signature inside the body or query (see below).
-- **Errors:** every non-2xx response is `{"error":"<message>","code":"<CODE>","details"?:{…}}`. Status: 404 `NOT_FOUND`, 401 `UNAUTHORIZED`, 403 `FORBIDDEN`, 422 `LIMIT_EXCEEDED`, 429 `RATE_LIMITED`, 502 `QUOTE_UNAVAILABLE`, other known codes 400, unexpected errors 500 `ERROR`.
+- **Errors:** every non-2xx response is `{"error":"<message>","code":"<CODE>","details"?:{…}}`. Status: 404 `NOT_FOUND`, 401 `UNAUTHORIZED`, 403 `FORBIDDEN`, 422 `LIMIT_EXCEEDED`, 426 `UPGRADE_REQUIRED`, 429 `RATE_LIMITED`, 502 `QUOTE_UNAVAILABLE`, other known codes 400, unexpected errors 500 `ERROR`.
+- **Client version:** clients send `x-mark-version: <semver>` (Mark also sends `User-Agent: mark/<version>`) on every request. A version below the server's minimum gets `426 UPGRADE_REQUIRED`; see [§7](#7-client-versions--deprecation-policy).
 
 ## 1. Keys and signatures
 
@@ -179,11 +180,13 @@ expired ──(late or partial payment seen; buyer proposes a refund, buyer + ar
   "satora": {"minSats": 335, "maxSats": 1000000, "fetchedAt": "…", "stale": false}, "note": "…",
   "expiry": {"graceSec": 3600, "expiredWatchSec": 604800, "note": "…"},
   "termsVersions": [1, 2], "arbiter": {"identityPubkey": "<64 hex>", "attestation": "mark-escrow-arbiter/1", "note": "…"},
+  "client": {"minMarkVersion": null, "latestMarkVersion": "0.3.0", "refuseUnversioned": false,
+             "upgrade": {"command": "npx -y @yuvlero/mark@latest", "global": "npm install -g @yuvlero/mark@latest", "mcp": "MCP: in your MCP client config set the mark server's args to [\"-y\", \"@yuvlero/mark@latest\", \"mcp\"] …, then restart the MCP client."}},
   "feePreview": { "amountSats": 5000, "platformFeeSats": 330, "platformFeeReason": "charged", "possibleDisputeFeeSats": 330, "disputeFeeApplies": true,
                   "estimatedSwapCostSats": 38, "swapCostUpperBoundSats": 62, "payeeReceives": {"arkSats": 4670, "lightningSatsEstimate": 4632, "lightningSatsAtLeast": 4608, "ifDisputeRuledArkSats": 4340},
                   "minDealSats": 335, "maxDealSats": 1000000, "withinLimits": true, "schedule": {…} } }
 ```
-`feePreview` is only present with `?sats=`. `estimatedSwapCostSats` (Lightning payouts only) = live Satora protocol fee (~0.3 %) + a routing allowance (0.5 %), a realistic figure (a 4,670-sat payout cost 36 in practice). `swapCostUpperBoundSats` = payee leg − the estimate quote's `recommendedInvoiceSats` (includes the safety margin). The exact cost per destination comes from `quote?dest=`. **Always read `minDealSats.enforced` before creating a deal**: it is 335 sats on mainnet (the Satora minimum), and test networks may differ (mutinynet: 1,000). Put `fees.terms` into the termsHash you sign.
+`client` is the Mark version policy (§7; `null` = not set; absent on older servers). `feePreview` is only present with `?sats=`. `estimatedSwapCostSats` (Lightning payouts only) = live Satora protocol fee (~0.3 %) + a routing allowance (0.5 %), a realistic figure (a 4,670-sat payout cost 36 in practice). `swapCostUpperBoundSats` = payee leg − the estimate quote's `recommendedInvoiceSats` (includes the safety margin). The exact cost per destination comes from `quote?dest=`. **Always read `minDealSats.enforced` before creating a deal**: it is 335 sats on mainnet (the Satora minimum), and test networks may differ (mutinynet: 1,000). Put `fees.terms` into the termsHash you sign.
 
 **Fee math (terms v2):**
 - Platform fee: 0 if `amount < freeBelowSats`; `flatSats` if `amount ≤ flatUntilSats`; otherwise `ceil(amount × feeBps / 10000)`.
@@ -424,4 +427,17 @@ Webhooks are unauthenticated. Treat them as hints and confirm with `GET /escrows
 
 ## 6. Error codes (public API)
 
-`BAD_JSON`, `BAD_REQUEST`, `NOT_FOUND`, `UNAUTHORIZED`, `FORBIDDEN`, `RATE_LIMITED`, `BAD_AMOUNT`, `AMOUNT_TOO_SMALL`, `LIMIT_EXCEEDED`, `BAD_PUBKEY`, `BAD_DEADLINE`, `BAD_RULE`, `BAD_WEBHOOK_URL`, `BAD_TERMS`, `TERMS_SIGNATURE_REQUIRED`, `BAD_TERMS_SIGNATURE`, `TERMS_HASH_MISMATCH`, `TERMS_INTEGRITY`, `BAD_TERMS_VERSION`, `NO_TERMS`, `TERMS_NOT_ACCEPTED`, `BAD_EVIDENCE`, `BAD_MESSAGE`, `BAD_STATE`, `BAD_SIGNERS`, `BAD_DEST`, `BAD_INVOICE`, `AMOUNTLESS_INVOICE_UNSUPPORTED`, `AMOUNT_MISMATCH`, `INVOICE_EXPIRED`, `BAD_SWAP`, `SWAP_LOOKUP_FAILED`, `QUOTE_UNAVAILABLE`, `BAD_SIGNATURE`, `FEE_MISMATCH`, `CORE_ERROR`, `ERROR`. See the README error table for what to do.
+`BAD_JSON`, `BAD_REQUEST`, `NOT_FOUND`, `UNAUTHORIZED`, `FORBIDDEN`, `RATE_LIMITED`, `BAD_AMOUNT`, `AMOUNT_TOO_SMALL`, `LIMIT_EXCEEDED`, `BAD_PUBKEY`, `BAD_DEADLINE`, `BAD_RULE`, `BAD_WEBHOOK_URL`, `BAD_TERMS`, `TERMS_SIGNATURE_REQUIRED`, `BAD_TERMS_SIGNATURE`, `TERMS_HASH_MISMATCH`, `TERMS_INTEGRITY`, `BAD_TERMS_VERSION`, `NO_TERMS`, `TERMS_NOT_ACCEPTED`, `BAD_EVIDENCE`, `BAD_MESSAGE`, `BAD_STATE`, `BAD_SIGNERS`, `BAD_DEST`, `BAD_INVOICE`, `AMOUNTLESS_INVOICE_UNSUPPORTED`, `AMOUNT_MISMATCH`, `INVOICE_EXPIRED`, `BAD_SWAP`, `SWAP_LOOKUP_FAILED`, `QUOTE_UNAVAILABLE`, `BAD_SIGNATURE`, `FEE_MISMATCH`, `CORE_ERROR`, `UPGRADE_REQUIRED`, `ERROR`. See the README error table for what to do.
+
+## 7. Client versions & deprecation policy
+
+Old clients are told to update before a breaking change reaches them, instead of failing later with a confusing error (for example `TERMS_HASH_MISMATCH` from a client that doesn't know a new terms version).
+
+- **Every request** carries `x-mark-version: <semver>` (Mark: its `package.json` version; also `User-Agent: mark/<version>`, used when the header is missing).
+- **`GET /limits` → `client`:** `minMarkVersion` (older versions are refused; `null` = none refused), `latestMarkVersion` (the version to update to; `null` = no recommendation; never below the minimum), `refuseUnversioned` (requests without a version are refused), and `upgrade` (`command`, `global`, `mcp`: how to update).
+- **Below `minMarkVersion`:** `426` `{"code":"UPGRADE_REQUIRED","error":"Mark 0.2.2 is too old for this escrow server (minimum 0.3.0). Update Mark: npx -y @yuvlero/mark@latest … MCP: …","details":{"markVersion","minMarkVersion","latestMarkVersion","refuseUnversioned","upgrade"}}` and the response header `x-mark-upgrade: required`. Nothing was changed on the server; update and repeat the request.
+- **No version (older clients):** allowed while `refuseUnversioned` is false, with the response header `x-mark-upgrade: recommended`. Below `latestMarkVersion` the request also works and gets the same header.
+- **Never refused:** `GET /health`, `GET /limits`, `GET /demo` and the public pages and docs (`/`, `/docs`, `/llms.txt`, `/skill.md`, …), so an old client can always read the policy and the update instructions.
+- **What Mark does:** it caches `client` per escrow URL for 6 hours (refreshed whenever a command reads `/limits` anyway, otherwise at most one extra `GET /limits` per 6 hours). Below `latestMarkVersion` it prints one `mark: …` notice line on stderr (CLI; stdout stays JSON) or adds an `updateNotice` field to MCP results. On `UPGRADE_REQUIRED` it fails with that code and the update command. Mark never updates itself.
+- **Updating:** `npx -y @yuvlero/mark@latest …` (or `npm install -g @yuvlero/mark@latest`). MCP clients: set the server's args to `["-y", "@yuvlero/mark@latest", "mcp"]` (a bare `@yuvlero/mark` can keep running an old cached copy), then restart the MCP client.
+- **Policy for breaking changes:** (1) announce the change and release a Mark that supports both the old and the new behaviour; (2) set `latestMarkVersion` to it, so older clients see the update notice; (3) keep the old behaviour working for at least 14 days (default window: 30 days); (4) then raise `minMarkVersion` (and set `refuseUnversioned` once no supported client is unversioned). The server changes these values without a deploy.

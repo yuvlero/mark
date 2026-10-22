@@ -4,6 +4,13 @@
  */
 import { MarkError } from "../errors.js";
 import type { FeeTerms } from "../core/fees.js";
+import { MARK_VERSION, MARK_USER_AGENT } from "../version.js";
+
+/** What the server says about Mark versions (GET /limits `client`; absent on older servers). */
+export interface ClientPolicy { minMarkVersion: string | null; latestMarkVersion: string | null; refuseUnversioned?: boolean; upgrade?: { command?: string; global?: string; mcp?: string } }
+/** Fallback upgrade instructions (the server's own `client.upgrade` wins when present). Mark never updates itself. */
+export const UPGRADE_HINT = { command: "npx -y @yuvlero/mark@latest", global: "npm install -g @yuvlero/mark@latest",
+  mcp: 'MCP: in your MCP client config set the mark server\'s args to ["-y", "@yuvlero/mark@latest", "mcp"] (a bare @yuvlero/mark can keep running an old cached copy), then restart the MCP client.' };
 
 export type Party = "buyer" | "seller" | "arbiter";
 export interface Auth { party: "buyer" | "seller"; ts: number; sig: string }
@@ -34,7 +41,7 @@ export interface Quote { escrowSats: number; lightning: { invoiceSats: number; r
 
 export interface Limits { network: string; termsVersions?: number[]; arbiter?: { identityPubkey: string; attestation: string }; minDealSats: { lightning: number; ark: number; enforced: number }; maxDealSats: number; freeBelowSats: number | null; dustSats: number;
   fees: { enabled: boolean; source: string | null; address: string | null; feeBps: number; disputeFeeBps: number; freeBelowSats: number | null; flatSats?: number; flatUntilSats?: number | null; disputeMinSats?: number; dustBumpMaxBps?: number | null; terms: FeeTerms | null; schedule?: { platform: string; dispute: string } | null; warning?: string };
-  satora: { minSats: number; maxSats: number; fetchedAt: string; stale: boolean }; feePreview?: FeePreview; [k: string]: unknown }
+  satora: { minSats: number; maxSats: number; fetchedAt: string; stale: boolean }; feePreview?: FeePreview; client?: ClientPolicy; [k: string]: unknown }
 export type FeePreview = ReturnType<typeof import("../core/fees.js").feePreview>;
 
 export interface Message { seq: number; id: string; escrowId: string; author: "buyer" | "seller" | "operator"; pubkey: string; body: string; kind?: string; replyTo?: string; ts: number; createdAt: string; sig: string }
@@ -62,17 +69,19 @@ export class EscrowApi {
     if (!this.baseUrl) throw new MarkError("ESCROW_URL_MISSING", "escrow server URL not set (only bitcoin has a built-in default, https://agentescrow.to): pass --escrow-url, set MARK_ESCROW_URL, or `mark init --escrow-url <url>`");
     let r: Response;
     try {
-      r = await this.fetchImpl(this.baseUrl + path, { method, headers: { "content-type": "application/json", ...headers }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
+      // every request says which Mark this is, so the server can refuse a too-old client with a clear UPGRADE_REQUIRED
+      r = await this.fetchImpl(this.baseUrl + path, { method, headers: { "content-type": "application/json", "x-mark-version": MARK_VERSION, "user-agent": MARK_USER_AGENT, ...headers }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
     } catch (e: any) { throw new MarkError("ESCROW_UNREACHABLE", `escrow service ${this.baseUrl}: ${e.message}`); }
     let j: any;
-    try { j = await r.json(); } catch { throw new MarkError("ESCROW_BAD_RESPONSE", `non-JSON response (HTTP ${r.status})`); }
+    try { j = await r.json(); } catch { if (r.status === 426) throw upgradeRequired(this.baseUrl, null); throw new MarkError("ESCROW_BAD_RESPONSE", `non-JSON response (HTTP ${r.status})`); }
+    if (r.status === 426 || j?.code === "UPGRADE_REQUIRED") throw upgradeRequired(this.baseUrl, j);
     if (!r.ok) throw new MarkError(j?.code || "ESCROW_ERROR", j?.error || `HTTP ${r.status}`, j?.details); // keep server details (e.g. AMOUNT_MISMATCH range + recommended amount)
     return j as T;
   }
 
   create(b: { termsVersion?: 2; buyerPubkey: string; sellerPubkey: string; amountSats: number; deadline: number | string; rule: unknown; arbiterMode?: string; webhookUrl?: string; terms?: unknown; termsHash?: string; creatorAcceptance?: { party: "buyer" | "seller"; sig: string } }) { return this.call<Escrow>("POST", "/escrows", b); }
   /** GET /limits: minimum deal sizes, fee rates + current fee terms, Satora min/max, Ark dust. */
-  limits(sats?: number) { return this.call<Limits>("GET", `/limits${sats ? `?sats=${sats}` : ""}`); }
+  limits(sats?: number, timeoutMs?: number) { return this.call<Limits>("GET", `/limits${sats ? `?sats=${sats}` : ""}`, undefined, {}, timeoutMs); }
   /** GET /escrows?party=: signed listing of my deals. `sign(pathAndQuery)` returns the x-mark-* auth headers. */
   partyList(party: string, q: { needs?: string; state?: string; limit?: number; cursor?: string }, sign: (pathAndQuery: string) => Record<string, string>) {
     const p = new URLSearchParams({ party }); if (q.needs) p.set("needs", q.needs); if (q.state) p.set("state", q.state); if (q.limit) p.set("limit", String(q.limit)); if (q.cursor) p.set("cursor", q.cursor);
@@ -100,5 +109,14 @@ export class EscrowApi {
   dispute(id: string, b: { reason?: string; auth: Auth }) { return this.call<Escrow>("POST", `/escrows/${enc(id)}/dispute`, b); }
 }
 const enc = encodeURIComponent;
+/** 426 UPGRADE_REQUIRED: this Mark is older than the server's minimum. The message always carries the update command and the MCP hint. */
+export function upgradeRequired(url: string, j: any): MarkError {
+  const d = j?.details && typeof j.details === "object" ? j.details : {};
+  const up = { ...UPGRADE_HINT, ...(d.upgrade && typeof d.upgrade === "object" ? d.upgrade : {}) };
+  let msg = typeof j?.error === "string" && j.error ? j.error : `Mark ${MARK_VERSION} is too old for the escrow server ${url}${d.minMarkVersion ? ` (minimum ${d.minMarkVersion})` : ""}.`;
+  if (!msg.includes(up.command)) msg += ` Update Mark: ${up.command} (global install: ${up.global}).`;
+  if (!msg.includes("MCP")) msg += ` ${up.mcp}`;
+  return new MarkError("UPGRADE_REQUIRED", `${msg} Mark never updates itself.`, { ...d, markVersion: MARK_VERSION, escrowUrl: url, upgrade: up });
+}
 /** The server's signed-listing replay refusal (401 UNAUTHORIZED "nonce already used (replay)"). */
 export const isReplayError = (e: unknown) => e instanceof MarkError && e.code === "UNAUTHORIZED" && /nonce already used/i.test(e.message);

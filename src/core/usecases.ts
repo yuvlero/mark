@@ -18,6 +18,7 @@ import { assertEscrowCap } from "./limits.js";
 import type { Ctx } from "./context.js";
 import { dealStatus, arbiterPolicy } from "./status.js";
 import { serverLimits, supportsTermsV2, verifyDeal } from "./dealCheck.js";
+import { rememberPolicy } from "./clientVersion.js";
 import type { Role } from "./localIndex.js";
 
 /** Machine-readable status (shared logic: status.ts, identical to the server's). */
@@ -238,7 +239,7 @@ export async function quote(c: Ctx, id: string, path: Kind = "release", dest?: s
  *  With `sats`: an upfront fee preview for that deal size (platform fee, possible dispute fee, estimated swap cost, min/max). */
 export async function limits(c: Ctx, sats?: number) {
   if (sats !== undefined) assertEscrowCap(c.cfg, sats);
-  const l = await c.api.limits(sats);
+  const l = await c.api.limits(sats); rememberPolicy(c, l);
   const t = l.fees.terms ?? null; const at = (a: number) => { const p = feePreview(t, a, { minDealSats: l.minDealSats.enforced, maxDealSats: l.maxDealSats }); return { amountSats: a, platformFeeSats: p.platformFeeSats, possibleDisputeFeeSats: p.possibleDisputeFeeSats }; };
   const preview = sats === undefined ? undefined : (l.feePreview ?? feePreview(t, sats, { minDealSats: l.minDealSats.enforced, maxDealSats: l.maxDealSats, swapEstimateSats: null }));
   return { ...l, feeSummary: { minDealSats: l.minDealSats.enforced, maxDealSats: l.maxDealSats, schedule: t ? feeSchedule(t) : null,
