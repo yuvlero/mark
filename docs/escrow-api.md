@@ -173,12 +173,12 @@ expired ──(late or partial payment seen; buyer proposes a refund, buyer + ar
 - `deadline`: seconds from now (number) or an ISO string; it must be in the future.
 - `terms` is optional only for legacy compatibility. With terms, `creatorAcceptance` is required.
 - `arbiterMode` defaults to `auto` unless you send `manual`.
-- Errors: `BAD_AMOUNT`, `AMOUNT_TOO_SMALL` (`details.minDealSats`), `LIMIT_EXCEEDED`, `BAD_PUBKEY`, `BAD_DEADLINE`, `BAD_RULE`, `BAD_TERMS`, `TERMS_SIGNATURE_REQUIRED`, `TERMS_HASH_MISMATCH` (`details.termsHash`, `details.fees`), `BAD_TERMS_SIGNATURE`.
+- Errors: `BAD_AMOUNT`, `AMOUNT_TOO_SMALL` (`details.minDealSats`), `LIMIT_EXCEEDED`, `BAD_PUBKEY`, `BAD_DEADLINE`, `BAD_RULE` (also a `rule.url` that is not a public https URL), `BAD_WEBHOOK_URL` (`webhookUrl` not a public https URL), `BAD_TERMS`, `TERMS_SIGNATURE_REQUIRED`, `TERMS_HASH_MISMATCH` (`details.termsHash`, `details.fees`), `BAD_TERMS_SIGNATURE`.
 
 **Rules (auto arbiter):**
 - `manual`: the operator decides.
 - `hash`: the arbiter co-signs a release whose proposal carries `preimage` with `sha256(preimage) = rule.sha256`.
-- `webhook`: the arbiter POSTs `{escrowId, proposalId, kind, amountSats, payout:{type,sats}}` to `rule.url` and co-signs if it answers `{"approve": true}`.
+- `webhook`: the arbiter POSTs `{escrowId, proposalId, kind, amountSats, payout:{type,sats}}` to `rule.url` and co-signs if it answers `{"approve": true}`. Anything else (an error, a timeout, a redirect, a compressed or oversized answer) means no. The URL rules in [Webhook URL rules](#webhook-url-rules) apply.
 - In every mode the arbiter co-signs a buyer+arbiter **refund after the deadline** (if `arbiterMode: auto` and the deal is not disputed).
 
 ### GET /escrows?party=<xonly>[&needs=accept|fund|sign|any][&state=<state>][&limit=1..100][&cursor=] → 200 (signed listing: the invite check)
@@ -337,6 +337,15 @@ There is no inbox endpoint: keep your own cursor per deal (Mark's `escrow inbox`
 
 ## 4. Deal webhooks
 
+### Webhook URL rules
+
+They apply to `webhookUrl` and to `rule.url`:
+- **https only**, a public hostname or IP, and no `user:password@`. `http://`, `localhost`, single-label hosts and private or internal IP literals (10/8, 172.16/12, 192.168/16, 127/8, 169.254/16, 100.64/10, 0/8, multicast, `::1`, `fc00::/7`, `fe80::/10`, IPv4-mapped IPv6 and the like) are refused at create with `BAD_WEBHOOK_URL` / `BAD_RULE`.
+- On every send the server resolves the hostname itself and refuses it if **any** address is private or internal. It then connects to the checked IP, so a DNS change between check and connect can't redirect it. TLS is verified for the URL's hostname.
+- Redirects are **not followed** (a 3xx counts as a failure).
+- Timeout 5 s. The answer may be at most 64 KB.
+- The server sends `Accept-Encoding: identity` and never decompresses. An answer with any other `Content-Encoding` (`br`, `gzip`, `deflate`) is refused. For a `rule.url` that means no approval.
+
 If `webhookUrl` was set at create, the server POSTs best-effort (no retries) JSON:
 ```json
 { "escrowId": "…", "type": "<event>", "state": "<state after the event>", "data": { … } }
@@ -381,4 +390,4 @@ Webhooks are unauthenticated. Treat them as hints and confirm with `GET /escrows
 
 ## 6. Error codes (public API)
 
-`BAD_JSON`, `BAD_REQUEST`, `NOT_FOUND`, `UNAUTHORIZED`, `FORBIDDEN`, `RATE_LIMITED`, `BAD_AMOUNT`, `AMOUNT_TOO_SMALL`, `LIMIT_EXCEEDED`, `BAD_PUBKEY`, `BAD_DEADLINE`, `BAD_RULE`, `BAD_TERMS`, `TERMS_SIGNATURE_REQUIRED`, `BAD_TERMS_SIGNATURE`, `TERMS_HASH_MISMATCH`, `NO_TERMS`, `TERMS_NOT_ACCEPTED`, `BAD_EVIDENCE`, `BAD_MESSAGE`, `BAD_STATE`, `BAD_SIGNERS`, `BAD_DEST`, `BAD_INVOICE`, `AMOUNTLESS_INVOICE_UNSUPPORTED`, `AMOUNT_MISMATCH`, `INVOICE_EXPIRED`, `BAD_SWAP`, `SWAP_LOOKUP_FAILED`, `QUOTE_UNAVAILABLE`, `BAD_SIGNATURE`, `FEE_MISMATCH`, `CORE_ERROR`, `ERROR`. See the README error table for what to do.
+`BAD_JSON`, `BAD_REQUEST`, `NOT_FOUND`, `UNAUTHORIZED`, `FORBIDDEN`, `RATE_LIMITED`, `BAD_AMOUNT`, `AMOUNT_TOO_SMALL`, `LIMIT_EXCEEDED`, `BAD_PUBKEY`, `BAD_DEADLINE`, `BAD_RULE`, `BAD_WEBHOOK_URL`, `BAD_TERMS`, `TERMS_SIGNATURE_REQUIRED`, `BAD_TERMS_SIGNATURE`, `TERMS_HASH_MISMATCH`, `NO_TERMS`, `TERMS_NOT_ACCEPTED`, `BAD_EVIDENCE`, `BAD_MESSAGE`, `BAD_STATE`, `BAD_SIGNERS`, `BAD_DEST`, `BAD_INVOICE`, `AMOUNTLESS_INVOICE_UNSUPPORTED`, `AMOUNT_MISMATCH`, `INVOICE_EXPIRED`, `BAD_SWAP`, `SWAP_LOOKUP_FAILED`, `QUOTE_UNAVAILABLE`, `BAD_SIGNATURE`, `FEE_MISMATCH`, `CORE_ERROR`, `ERROR`. See the README error table for what to do.

@@ -2,6 +2,11 @@
 
 All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-escrow. Dates are UTC+4 (Dubai). Versions follow semver; 0.x releases may change behaviour between minor versions.
 
+## [Unreleased]
+
+### Changed
+- Docs (API doc and README): webhook URL rules of the next escrow-server release. `webhookUrl` and `rule.url` must be public `https://` URLs (new error `BAD_WEBHOOK_URL`). The server refuses private or internal addresses (also via DNS), does not follow redirects, uses a 5 s timeout and a 64 KB answer cap, and refuses compressed answers. No code change in Mark.
+
 ## [0.1.7] - 2026-10-21
 
 ### Added

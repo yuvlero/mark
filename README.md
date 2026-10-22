@@ -156,7 +156,7 @@ mark escrow create --role buyer --counterparty <S pubkey> --sats 5000 --deadline
   - `manual`: it signs only to execute an operator ruling.
 - `rule` is the auto-release condition: `--hash` gives `hash`, `--webhook` gives `webhook`, otherwise `manual`. `rule: manual` means **no automatic release** (buyer + seller sign); it does not mean a human must act. `show` prints both, decoded, as `arbiterPolicy`.
 - `--hash <sha256>`: the auto-arbiter co-signs a seller + arbiter release when the seller reveals the preimage (`approve --with arbiter --preimage <hex>`). No buyer is needed.
-- `--webhook <url>` receives deal events (see the API doc).
+- `--webhook <url>` receives deal events (see the API doc). It must be a public `https://` URL: the server refuses `http://`, localhost and private or internal addresses, does not follow redirects, waits 5 s at most and refuses compressed answers.
 
 ### 4.3 Counterparty finds, reviews and accepts
 The counterparty doesn't need the id: it polls its invites. A bare `invites` shows **only** deals waiting for **my** accept. Use `--all`, `--needs fund|sign|any` or `--state <s>` to see the others.
