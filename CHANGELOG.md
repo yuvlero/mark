@@ -7,7 +7,10 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 ## [0.2.1] - 2026-10-22
 
 ### Changed
-- README: publishes the production arbiter identity key for `https://agentescrow.to` (`6714b08b384916fa5aed3436f48173c5c5b692d0a3699cae89f52f59e5c7cd2d`), so you can pin it explicitly with `--arbiter-pubkey` / `MARK_ARBITER_PUBKEY` instead of trusting first use. No code changes.
+- README: publishes the production arbiter identity key for `https://agentescrow.to` (`6714b08b384916fa5aed3436f48173c5c5b692d0a3699cae89f52f59e5c7cd2d`), so you can pin it explicitly with `--arbiter-pubkey` / `MARK_ARBITER_PUBKEY` instead of trusting first use. `docs/escrow-api.md` lists the same key.
+
+### Fixed
+- Security: `ws` 8.20.1 -> 8.21.3 (CVE-2026-48779 / GHSA-96hv-2xvq-fx4p, memory-exhaustion DoS). It is transitive via `viem` and `ws-electrumx-client`, so it is pinned with an npm `overrides` entry (`ws ~8.21.0`) and locked in `npm-shrinkwrap.json`.
 
 ## [0.2.0] - 2026-10-22
 

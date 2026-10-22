@@ -68,7 +68,7 @@ sig        = hex(schnorr(id_bytes, key))
   - three unilateral leaves `<exitDelay> CSV DROP <A> CHECKSIGVERIFY <B> CHECKSIG` for the same pairs.
 
   This is the ark-escrow crate's `EscrowContract`. Mark ports it in `src/core/escrowContract.ts` (the crate's "seller" is the deal's buyer). Recompute it and refuse to fund if it differs (`ADDRESS_MISMATCH` in Mark).
-- **Arbiter identity.** Every deal has its own arbiter key. The server signs them with one long-lived **identity key**, published in `GET /limits` → `arbiter.identityPubkey`. Pin it per server: Mark pins it on first use, or explicitly with `--arbiter-pubkey` / `MARK_ARBITER_PUBKEY`, and refuses loudly if it changes.
+- **Arbiter identity.** Every deal has its own arbiter key. The server signs them with one long-lived **identity key**, published in `GET /limits` → `arbiter.identityPubkey`. Pin it per server: Mark pins it on first use, or explicitly with `--arbiter-pubkey` / `MARK_ARBITER_PUBKEY`, and refuses loudly if it changes. Production (`https://agentescrow.to`, mainnet) identity key: `6714b08b384916fa5aed3436f48173c5c5b692d0a3699cae89f52f59e5c7cd2d`.
 - **Attestation.** Each deal carries `arbiterAttestation: {v, identityPubkey, sig}` with
   ```
   sig = schnorr(H({ v: "mark-escrow-arbiter/1", network, escrowId, arbiterPubkey, serverPubkey, exitDelay, address }), identityKey)
