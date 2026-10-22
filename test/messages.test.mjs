@@ -30,7 +30,7 @@ async function setup() {
       const since = Number(u.searchParams.get("since") ?? 0); const m = srv.msgs.filter((x) => x.seq > since);
       return new Response(JSON.stringify({ escrowId: "e1", state: srv.deal.state, arbiterPubkey: evil.p /* response keys are NOT trusted */, buyerPubkey: srv.deal.buyerPubkey, sellerPubkey: other.p, messages: m, cursor: m.at(-1)?.seq ?? since })); }
     return mockFetch(srv.routes)(url, init); };
-  const c = await openCtx("mutinynet", { escrowUrl: "http://escrow.test", fetchImpl: f, swapFactory: async () => { throw new Error("no"); } });
+  const c = await openCtx("mutinynet", { escrowUrl: "https://escrow.test", fetchImpl: f, swapFactory: async () => { throw new Error("no"); } });
   srv = server(c); c.index.set("e1", { role: "buyer" }); return { c, srv, calls };
 }
 test("post: signed with my key over messageHash; kind/replyTo validated locally; dispute note", async () => {

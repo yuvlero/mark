@@ -7,7 +7,7 @@ import { tmpHome, mockFetch } from "./mockApi.mjs";
 
 const CP = "ab".repeat(32);
 const REP = (pk) => ({ pubkey: pk, dealsCompleted: 4, satsTransacted: 21000, disputesTotal: 1, disputesWon: 0, disputesLost: 1, firstSeen: "2026-09-02", lastSeen: "2026-10-11" });
-async function ctx(routes) { tmpHome(); await uc.init("mutinynet"); const f = mockFetch(routes); const c = await openCtx("mutinynet", { escrowUrl: "http://escrow.test", fetchImpl: f, swapFactory: async () => { throw new Error("no"); } }); return { c, f }; }
+async function ctx(routes) { tmpHome(); await uc.init("mutinynet"); const f = mockFetch(routes); const c = await openCtx("mutinynet", { escrowUrl: "https://escrow.test", fetchImpl: f, swapFactory: async () => { throw new Error("no"); } }); return { c, f }; }
 const deal = (me) => ({ id: "e1", state: "created", amountSats: 5000, deadline: "2026-12-01T00:00:00Z", address: "x", buyerPubkey: me, sellerPubkey: CP, arbiterPubkey: "cd".repeat(32), proposals: [], terms: null, termsHash: null, events: [] });
 
 test("reputation: normalizes key (upper case, 02/03 prefix), GETs /reputation/<lowercase>, returns only aggregates + caveat", async () => {
@@ -25,19 +25,19 @@ test("reputation: bad pubkey rejected locally (no request); server errors propag
   await assert.rejects(uc.reputation(c, CP), (e) => e.code === "RATE_LIMITED");
 });
 test("show / status / accept include the counterparty's reputation", async () => {
-  tmpHome(); await uc.init("mutinynet"); const pre = await openCtx("mutinynet", { escrowUrl: "http://escrow.test" }); const me = pre.pubkey;
+  tmpHome(); await uc.init("mutinynet"); const pre = await openCtx("mutinynet", { escrowUrl: "https://escrow.test" }); const me = pre.pubkey;
   const f = mockFetch({ "GET /escrows/e1": () => [200, deal(me)], [`GET /reputation/${CP}`]: () => [200, REP(CP)] });
-  const c = await openCtx("mutinynet", { escrowUrl: "http://escrow.test", fetchImpl: f, swapFactory: async () => { throw new Error("no"); } });
+  const c = await openCtx("mutinynet", { escrowUrl: "https://escrow.test", fetchImpl: f, swapFactory: async () => { throw new Error("no"); } });
   for (const r of [await uc.show(c, "e1"), await uc.status(c, "e1")]) {
     assert.equal(r.counterpartyReputation.available, true); assert.equal(r.counterpartyReputation.role, "seller"); assert.equal(r.counterpartyReputation.pubkey, CP); assert.equal(r.counterpartyReputation.dealsCompleted, 4); assert.equal(r.counterpartyReputation.lastSeen, "2026-10-11");
   }
   assert.ok(!f.calls.some((x) => x.key.includes(`/reputation/${me}`)), "looks up the counterparty, not me");
 });
 test("reputation failure never fails show / status / accept: notes unavailable", async () => {
-  tmpHome(); await uc.init("mutinynet"); const pre = await openCtx("mutinynet", { escrowUrl: "http://escrow.test" }); const me = pre.pubkey;
+  tmpHome(); await uc.init("mutinynet"); const pre = await openCtx("mutinynet", { escrowUrl: "https://escrow.test" }); const me = pre.pubkey;
   for (const failing of [() => [500, { code: "ERROR", error: "boom" }], () => { throw new Error("network down"); }, null /* 404: old server */]) {
     const routes = { "GET /escrows/e1": () => [200, deal(me)] }; if (failing) routes[`GET /reputation/${CP}`] = failing;
-    const f = mockFetch(routes); const c = await openCtx("mutinynet", { escrowUrl: "http://escrow.test", fetchImpl: f, swapFactory: async () => { throw new Error("no"); } });
+    const f = mockFetch(routes); const c = await openCtx("mutinynet", { escrowUrl: "https://escrow.test", fetchImpl: f, swapFactory: async () => { throw new Error("no"); } });
     const s = await uc.show(c, "e1"); assert.equal(s.state, "created");
     assert.equal(s.counterpartyReputation.available, false); assert.equal(s.counterpartyReputation.pubkey, CP); assert.match(s.counterpartyReputation.note, /reputation unavailable/);
     assert.equal((await uc.status(c, "e1")).counterpartyReputation.available, false);

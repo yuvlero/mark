@@ -5,7 +5,7 @@ import * as uc from "../dist/src/core/usecases.js";
 import { openCtx } from "../dist/src/core/context.js";
 import { tmpHome, mockFetch, arkAddr } from "./mockApi.mjs";
 
-const OTHER = "11".repeat(32); const URL_ = "http://escrow.test";
+const OTHER = "11".repeat(32); const URL_ = "https://escrow.test";
 const noSwap = async () => { throw new Error("swap must not be used"); };
 async function ctx(routes) { tmpHome(); await uc.init("mutinynet"); return openCtx("mutinynet", { escrowUrl: URL_, fetchImpl: mockFetch(routes), swapFactory: noSwap }); }
 const deal = (c, o = {}) => ({ id: "e1", state: "created", amountSats: 1200, deadline: new Date(Date.now() + 86400e3).toISOString(), address: arkAddr(5), buyerPubkey: c.pubkey, sellerPubkey: OTHER, arbiterPubkey: "22".repeat(32), proposals: [], terms: null, rule: { type: "manual" }, arbiterMode: "auto", events: [{ type: "created", data: {} }], ...o });

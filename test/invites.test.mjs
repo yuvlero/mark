@@ -22,7 +22,7 @@ async function setup(pages) {
     const cur = u.searchParams.get("cursor"); const i = cur ? Number(cur) : 0; const pg = pages[i];
     return new Response(JSON.stringify({ party: u.searchParams.get("party"), count: pg.length, escrows: pg, nextCursor: i + 1 < pages.length ? String(i + 1) : null }));
   };
-  const c = await openCtx("mutinynet", { escrowUrl: "http://escrow.test", fetchImpl: f, swapFactory: async () => { throw new Error("no"); } });
+  const c = await openCtx("mutinynet", { escrowUrl: "https://escrow.test", fetchImpl: f, swapFactory: async () => { throw new Error("no"); } });
   return { c, seen };
 }
 

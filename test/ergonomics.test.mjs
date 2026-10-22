@@ -11,7 +11,7 @@ import { parseArgs } from "../dist/src/cliArgs.js";
 import { tmpHome, mockFetch, arkAddr } from "./mockApi.mjs";
 import { makeInvoice } from "./helpers.mjs";
 
-const URL_ = "http://escrow.test"; const FEE = arkAddr(9);
+const URL_ = "https://escrow.test"; const FEE = arkAddr(9);
 const other = (() => { const s = schnorr.utils.randomSecretKey(); return { s, p: hex.encode(schnorr.getPublicKey(s)) }; })();
 const T2 = { v: 2, freeBelowSats: 3300, flatSats: 330, flatUntilSats: 33000, feeBps: 100, disputeFeeBps: 500, disputeMinSats: 330, dustSats: 330, address: FEE };
 const LIMITS = { network: "mutinynet", minDealSats: { lightning: 1000, ark: 330, enforced: 1000 }, maxDealSats: 1000000, freeBelowSats: 3300, dustSats: 330, fees: { enabled: true, source: "server-wallet", address: FEE, feeBps: 100, disputeFeeBps: 500, freeBelowSats: 3300, terms: T2 }, satora: { minSats: 1000, maxSats: 1e6, fetchedAt: "x", stale: false } };

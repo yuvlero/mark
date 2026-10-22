@@ -47,6 +47,54 @@ export function termsDocument(t: Terms, d: { network: string; amountSats: number
   return { v: "mark-escrow-terms/1", network: d.network, amountSats: d.amountSats, buyerPubkey: d.buyerPubkey, sellerPubkey: d.sellerPubkey, terms: t, ...(d.fees ? { fees: d.fees } : {}) };
 }
 export const termsHash = (doc: unknown) => hex.encode(sha256(new TextEncoder().encode(canonicalJson(doc))));
+
+/** Signed terms v2: also binds everything that decides who can move the money without you. On top of v1 (network, amount,
+ *  parties, terms, fees) the parties sign the auto-release rule (type + all params), the arbiter mode, the absolute deadline
+ *  (unix seconds: the timeout-refund time) and sha256 of the notification webhookUrl (null = none). Any later change to one of
+ *  these on the server breaks every acceptance signature. `fees` is always present (null = no fees). */
+export const TERMS_V2 = "mark-escrow-terms/2";
+export type RuleDoc = { type: "manual" } | { type: "hash"; sha256: string } | { type: "webhook"; url: string };
+/** Canonical rule object (exactly the fields that matter; hash lowercase). */
+export function canonicalRule(r: any): RuleDoc {
+  const t = r?.type ?? "manual";
+  if (t === "manual") return { type: "manual" };
+  if (t === "hash") { const h = String(r.sha256 ?? "").toLowerCase(); if (!/^[0-9a-f]{64}$/.test(h)) throw new MarkError("BAD_RULE", "rule.sha256 must be 32-byte hex"); return { type: "hash", sha256: h }; }
+  if (t === "webhook") { if (typeof r.url !== "string" || !r.url) throw new MarkError("BAD_RULE", "rule.url required"); return { type: "webhook", url: r.url }; }
+  throw new MarkError("BAD_RULE", `unknown rule type ${t}`);
+}
+/** Absolute deadline as whole unix seconds (what v2 signs). */
+export function deadlineUnix(d: string | number | Date): number {
+  const ms = d instanceof Date ? +d : typeof d === "number" ? d * 1000 : Date.parse(d);
+  if (!Number.isFinite(ms)) throw new MarkError("BAD_DEADLINE", "deadline must be an absolute time");
+  return Math.floor(ms / 1000);
+}
+export const webhookUrlHash = (u?: string | null) => (u ? hex.encode(sha256(new TextEncoder().encode(u))) : null);
+export interface DealBinding { network: string; amountSats: number; buyerPubkey: string; sellerPubkey: string; fees?: object | null;
+  rule: unknown; arbiterMode: "auto" | "manual"; deadline: number; webhookUrlSha256: string | null }
+export function termsDocumentV2(t: Terms, d: DealBinding) {
+  if (d.arbiterMode !== "auto" && d.arbiterMode !== "manual") throw new MarkError("BAD_REQUEST", "arbiterMode must be auto or manual");
+  if (!Number.isInteger(d.deadline)) throw new MarkError("BAD_DEADLINE", "deadline must be whole unix seconds");
+  if (d.webhookUrlSha256 !== null && !/^[0-9a-f]{64}$/.test(d.webhookUrlSha256)) throw new MarkError("BAD_REQUEST", "webhookUrlSha256 must be 32-byte hex or null");
+  return { v: TERMS_V2, network: d.network, amountSats: d.amountSats, buyerPubkey: d.buyerPubkey, sellerPubkey: d.sellerPubkey, terms: t, fees: d.fees ?? null,
+    rule: canonicalRule(d.rule), arbiterMode: d.arbiterMode, deadline: d.deadline, webhookUrlSha256: d.webhookUrlSha256 };
+}
+/** The document a stored deal's parties sign, by its termsVersion (absent = 1). `webhookUrlSha256` is what the public API returns. */
+export function dealTermsDocument(e: { termsVersion?: number; network: string; amountSats: number; buyerPubkey: string; sellerPubkey: string; fees?: object | null;
+  terms: Terms; rule?: unknown; arbiterMode?: string; deadline: string; webhookUrlSha256?: string | null }) {
+  const base = { network: e.network, amountSats: e.amountSats, buyerPubkey: e.buyerPubkey, sellerPubkey: e.sellerPubkey, fees: e.fees ?? null };
+  if ((e.termsVersion ?? 1) === 1) return termsDocument(normalizeTerms(e.terms), base);
+  if (e.termsVersion !== 2) throw new MarkError("BAD_TERMS_VERSION", `unsupported termsVersion ${e.termsVersion}`);
+  return termsDocumentV2(normalizeTerms(e.terms), { ...base, rule: e.rule ?? { type: "manual" }, arbiterMode: e.arbiterMode as any,
+    deadline: deadlineUnix(e.deadline), webhookUrlSha256: e.webhookUrlSha256 ?? null });
+}
+
+/** Arbiter attestation (server identity): the server signs, with its long-lived arbiter identity key (published in GET /limits
+ *  `arbiter.identityPubkey`), that this deal's per-deal arbiter key, Arkade server key, exit delay and address are its own.
+ *  Clients pin the identity key per escrow URL and check every deal against it before signing or funding. */
+export const ARBITER_ATTESTATION_V1 = "mark-escrow-arbiter/1";
+export function arbiterAttestationHash(d: { network: string; escrowId: string; arbiterPubkey: string; serverPubkey: string; exitDelay: number; address: string }) {
+  return termsHash({ v: ARBITER_ATTESTATION_V1, network: d.network, escrowId: d.escrowId, arbiterPubkey: d.arbiterPubkey, serverPubkey: d.serverPubkey, exitDelay: d.exitDelay, address: d.address });
+}
 /** BIP340 Schnorr signature over the 32-byte termsHash. */
 export function verifyTermsSig(xonly: string, hashHex: string, sig: string) {
   try { return /^[0-9a-f]{128}$/i.test(sig) && schnorr.verify(hex.decode(sig.toLowerCase()), hex.decode(hashHex), hex.decode(xonly)); } catch { return false; }

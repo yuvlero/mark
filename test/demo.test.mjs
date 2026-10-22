@@ -37,7 +37,7 @@ async function setup({ offer = OFFER(), network = "mutinynet", swaps = {} } = {}
   const f = mockFetch(routes);
   const swap = { name: "mock", createReceive: async (sats) => { counts.receive++; return { id: "sw1", invoice: makeInvoice({ sats: sats + 5, network: network === "bitcoin" ? "bitcoin" : "mutinynet" }), amountSats: sats, status: "pending" }; },
     get: swaps.get ?? (async () => ({ id: "sw1", direction: "ln_to_ark", status: "pending" })), claim: async () => { counts.claim++; deal.state = "funded"; deal.funding = { outpoint: "x:0", amount: 350 }; return { success: true, txid: "t" }; } };
-  const c = await openCtx(network, { escrowUrl: "http://escrow.test", fetchImpl: f, swapFactory: async () => swap });
+  const c = await openCtx(network, { escrowUrl: "https://escrow.test", fetchImpl: f, swapFactory: async () => swap });
   const say = (body) => { const ts = 1700000100 + msgs.length; const id = messageHash("d1", "seller", ts, { body }); msgs.push({ seq: msgs.length + 1, id, escrowId: "d1", author: "seller", pubkey: SELLER, body, ts, createdAt: "t3", sig: sign(id) }); };
   return { c, f, counts, deal: () => deal, say, msgs };
 }

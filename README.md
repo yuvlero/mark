@@ -70,6 +70,10 @@ Override (e.g. a self-hosted or test server), highest precedence first:
 3. the URL saved by `mark init --escrow-url https://…` (config file)
 4. built-in default: `https://agentescrow.to` for `bitcoin` only; test networks (`mutinynet`) have **no** default and need one of 1–3.
 
+The URL must be `https://`. Plain `http://` is refused (`BAD_ESCROW_URL`) except for `localhost`, `127.0.0.1` and `[::1]` (a local dev server).
+
+**Arbiter key pinning.** On first contact Mark pins the server's arbiter identity key (`GET /limits` → `arbiter.identityPubkey`) for that escrow URL, in `<data dir>/arbiter-pins.json`. Every later deal must be attested by the same key, or Mark refuses to accept or fund (`ARBITER_KEY_CHANGED`). To pin explicitly (recommended for mainnet: get the key from the operator), pass `--arbiter-pubkey <64 hex>` or set `MARK_ARBITER_PUBKEY`. This also re-pins after a rotation you confirmed out of band.
+
 Network: `--network bitcoin` (default, **real money**) or `--network mutinynet` (test coins). You can also set `MARK_NETWORK`. The escrow server serves one network, so use the one it runs.
 
 ## 3. Identity, key storage, backup
@@ -156,7 +160,9 @@ mark escrow create --role buyer --counterparty <S pubkey> --sats 5000 --deadline
   - `manual`: it signs only to execute an operator ruling.
 - `rule` is the auto-release condition: `--hash` gives `hash`, `--webhook` gives `webhook`, otherwise `manual`. `rule: manual` means **no automatic release** (buyer + seller sign); it does not mean a human must act. `show` prints both, decoded, as `arbiterPolicy`.
 - `--hash <sha256>`: the auto-arbiter co-signs a seller + arbiter release when the seller reveals the preimage (`approve --with arbiter --preimage <hex>`). No buyer is needed.
-- The rule is **not** part of the signed terms. A buyer's Mark therefore refuses to fund (`UNSAFE_RULE`) a deal whose release rule the seller chose: a hash lock the seller created (the seller knows the preimage from the start) or any `webhook` rule (someone else's URL decides). `show` and `accept` print `ruleWarning` for such deals. Fund anyway only on purpose: `mark escrow fund <id> --allow-counterparty-rule` (MCP: `allowCounterpartyRule: true`).
+- **Signed terms v2.** Both parties' signatures cover the rule, the arbiter mode, the absolute deadline and the webhook (its hash), next to the terms, amount, parties and fees. If the server changes any of them after signing, the signatures stop verifying: Mark refuses to accept or fund, and the server stops all automatic arbiter signing for the deal. A hash or webhook rule binds only when **both** parties signed it.
+- **Consent to a seller-chosen rule.** When the seller chose the release rule (a hash lock it created, so it knows the preimage, or any `webhook` rule), a buyer's `accept` refuses with `UNSAFE_RULE`: the buyer's signature would bind it to a rule that lets the seller be paid without the buyer. Accept anyway only on purpose: `mark escrow accept <id> --allow-counterparty-rule` (MCP: `allowCounterpartyRule: true`). `show` prints `ruleWarning` for such deals.
+- Older **v1** deals (and v1-only servers) don't sign the rule. There, the same check runs at `fund` instead: `mark escrow fund <id> --allow-counterparty-rule`. On a v1-only server, `create` prints `termsWarning` (this release still works with such servers; the next one will require v2).
 - `--webhook <url>` receives deal events (see the API doc). It must be a public `https://` URL: the server refuses `http://`, localhost and private or internal addresses, does not follow redirects, waits 5 s at most and refuses compressed answers.
 
 ### 4.3 Counterparty finds, reviews and accepts
@@ -199,6 +205,12 @@ mark escrow fund <id>
 {"escrowId":"0129…","escrowAddress":"ark1…","amountSats":5000,"swapId":"142a8a8a-…","invoice":"lnbc50020n1…",
  "note":"pay the invoice, then run: mark escrow fund 0129… --wait (claims into the escrow)"}
 ```
+- Before it creates the invoice, Mark checks the deal locally:
+  - The terms hash still matches what you signed (v2: including rule, arbiter mode, deadline and webhook).
+  - The arbiter identity is the pinned one, and it attests this deal.
+  - The escrow address is the 2-of-3 contract of the deal's keys. Mark derives it itself and refuses with `ADDRESS_MISMATCH` otherwise.
+
+  The result is in `dealCheck`.
 - Pay the invoice from any Lightning wallet. It is slightly **above** the deal amount (here 5,002) because it includes the swap fee.
 - Then run `mark escrow fund <id> --wait`. It waits for the payment and claims the coins into the escrow. Keep it running; it times out after `--timeout` seconds (default 900).
 - `mark escrow status <id>` should now show `state: "funded"`.
@@ -287,7 +299,7 @@ mark escrow inbox                              # unread across all your deals
 
 ## 7. Command reference
 
-Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL`.
+Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL` (https; http only for localhost), `--arbiter-pubkey <hex>` (explicit arbiter identity pin; env `MARK_ARBITER_PUBKEY`).
 
 | Command | What it does |
 |---|---|
@@ -299,7 +311,7 @@ Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL`.
 | `mark mcp` | Run as an MCP stdio server |
 | `mark escrow create --role buyer\|seller --counterparty <pubkey> --sats N --deadline <sec\|ISO> --title T --description D [--deliverable] [--acceptance] [--deliverable-sha256 <hex>] [--terms-file f.json] [--hash <sha256>] [--arbiter auto\|manual] [--webhook URL]` | Create and sign terms |
 | `mark escrow show <id>` | Terms, fee terms, acceptances (verified), evidence (with `deliverableMatch`), `awaiting`, `action_required_for`, `arbiterPolicy`, `counterpartyReputation`, next step |
-| `mark escrow accept <id>` | Verify `termsHash` locally and sign it (prints `awaiting`, `action_required_for`) |
+| `mark escrow accept <id> [--allow-counterparty-rule]` | Verify `termsHash`, the escrow address and the arbiter attestation locally, then sign (prints `awaiting`, `action_required_for`, `dealCheck`). A buyer needs `--allow-counterparty-rule` for a rule the seller chose (v2) |
 | `mark escrow limits [--sats N]` | Limits, fee schedule, fee preview |
 | `mark escrow fund <id> [--wait] [--timeout sec] [--allow-counterparty-rule]` | Lightning invoice to fund; `--wait` claims into the escrow. Refuses (`UNSAFE_RULE`) a deal whose auto-release rule the seller chose (its own hash lock, or any webhook rule) unless `--allow-counterparty-rule` |
 | `mark escrow status <id>` | Full deal state, proposals, events, local swap status, `awaiting`, `action_required_for`, `arbiterPolicy` |
@@ -326,7 +338,7 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 | `pubkey` | `mark pubkey` |
 | `escrow_demo` (offer?, url?, text?, words?, focus?, language?, question?, scope?, topic?, confirm?, expectSats?, wait?, fresh?) | `demo` (creates the real deal only with `confirm: true`) |
 | `escrow_create` (role, counterparty, sats, deadline, terms{…}, hash?, arbiterMode?, webhookUrl?) | `escrow create` |
-| `escrow_show`, `escrow_accept`, `escrow_status` | same names (each includes `counterpartyReputation`, best effort) |
+| `escrow_show`, `escrow_accept` (id, allowCounterpartyRule?), `escrow_status` | same names (each includes `counterpartyReputation`, best effort; show/accept include `dealCheck`) |
 | `escrow_reputation` (pubkey) | `reputation <pubkey>` |
 | `escrow_pending` (id? — omit for all my deals) | `escrow pending [<id>]` |
 | `escrow_limits` (sats?) | `escrow limits` |
@@ -355,7 +367,13 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 | `DEMO_INPUT_REQUIRED` / `DEMO_BAD_INPUT` | The demo needs an input (e.g. `--url`) or one is invalid (not https, `--words` out of range, a key the offer doesn't use). See `details`; nothing was created |
 | `BAD_TERMS` / `BAD_PUBKEY` / `BAD_DEADLINE` / `BAD_AMOUNT` | Invalid create input |
 | `TERMS_HASH_MISMATCH` / `FEE_TERMS_MISMATCH` | Server terms differ from what Mark computed; **do not accept or fund** |
-| `TERMS_NOT_ACCEPTED` | Funding is blocked until both parties run `accept` |
+| `TERMS_NOT_ACCEPTED` | Funding is blocked until both parties run `accept` (v2: also when the server's deal no longer matches the signatures) |
+| `TERMS_CHANGED` | The server's deal hash is not the one you signed; **do not fund** |
+| `ADDRESS_MISMATCH` | The server's escrow address is not the contract of the deal's keys; **do not fund**, report it |
+| `ARBITER_KEY_CHANGED` / `ARBITER_KEY_MISMATCH` / `ARBITER_KEY_MISSING` | The server's arbiter identity is not the pinned one (or is gone). Possible impersonation: **do not fund**. Re-pin only after confirming the new key with the operator: `--arbiter-pubkey <key>` |
+| `ARBITER_ATTESTATION_INVALID` | The deal's arbiter key / address is not signed by the pinned identity; **do not accept or fund** |
+| `UNSAFE_RULE` | The seller chose an automatic release rule; accepting (v2) or funding (v1) needs `--allow-counterparty-rule` |
+| `BAD_ESCROW_URL` | Invalid escrow URL, or `http://` to a host other than localhost |
 | `NO_TERMS` | Legacy deal without terms (nothing to accept) |
 | `BAD_STATE` | Action not allowed in the current state (e.g. dispute before funding, release on an expired deal) |
 | `EXPIRED` | The deal expired unfunded (deadline + grace passed); it cannot be accepted or funded. Create a new deal |
@@ -379,7 +397,9 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 
 - Your seed is encrypted at rest. The password file sits next to it by default, so protect the host or move the password out with `MARK_PASSWORD_FILE`.
 - Mark refuses to sign unless the outputs are exactly **payee leg to the proposal destination** plus **fee to the fee address in the signed terms**.
-- Mark recomputes `termsHash` and verifies every acceptance signature locally. It never trusts the server's word.
+- Mark recomputes `termsHash` and verifies every acceptance signature locally. It never trusts the server's word. With terms v2 the signatures also cover the release rule, arbiter mode, deadline and webhook.
+- Mark derives the escrow address itself from the deal's keys and refuses to fund a different one. It pins the server's arbiter identity key and checks its signature on every deal.
+- Escrow URLs must be `https://` (except localhost).
 - For Lightning payouts, **your** Mark creates the swap and keeps its refund key. For funding, your Mark keeps the claim key. The server never holds them.
 - Payout invoices are checked by Mark and the server: amount range, network, and at least 10 minutes of validity left.
 - Never paste your backup phrase, password or wallet file into chat, messages or evidence.

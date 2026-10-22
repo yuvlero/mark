@@ -7,7 +7,7 @@ import { walletFile, openOrCreateKeystore } from "../dist/src/crypto/keystore.js
 import { dataDir } from "../dist/src/config.js";
 import { tmpHome } from "./mockApi.mjs";
 
-const opts = { escrowUrl: "http://escrow.test", fetchImpl: async () => { throw new Error("no network"); } };
+const opts = { escrowUrl: "https://escrow.test", fetchImpl: async () => { throw new Error("no network"); } };
 
 test("first start auto-creates the key (0600 file, 0700 dir) and logs only path + pubkey", async () => {
   tmpHome(); const dir = dataDir("mutinynet");

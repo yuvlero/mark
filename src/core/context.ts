@@ -6,14 +6,17 @@ import { EscrowApi } from "../api/escrowApi.js";
 import { makeProvider } from "../swap/index.js";
 import type { SwapProvider } from "../swap/provider.js";
 import { LocalIndex } from "./localIndex.js";
+import { MarkError } from "../errors.js";
 
 export interface Ctx {
   cfg: MarkConfig; network: NetworkName; dir: string;
   pubkey: string; secret: Uint8Array;
   api: EscrowApi; index: LocalIndex;
+  /** explicit arbiter identity pin (--arbiter-pubkey / MARK_ARBITER_PUBKEY), lowercase x-only hex; else trust on first use */
+  arbiterPubkey?: string;
   swaps(): Promise<SwapProvider>;
 }
-export interface CtxOptions { escrowUrl?: string; fetchImpl?: typeof fetch; swapFactory?: () => Promise<SwapProvider> }
+export interface CtxOptions { escrowUrl?: string; arbiterPubkey?: string; fetchImpl?: typeof fetch; swapFactory?: () => Promise<SwapProvider> }
 
 export async function openCtx(network: NetworkName, o: CtxOptions = {}): Promise<Ctx> {
   const dir = dataDir(network);
@@ -28,5 +31,7 @@ export async function openCtx(network: NetworkName, o: CtxOptions = {}): Promise
     baseUrl: cfg.swapProvider.baseUrl, referralCode: cfg.swapProvider.referralCode, arkServerUrl: cfg.arkServerUrl, esploraUrl: cfg.esploraUrl,
     bitcoinNetwork: NETWORKS[network].bitcoinNetwork, mnemonic: ks.mnemonic, key: ks.key, dir,
   }));
-  return { cfg, network, dir, pubkey: k.xonly, secret: k.secret, api: new EscrowApi(cfg.escrowUrl, o.fetchImpl), index: new LocalIndex(dir), swaps };
+  const pin = (o.arbiterPubkey ?? process.env.MARK_ARBITER_PUBKEY ?? "").trim().toLowerCase();
+  if (pin && !/^[0-9a-f]{64}$/.test(pin)) throw new MarkError("BAD_PUBKEY", "--arbiter-pubkey / MARK_ARBITER_PUBKEY must be a 64-hex x-only key");
+  return { cfg, network, dir, pubkey: k.xonly, secret: k.secret, api: new EscrowApi(cfg.escrowUrl, o.fetchImpl), index: new LocalIndex(dir), swaps, ...(pin ? { arbiterPubkey: pin } : {}) };
 }

@@ -20,6 +20,20 @@ const H = obj => sha256(utf8(canon(obj)));   // 32 bytes; hex-encode for ids
 ```
 
 ### 1.1 Terms hash (accept)
+New deals use **terms v2** (`termsVersion: 2`). The signed document also binds everything that decides who can move the money without you:
+```
+termsHash = hex(H({ v: "mark-escrow-terms/2", network, amountSats, buyerPubkey, sellerPubkey, terms, fees,
+                    rule, arbiterMode, deadline, webhookUrlSha256 }))
+```
+- `fees`: the published fee terms, or `null` (always present in v2).
+- `rule`: exactly `{type:"manual"}`, `{type:"hash", sha256:<64 lowercase hex>}` or `{type:"webhook", url}`.
+- `arbiterMode`: `"auto"` or `"manual"`.
+- `deadline`: the absolute deadline in whole **unix seconds** (`floor(ms / 1000)`). The creator sends it as an ISO string (`POST /escrows`), and the server stores it at that whole second.
+- `webhookUrlSha256`: hex sha256 of the UTF-8 `webhookUrl`, or `null`. The public API returns this hash, never the URL.
+- Test vector (v2): terms `{title:"t",description:"d"}`, network `bitcoin`, `amountSats` 1000, buyer `11`×32, seller `22`×32, `fees` null, rule `{type:"manual"}`, `arbiterMode` `auto`, `deadline` 1800000000, `webhookUrlSha256` null gives `68fa85c4cc8e8855b0d5a5567ea3a60d8d2c7c9cc7a790f2d374727a5e0a1cde`.
+- Any later change on the server to one of these fields breaks every acceptance signature: the server then stops all automatic arbiter signing for the deal and blocks accept and funding (`TERMS_INTEGRITY` / `TERMS_NOT_ACCEPTED`). Mark refuses to accept or fund.
+
+**Terms v1** (deals created before v2, and old clients; `termsVersion: 1`) sign less. A v1 deal can only carry `rule: manual`; `hash` and `webhook` rules need v2:
 ```
 termsHash = hex(H({ v: "mark-escrow-terms/1", network, amountSats, buyerPubkey, sellerPubkey, terms, fees? }))
 ```
@@ -48,6 +62,18 @@ sig        = hex(schnorr(id_bytes, key))
 ```
 `author` is `buyer`, `seller` or `operator`. Operator and system messages are signed with the deal's **`arbiterPubkey`**.
 
+### 1.4 Escrow address and arbiter attestation (check before you fund)
+- **Address.** `address` is the Arkade address of a 6-leaf taproot contract under the BIP341 NUMS internal key. It is derived only from `buyerPubkey`, `sellerPubkey`, `arbiterPubkey`, `serverPubkey` (Arkade server), `exitDelay` and the network:
+  - three collaborative leaves `<A> CHECKSIGVERIFY <B> CHECKSIGVERIFY <server> CHECKSIG` for buyer+arbiter, seller+arbiter and buyer+seller;
+  - three unilateral leaves `<exitDelay> CSV DROP <A> CHECKSIGVERIFY <B> CHECKSIG` for the same pairs.
+
+  This is the ark-escrow crate's `EscrowContract`. Mark ports it in `src/core/escrowContract.ts` (the crate's "seller" is the deal's buyer). Recompute it and refuse to fund if it differs (`ADDRESS_MISMATCH` in Mark).
+- **Arbiter identity.** Every deal has its own arbiter key. The server signs them with one long-lived **identity key**, published in `GET /limits` → `arbiter.identityPubkey`. Pin it per server: Mark pins it on first use, or explicitly with `--arbiter-pubkey` / `MARK_ARBITER_PUBKEY`, and refuses loudly if it changes.
+- **Attestation.** Each deal carries `arbiterAttestation: {v, identityPubkey, sig}` with
+  ```
+  sig = schnorr(H({ v: "mark-escrow-arbiter/1", network, escrowId, arbiterPubkey, serverPubkey, exitDelay, address }), identityKey)
+  ```
+
 ## 2. Objects
 
 ### Escrow (as returned by GET/POST)
@@ -70,6 +96,7 @@ sig        = hex(schnorr(id_bytes, key))
 - `address` is the Ark address of the 2-of-3 contract.
 - `webhookUrl` is never returned by the public API (it often carries a secret). `hasWebhook: true|false` says whether one is set.
 
+- Also: `termsVersion` (`2`, `1`, or `null` for legacy deals), `serverPubkey` + `exitDelay` (contract inputs, see 1.4), `webhookUrlSha256` (or `null`) and `arbiterAttestation`.
 - Every Escrow response (GET/POST, accept, …) also carries `awaiting`, `action_required_for` and `arbiterPolicy` (see below). They are derived fields and are not signed.
 
 ### Machine-readable status
@@ -151,6 +178,7 @@ expired ──(late or partial payment seen; buyer proposes a refund, buyer + ar
            "disputeFeeBps": 500, "disputeMinSats": 330, "terms": {"v": 2, …, "dustSats": 330, "address": "ark1…"}, "schedule": {…}},
   "satora": {"minSats": 335, "maxSats": 1000000, "fetchedAt": "…", "stale": false}, "note": "…",
   "expiry": {"graceSec": 3600, "expiredWatchSec": 604800, "note": "…"},
+  "termsVersions": [1, 2], "arbiter": {"identityPubkey": "<64 hex>", "attestation": "mark-escrow-arbiter/1", "note": "…"},
   "feePreview": { "amountSats": 5000, "platformFeeSats": 330, "platformFeeReason": "charged", "possibleDisputeFeeSats": 330, "disputeFeeApplies": true,
                   "estimatedSwapCostSats": 38, "swapCostUpperBoundSats": 62, "payeeReceives": {"arkSats": 4670, "lightningSatsEstimate": 4632, "lightningSatsAtLeast": 4608, "ifDisputeRuledArkSats": 4340},
                   "minDealSats": 335, "maxDealSats": 1000000, "withinLimits": true, "schedule": {…} } }
@@ -171,15 +199,17 @@ expired ──(late or partial payment seen; buyer proposes a refund, buyer + ar
   "rule": {"type": "manual"} | {"type": "hash", "sha256": "<64 hex>"} | {"type": "webhook", "url": "https://…"},
   "arbiterMode": "auto" | "manual", "webhookUrl": "https://…" }
 ```
-- `deadline`: seconds from now (number) or an ISO string; it must be in the future.
+- `termsVersion: 2` (recommended; required for `hash`/`webhook` rules): `terms` and `creatorAcceptance` are required, `deadline` must be an absolute ISO time (signed at whole-second precision), and the creator's signature covers the rule, `arbiterMode`, deadline and `webhookUrl` hash (see 1.1).
+- `deadline` (v1): seconds from now (number) or an ISO string; it must be in the future.
 - `terms` is optional only for legacy compatibility. With terms, `creatorAcceptance` is required.
 - `arbiterMode` defaults to `auto` unless you send `manual`.
-- Errors: `BAD_AMOUNT`, `AMOUNT_TOO_SMALL` (`details.minDealSats`), `LIMIT_EXCEEDED`, `BAD_PUBKEY`, `BAD_DEADLINE`, `BAD_RULE` (also a `rule.url` that is not a public https URL), `BAD_WEBHOOK_URL` (`webhookUrl` not a public https URL), `BAD_TERMS`, `TERMS_SIGNATURE_REQUIRED`, `TERMS_HASH_MISMATCH` (`details.termsHash`, `details.fees`), `BAD_TERMS_SIGNATURE`, `429 RATE_LIMITED` (deal creation is limited per client IP; server default 60 per hour).
+- Errors: `BAD_AMOUNT`, `AMOUNT_TOO_SMALL` (`details.minDealSats`), `LIMIT_EXCEEDED`, `BAD_PUBKEY`, `BAD_DEADLINE`, `BAD_RULE` (also a `rule.url` that is not a public https URL), `BAD_WEBHOOK_URL` (`webhookUrl` not a public https URL), `BAD_TERMS`, `TERMS_SIGNATURE_REQUIRED`, `TERMS_HASH_MISMATCH` (`details.termsHash`, `details.fees`), `BAD_TERMS_SIGNATURE`, `BAD_TERMS_VERSION`, `BAD_RULE` (also a `hash`/`webhook` rule without `termsVersion: 2`), `429 RATE_LIMITED` (deal creation is limited per client IP; server default 60 per hour).
 
 **Rules (auto arbiter):**
 - `manual`: the operator decides.
 - `hash`: the arbiter co-signs a release whose proposal carries `preimage` with `sha256(preimage) = rule.sha256`.
 - `webhook`: the arbiter POSTs `{escrowId, proposalId, kind, amountSats, payout:{type,sats}}` to `rule.url` and co-signs if it answers `{"approve": true}`. Anything else (an error, a timeout, a redirect, a compressed or oversized answer) means no. The URL rules in [Webhook URL rules](#webhook-url-rules) apply.
+- An automatic release rule binds only when **both** parties signed it (terms v2). A seller-only signature never lets the arbiter co-sign a release.
 - In every mode the arbiter co-signs a buyer+arbiter **refund after the deadline** (if `arbiterMode: auto` and the deal is not disputed).
 
 ### GET /escrows?party=<xonly>[&needs=accept|fund|sign|any][&state=<state>][&limit=1..100][&cursor=] → 200 (signed listing: the invite check)
@@ -252,7 +282,7 @@ The house-seller demo offers used by `mark demo` (MCP `escrow_demo`): small real
 Reading also refreshes funding: `created → funded` once the address holds `amountSats`, and `created → expired` once `expiresAt` (deadline + grace) has passed unfunded. Reading an expired deal within the watch window also records late payments.
 
 ### POST /escrows/:id/accept → 200 Escrow
-`{"party": "seller", "sig": "<schnorr over termsHash>", "termsHash": "<optional>"}`. Idempotent. Errors: `NO_TERMS`, `TERMS_HASH_MISMATCH`, `BAD_TERMS_SIGNATURE`, `EXPIRED`.
+`{"party": "seller", "sig": "<schnorr over termsHash>", "termsHash": "<optional>"}`. Idempotent. Errors: `NO_TERMS`, `TERMS_HASH_MISMATCH`, `BAD_TERMS_SIGNATURE`, `EXPIRED`, `TERMS_INTEGRITY` (v2 deal whose stored fields no longer hash to `termsHash`).
 (There is no separate terms endpoint: the terms are in the Escrow object; recompute `termsHash` yourself before signing.)
 
 ### Funding
@@ -393,4 +423,4 @@ Webhooks are unauthenticated. Treat them as hints and confirm with `GET /escrows
 
 ## 6. Error codes (public API)
 
-`BAD_JSON`, `BAD_REQUEST`, `NOT_FOUND`, `UNAUTHORIZED`, `FORBIDDEN`, `RATE_LIMITED`, `BAD_AMOUNT`, `AMOUNT_TOO_SMALL`, `LIMIT_EXCEEDED`, `BAD_PUBKEY`, `BAD_DEADLINE`, `BAD_RULE`, `BAD_WEBHOOK_URL`, `BAD_TERMS`, `TERMS_SIGNATURE_REQUIRED`, `BAD_TERMS_SIGNATURE`, `TERMS_HASH_MISMATCH`, `NO_TERMS`, `TERMS_NOT_ACCEPTED`, `BAD_EVIDENCE`, `BAD_MESSAGE`, `BAD_STATE`, `BAD_SIGNERS`, `BAD_DEST`, `BAD_INVOICE`, `AMOUNTLESS_INVOICE_UNSUPPORTED`, `AMOUNT_MISMATCH`, `INVOICE_EXPIRED`, `BAD_SWAP`, `SWAP_LOOKUP_FAILED`, `QUOTE_UNAVAILABLE`, `BAD_SIGNATURE`, `FEE_MISMATCH`, `CORE_ERROR`, `ERROR`. See the README error table for what to do.
+`BAD_JSON`, `BAD_REQUEST`, `NOT_FOUND`, `UNAUTHORIZED`, `FORBIDDEN`, `RATE_LIMITED`, `BAD_AMOUNT`, `AMOUNT_TOO_SMALL`, `LIMIT_EXCEEDED`, `BAD_PUBKEY`, `BAD_DEADLINE`, `BAD_RULE`, `BAD_WEBHOOK_URL`, `BAD_TERMS`, `TERMS_SIGNATURE_REQUIRED`, `BAD_TERMS_SIGNATURE`, `TERMS_HASH_MISMATCH`, `TERMS_INTEGRITY`, `BAD_TERMS_VERSION`, `NO_TERMS`, `TERMS_NOT_ACCEPTED`, `BAD_EVIDENCE`, `BAD_MESSAGE`, `BAD_STATE`, `BAD_SIGNERS`, `BAD_DEST`, `BAD_INVOICE`, `AMOUNTLESS_INVOICE_UNSUPPORTED`, `AMOUNT_MISMATCH`, `INVOICE_EXPIRED`, `BAD_SWAP`, `SWAP_LOOKUP_FAILED`, `QUOTE_UNAVAILABLE`, `BAD_SIGNATURE`, `FEE_MISMATCH`, `CORE_ERROR`, `ERROR`. See the README error table for what to do.

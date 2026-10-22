@@ -14,6 +14,12 @@ export interface ProposalFull extends ProposalSummary { arkTx: string; checkpoin
 export interface Escrow {
   id: string; state: string; amountSats: number; deadline: string; address: string;
   buyerPubkey: string; sellerPubkey: string; arbiterPubkey: string;
+  /** contract inputs (with the three party keys): Arkade server key + unilateral exit delay; the address is derived from them */
+  serverPubkey?: string; exitDelay?: number; network?: string;
+  rule?: { type: string; sha256?: string; url?: string }; arbiterMode?: "auto" | "manual";
+  /** 2 = signed terms v2 (termsHash covers rule, arbiterMode, deadline, webhookUrlSha256 too); 1 / absent = v1; null = legacy */
+  termsVersion?: number | null; webhookUrlSha256?: string | null;
+  arbiterAttestation?: { v: string; identityPubkey: string; sig: string } | null;
   funding?: { outpoint: string; amount: number }; proposals: ProposalSummary[];
   /** null on legacy deals */
   terms?: { title: string; description: string; deliverable?: string; acceptance?: string; deliverableSha256?: string } | null; termsHash?: string | null;
@@ -26,7 +32,7 @@ export interface Escrow {
 export interface Quote { escrowSats: number; lightning: { invoiceSats: number; recommendedInvoiceSats?: number; minInvoiceSats?: number; maxInvoiceSats?: number; toleranceSats?: number; protocolFeeSats: number; networkFeeSats: number; minSats: number; maxSats: number; exact?: boolean; estimate?: boolean; quoteType?: "exact" | "estimate"; estimateMarginSats?: number; dest?: string }; ark: { payoutSats: number };
   amountlessInvoice?: { supported: boolean; setInvoiceAmountSats: number; note: string }; [k: string]: unknown }
 
-export interface Limits { network: string; minDealSats: { lightning: number; ark: number; enforced: number }; maxDealSats: number; freeBelowSats: number | null; dustSats: number;
+export interface Limits { network: string; termsVersions?: number[]; arbiter?: { identityPubkey: string; attestation: string }; minDealSats: { lightning: number; ark: number; enforced: number }; maxDealSats: number; freeBelowSats: number | null; dustSats: number;
   fees: { enabled: boolean; source: string | null; address: string | null; feeBps: number; disputeFeeBps: number; freeBelowSats: number | null; flatSats?: number; flatUntilSats?: number | null; disputeMinSats?: number; dustBumpMaxBps?: number | null; terms: FeeTerms | null; schedule?: { platform: string; dispute: string } | null; warning?: string };
   satora: { minSats: number; maxSats: number; fetchedAt: string; stale: boolean }; feePreview?: FeePreview; [k: string]: unknown }
 export type FeePreview = ReturnType<typeof import("../core/fees.js").feePreview>;
@@ -64,7 +70,7 @@ export class EscrowApi {
     return j as T;
   }
 
-  create(b: { buyerPubkey: string; sellerPubkey: string; amountSats: number; deadline: number | string; rule: unknown; arbiterMode?: string; webhookUrl?: string; terms?: unknown; termsHash?: string; creatorAcceptance?: { party: "buyer" | "seller"; sig: string } }) { return this.call<Escrow>("POST", "/escrows", b); }
+  create(b: { termsVersion?: 2; buyerPubkey: string; sellerPubkey: string; amountSats: number; deadline: number | string; rule: unknown; arbiterMode?: string; webhookUrl?: string; terms?: unknown; termsHash?: string; creatorAcceptance?: { party: "buyer" | "seller"; sig: string } }) { return this.call<Escrow>("POST", "/escrows", b); }
   /** GET /limits: minimum deal sizes, fee rates + current fee terms, Satora min/max, Ark dust. */
   limits(sats?: number) { return this.call<Limits>("GET", `/limits${sats ? `?sats=${sats}` : ""}`); }
   /** GET /escrows?party=: signed listing of my deals. `sign(pathAndQuery)` returns the x-mark-* auth headers. */

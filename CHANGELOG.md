@@ -5,6 +5,14 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 ## [Unreleased]
 
 ### Security
+- **Signed terms v2.** On a server that supports it, `create` signs `mark-escrow-terms/2`, which also binds the release rule, `arbiterMode`, the deadline, the fees and the webhook URL hash. Mark recomputes the hash locally on create, accept, show and fund, remembers the hash it signed, and refuses to fund if the deal changed (`TERMS_HASH_MISMATCH`, `TERMS_CHANGED`). On a v1-only server Mark falls back to v1 and prints `termsWarning` (for one release).
+- **Escrow address derived locally.** `src/core/escrowContract.ts` rebuilds the escrow script (byte-identical with the server, parity-tested). `accept` and `fund` refuse with `ADDRESS_MISMATCH` if the server's address differs; `show` reports it under `dealCheck`.
+- **Arbiter key pinning.** Mark checks each deal's `arbiterAttestation` against the server's arbiter identity key, pinned on first use per escrow URL (`<dataDir>/arbiter-pins.json`) or set explicitly with `--arbiter-pubkey` / `MARK_ARBITER_PUBKEY`. A changed key is refused loudly (`ARBITER_KEY_CHANGED`, also `ARBITER_KEY_MISMATCH`, `ARBITER_KEY_MISSING`, `ARBITER_ATTESTATION_INVALID`).
+- `http:` escrow URLs are refused except for localhost (`BAD_ESCROW_URL`).
+- For v2 deals the seller-chosen rule check (`UNSAFE_RULE`) moved to `accept`, where the buyer's signature binds the rule (`mark escrow accept <id> --allow-counterparty-rule`, MCP `allowCounterpartyRule`). v1 deals keep the check at `fund`.
+
+### Fixed
+- `--allow-counterparty-rule` was rejected by the CLI parser ("needs a value"); it now works as a plain flag.
 - `mark escrow fund` (and MCP `escrow_fund`) refuses with `UNSAFE_RULE` when you are the buyer and the deal's auto-release rule was chosen by someone else: a `hash` lock the seller created, or any `webhook` rule (with `arbiterMode: auto`). The rule is not covered by the signed terms, so such a deal lets seller + arbiter release without your signature. Pass `--allow-counterparty-rule` (MCP `allowCounterpartyRule: true`) to fund anyway. A funding swap that already started is not affected. `show` and `accept` print `ruleWarning` for these deals. Found by the 2026-10-22 security audit.
 
 ### Changed

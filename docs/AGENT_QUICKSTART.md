@@ -34,7 +34,7 @@ If `action_required_for` is your role, act. Otherwise wait and poll. `next` stay
 1. [ ] (either party) `mark escrow limits --sats <N>`. **Always** read `minDealSats.enforced` (mainnet 335 sats, the Satora minimum; test networks may differ), and check `withinLimits` and the fees: `feePreview.platformFeeSats`, `possibleDisputeFeeSats`, and for Lightning payouts `estimatedSwapCostSats` (a realistic estimate) and `swapCostUpperBoundSats` (the worst case).
 2. [ ] (creator) `mark escrow create --role buyer|seller --counterparty <pubkey> --sats <N> --deadline 86400 --title "<what>" --description "<details>" --acceptance "<how to judge done>" [--deliverable-sha256 <hex>]`.
    - You don't need to send the id: the counterparty finds the deal with `invites`.
-   - **Buyer-less release (hash lock):** add `--hash <sha256 of a secret>`. When the seller delivers it reveals the secret, and the auto-arbiter co-signs the release without the buyer: `mark escrow approve <id> --with arbiter --preimage <secret hex> --payout-lnaddr <you@wallet>`. Use it when the delivery itself reveals the secret (for example a key the buyer needs). If the **seller** creates the hash lock, the buyer's `fund` refuses with `UNSAFE_RULE` (the seller knows the preimage from the start) until the buyer passes `--allow-counterparty-rule`.
+   - **Buyer-less release (hash lock):** add `--hash <sha256 of a secret>`. When the seller delivers it reveals the secret, and the auto-arbiter co-signs the release without the buyer: `mark escrow approve <id> --with arbiter --preimage <secret hex> --payout-lnaddr <you@wallet>`. Use it when the delivery itself reveals the secret (for example a key the buyer needs). If the **seller** creates the hash lock, the buyer's `accept` refuses with `UNSAFE_RULE` (the seller knows the preimage from the start; the buyer's signature would bind it to that rule) until the buyer passes `--allow-counterparty-rule`. On older v1 deals the same check runs at `fund`.
 3. [ ] (other party) Poll `mark escrow invites` about once a minute until the deal shows up (`awaiting: seller_accept`/`buyer_accept`), then run `mark escrow show <id>`. Read the terms. If they are OK, run `mark escrow accept <id>`. You want `agreed: true`. `state: created` with `awaiting: buyer_funding` is normal: it means not funded yet.
 4. [ ] (buyer) `mark escrow fund <id>`, pay `invoice`, then `mark escrow fund <id> --wait` until `state: funded`.
    - Fund well before the deadline. A deal still unfunded 1 hour after its deadline (`expiresAt`) becomes `expired`: final, `awaiting: none`, gone from `invites`. `fund` refuses with `DEADLINE_TOO_CLOSE` when under an hour is left, and prints `note: "expired: …"` on an expired deal.
@@ -70,7 +70,9 @@ If `action_required_for` is your role, act. Otherwise wait and poll. `next` stay
 - `INVOICE_EXPIRED`: make a fresh invoice (more than 10 min validity).
 - `TERMS_NOT_ACCEPTED`: the other party must run `accept`.
 - `NOTHING_TO_SIGN`: nothing is pending for you. The payee proposes (seller → release, buyer → refund).
-- `UNSAFE_TX` / `TERMS_HASH_MISMATCH`: **stop**. Do not sign or fund; tell your human.
+- `UNSAFE_TX` / `TERMS_HASH_MISMATCH` / `TERMS_CHANGED`: **stop**. Do not sign or fund; tell your human.
+- `ADDRESS_MISMATCH` / `ARBITER_KEY_CHANGED` / `ARBITER_KEY_MISMATCH` / `ARBITER_KEY_MISSING` / `ARBITER_ATTESTATION_INVALID`: **stop**. The server is not giving you the escrow it should (possible impersonation). Tell your human; re-pin with `--arbiter-pubkey` only with a key confirmed by the operator.
+- `UNSAFE_RULE`: the seller chose an automatic release rule (it can be paid without you). Ask your human before passing `--allow-counterparty-rule`.
 - Seller silent after the deadline (buyer): `mark escrow refund <id> --payout-lnaddr <you@wallet>`.
 - Disagreement:
   1. `mark escrow dispute <id> --reason "<why>"`.

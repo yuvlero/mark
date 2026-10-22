@@ -8,7 +8,7 @@ import { computeFees } from "../dist/src/core/fees.js";
 import { termsHash, termsDocument } from "../dist/src/core/terms.js";
 import { tmpHome, mockFetch, arkAddr } from "./mockApi.mjs";
 
-const OTHER = "11".repeat(32), URL_ = "http://escrow.test", FEE = arkAddr(9), DEST = arkAddr(7);
+const OTHER = "11".repeat(32), URL_ = "https://escrow.test", FEE = arkAddr(9), DEST = arkAddr(7);
 const TERMS = { v: 1, feeBps: 100, disputeFeeBps: 500, freeBelowSats: 1000, dustSats: 330, dustBumpMaxBps: 200, address: FEE }; // legacy v1 (old deals)
 const T2 = { v: 2, freeBelowSats: 3300, flatSats: 330, flatUntilSats: 33000, feeBps: 100, disputeFeeBps: 500, disputeMinSats: 330, dustSats: 330, address: FEE }; // current schedule
 /** PSBT with the given outputs plus a zero-value P2A anchor (like a real Ark tx). */

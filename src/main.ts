@@ -34,13 +34,13 @@ function quickstart(network: ReturnType<typeof normalizeNetwork>) {
 }
 async function main(): Promise<"keep" | void> {
   const { pos, f } = parseArgs(process.argv.slice(2));
-  const network = normalizeNetwork(s(f.network)); const escrowUrl = s(f["escrow-url"]);
+  const network = normalizeNetwork(s(f.network)); const escrowUrl = s(f["escrow-url"]); const arbiterPubkey = s(f["arbiter-pubkey"]);
   switch (pos[0]) {
     case "init": return void out(await uc.init(network, { escrowUrl }));
-    case "pubkey": return void out(uc.pubkey(await openCtx(network, { escrowUrl })));
+    case "pubkey": return void out(uc.pubkey(await openCtx(network, { escrowUrl, arbiterPubkey })));
     case "reputation": {
       if (!pos[1]) throw new MarkError("USAGE", "mark reputation <pubkey>  (64-hex x-only key; public aggregates from the escrow server)");
-      return void out(await uc.reputation(await openCtx(network, { escrowUrl }), String(pos[1])));
+      return void out(await uc.reputation(await openCtx(network, { escrowUrl, arbiterPubkey }), String(pos[1])));
     }
     case "backup": {
       const phrase = uc.revealBackupPhrase(network, !!process.stdout.isTTY && !!process.stdin.isTTY && !f.json);
@@ -51,19 +51,19 @@ async function main(): Promise<"keep" | void> {
     case "demo": {
       const bad = checkDemoArgs(f); if (bad) throw bad;
       const fields = Object.fromEntries(Object.entries(uc.DEMO_INPUT_KEYS).map(([flag, key]) => [key, s(f[flag])]));
-      return void out(await uc.demo(await openCtx(network, { escrowUrl }), { offer: s(f.offer), topic: s(f.topic), fields, confirm: f.yes === true, expectSats: f["expect-sats"] !== undefined ? Number(f["expect-sats"]) : undefined,
+      return void out(await uc.demo(await openCtx(network, { escrowUrl, arbiterPubkey }), { offer: s(f.offer), topic: s(f.topic), fields, confirm: f.yes === true, expectSats: f["expect-sats"] !== undefined ? Number(f["expect-sats"]) : undefined,
         wait: f.wait === true, fresh: f.new === true, timeoutSec: f.timeout !== undefined ? Number(f.timeout) : undefined, onProgress: out }));
     }
-    case "mcp": { const { runMcp } = await import("./mcp.js"); await runMcp(network, { escrowUrl }); return "keep"; }
+    case "mcp": { const { runMcp } = await import("./mcp.js"); await runMcp(network, { escrowUrl, arbiterPubkey }); return "keep"; }
     case "escrow": {
       const id = pos[2] as string; const bad = checkEscrowArgs(pos[1], id, f); if (bad) throw bad;
-      const c = await openCtx(network, { escrowUrl });
+      const c = await openCtx(network, { escrowUrl, arbiterPubkey });
       switch (pos[1]) {
         case "create": {
           return void out(await uc.create(c, { role: uc.requireRole(s(f.role)), counterparty: s(f.counterparty)!, sats: Number(f.sats), deadline: s(f.deadline)!, hash: s(f.hash), arbiterMode: s(f.arbiter) as any, webhookUrl: s(f.webhook), terms: termsFrom(f) }));
         }
         case "show": return void out(await uc.show(c, id));
-        case "accept": return void out(await uc.accept(c, id));
+        case "accept": return void out(await uc.accept(c, id, { allowCounterpartyRule: f["allow-counterparty-rule"] === true || f["allow-counterparty-rule"] === "true" }));
         case "evidence": return void out(await uc.addEvidence(c, id, { text: s(f.text) ?? s(f.note), sha256: s(f.sha256), url: s(f.url), file: s(f.file) }));
         case "fund": return void out(await uc.fund(c, id, { wait: !!f.wait, timeoutSec: Number(f.timeout || 900), onInvoice: out, allowCounterpartyRule: f["allow-counterparty-rule"] === true || f["allow-counterparty-rule"] === "true" }));
         case "status": return void out(await uc.status(c, id));

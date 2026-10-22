@@ -12,7 +12,7 @@ import { EscrowApi } from "../dist/src/api/escrowApi.js";
 import { paysTo } from "../dist/src/crypto/psbt.js";
 import { tmpHome, mockFetch, arkAddr, psbtPaying } from "./mockApi.mjs";
 
-const OTHER = "11".repeat(32); const URL_ = "http://escrow.test";
+const OTHER = "11".repeat(32); const URL_ = "https://escrow.test";
 async function ctx(routes, extra = {}) {
   tmpHome(); await uc.init("mutinynet");
   const f = mockFetch(routes);
@@ -34,7 +34,7 @@ test("escrow URL precedence: flag > MARK_ESCROW_URL > config; init persists only
   assert.equal(loadConfig("mutinynet").escrowUrl, "https://file.example");
   process.env.MARK_ESCROW_URL = "https://env.example";
   assert.equal(loadConfig("mutinynet").escrowUrl, "https://env.example");
-  assert.equal(loadConfig("mutinynet", { escrowUrl: "http://flag.example:1" }).escrowUrl, "http://flag.example:1");
+  assert.equal(loadConfig("mutinynet", { escrowUrl: "https://flag.example:1" }).escrowUrl, "https://flag.example:1");
   await uc.init("mutinynet"); // must not bake env into file
   assert.equal(JSON.parse(fs.readFileSync(configPath("mutinynet"), "utf8")).escrowUrl, "https://file.example");
   delete process.env.MARK_ESCROW_URL;

@@ -9,7 +9,7 @@ import { MarkError } from "../errors.js";
 import { NETWORKS, dataDir, ensureDir, defaultConfig, saveConfig, configPath, loadConfig, normalizeUrl, type NetworkName } from "../config.js";
 import { createKeystore, openKeystore, resolvePassword, walletFile } from "../crypto/keystore.js";
 import { escrowKey, signAuth, signHash, signListRequest } from "../crypto/keys.js";
-import { normalizeTerms, termsDocument, termsHash, verifyTermsSig, normalizeEvidence, evidenceHash, normalizeMessage, messageHash, type Terms } from "./terms.js";
+import { normalizeTerms, termsHash, verifyTermsSig, dealTermsDocument, webhookUrlHash, deadlineUnix, normalizeEvidence, evidenceHash, normalizeMessage, messageHash, type Terms } from "./terms.js";
 import { arkScript, payoutOutputs } from "../crypto/psbt.js";
 import { computeFees, expectedOutputs, outputsMatch, feeSchedule, feePreview, type FeeCalc } from "./fees.js";
 import { validatePayoutInvoice, decodeInvoice, maxOverpaySats, isAmountless } from "../lightning/invoice.js";
@@ -17,6 +17,7 @@ import type { Escrow, Party, Payout, ProposalFull, Message, MessageList, Reputat
 import { assertEscrowCap } from "./limits.js";
 import type { Ctx } from "./context.js";
 import { dealStatus, arbiterPolicy } from "./status.js";
+import { serverLimits, supportsTermsV2, verifyDeal } from "./dealCheck.js";
 import type { Role } from "./localIndex.js";
 
 /** Machine-readable status (shared logic: status.ts, identical to the server's). */
@@ -91,23 +92,34 @@ export async function create(c: Ctx, o: CreateOpts) {
   const terms = normalizeTerms(Object.fromEntries(Object.entries(o.terms ?? {}).filter(([, v]) => v !== undefined)));
   const buyerPubkey = role === "buyer" ? c.pubkey : other, sellerPubkey = role === "seller" ? c.pubkey : other;
   // Fee terms the server will stamp (and that I sign as part of termsHash). Old servers without /limits: no fees.
-  const lim = await c.api.limits().catch((x: any) => { if (x.code === "NOT_FOUND") return null; throw x; });
+  const lim = await serverLimits(c);
   if (lim && o.sats < lim.minDealSats.enforced) throw new MarkError("AMOUNT_TOO_SMALL", `amount ${o.sats} is below the server's minimum deal size ${lim.minDealSats.enforced} sats (Lightning payout must meet Satora's minimum after fees); see mark escrow limits`, { minDealSats: lim.minDealSats.enforced });
   const fees = lim?.fees.terms ?? null;
-  const h = termsHash(termsDocument(terms, { network: c.network, amountSats: o.sats, buyerPubkey, sellerPubkey, fees }));
+  const rule = o.hash ? { type: "hash", sha256: requireXonly(o.hash) } : { type: "manual" };
+  if (o.arbiterMode !== undefined && o.arbiterMode !== "auto" && o.arbiterMode !== "manual") throw new MarkError("BAD_REQUEST", "arbiter mode must be auto or manual");
+  const arbiterMode = o.arbiterMode ?? "auto";
+  // Signed terms v2: I also sign the rule, arbiter mode, absolute deadline and webhook hash. A v1-only server gets v1 + a warning.
+  const v2 = supportsTermsV2(lim);
+  const absDeadline = new Date(deadlineUnix(typeof deadline === "number" ? Math.floor(Date.now() / 1000) + deadline : deadline) * 1000).toISOString();
+  const doc = v2 ? dealTermsDocument({ termsVersion: 2, network: c.network, amountSats: o.sats, buyerPubkey, sellerPubkey, fees, terms, rule, arbiterMode, deadline: absDeadline, webhookUrlSha256: webhookUrlHash(o.webhookUrl) })
+    : dealTermsDocument({ network: c.network, amountSats: o.sats, buyerPubkey, sellerPubkey, fees, terms, deadline: absDeadline });
+  const h = termsHash(doc);
   const e = await c.api.create({
-    amountSats: o.sats, deadline, arbiterMode: o.arbiterMode, webhookUrl: o.webhookUrl, buyerPubkey, sellerPubkey,
-    rule: o.hash ? { type: "hash", sha256: requireXonly(o.hash) } : { type: "manual" },
-    terms, termsHash: h, creatorAcceptance: { party: role, sig: signHash(c.secret, h) },
+    ...(v2 ? { termsVersion: 2 as const } : {}), amountSats: o.sats, deadline: v2 ? absDeadline : deadline, arbiterMode: o.arbiterMode, webhookUrl: o.webhookUrl, buyerPubkey, sellerPubkey,
+    rule, terms, termsHash: h, creatorAcceptance: { party: role, sig: signHash(c.secret, h) },
   });
   if (e.termsHash !== h) throw new MarkError("TERMS_HASH_MISMATCH", `server recorded termsHash ${e.termsHash} but I signed ${h}; do not fund escrow ${e.id}`);
   if (JSON.stringify(e.fees ?? null) !== JSON.stringify(fees)) throw new MarkError("FEE_TERMS_MISMATCH", `server stamped different fee terms than it published; do not fund escrow ${e.id}`);
-  c.index.set(e.id, { role, created: true });
+  if (v2 && (e.termsVersion !== 2 || !verifyDealTerms(c, e).hashVerified)) throw new MarkError("TERMS_HASH_MISMATCH", `the deal the server returned does not hash to the v2 terms I signed (rule, mode, deadline or webhook differ); do not fund escrow ${e.id}`);
+  c.index.set(e.id, { role, created: true, signedTermsHash: h });
+  const check = await verifyDeal(c, e); // address + arbiter attestation; throws (deal unusable) on mismatch
   // upfront fee preview: server's (with live swap estimate) if present, else computed locally from the published terms
   const preview = (e as any).feePreview ?? (lim ? feePreview(fees, o.sats, { minDealSats: lim.minDealSats.enforced, maxDealSats: lim.maxDealSats, swapEstimateSats: null }) : null);
-  return { ...e, feeTerms: fees, feeSummary: feeSummary(fees, o.sats), feePreview: preview, next: `share the escrow id with your counterparty; they must run: mark escrow show ${e.id} then mark escrow accept ${e.id}. Funding is blocked until both accepted.` };
+  return { ...e, feeTerms: fees, feeSummary: feeSummary(fees, o.sats), feePreview: preview, dealCheck: check,
+    ...(v2 ? {} : { termsWarning: V1_SERVER_WARNING }), ...(check.arbiter.attested ? {} : { arbiterWarning: check.arbiter.warning }), next: `share the escrow id with your counterparty; they must run: mark escrow show ${e.id} then mark escrow accept ${e.id}. Funding is blocked until both accepted.` };
 }
 
+export const V1_SERVER_WARNING = "this escrow server only supports signed terms v1: the release rule, arbiter mode, deadline and webhook are NOT covered by the signatures. Upgrade the server; the next Mark release will require terms v2.";
 /** Buyer-side consent check on the auto-release rule. The rule is NOT covered by the signed terms (termsHash), so a seller-created
  *  deal can carry a `hash` lock whose preimage the seller already knows, or a `webhook` rule pointing at a URL the seller runs: either
  *  lets seller + arbiter release without the buyer's signature. Returns a warning for the buyer, or null when the rule is safe for it. */
@@ -126,12 +138,18 @@ export function counterpartyRule(c: Ctx, e: Escrow, role: Role) {
 
 /** Recompute termsHash locally from the deal and check every recorded acceptance signature (never trust the server's word). */
 function verifyDealTerms(c: Ctx, e: Escrow) {
-  if (!e.terms) return { terms: null, termsHash: null, legacy: true, hashVerified: null, accepted: null, agreed: true };
-  const local = termsHash(termsDocument(normalizeTerms(e.terms), { network: c.network, amountSats: e.amountSats, buyerPubkey: e.buyerPubkey, sellerPubkey: e.sellerPubkey, fees: e.fees ?? null }));
+  if (!e.terms) return { terms: null, termsHash: null, termsVersion: null, legacy: true, hashVerified: null, accepted: null, agreed: true };
+  const tv = e.termsVersion === 2 ? 2 : 1;
+  let local: string;
+  // network: this wallet's (never the server's word); v2 also binds rule, arbiterMode, deadline and webhookUrlSha256 as the server returns them
+  try { local = termsHash(dealTermsDocument({ ...(tv === 2 ? { termsVersion: 2 } : {}), network: c.network, amountSats: e.amountSats, buyerPubkey: e.buyerPubkey, sellerPubkey: e.sellerPubkey, fees: e.fees ?? null,
+    terms: e.terms as Terms, rule: e.rule, arbiterMode: e.arbiterMode, deadline: e.deadline, webhookUrlSha256: e.webhookUrlSha256 ?? null })); }
+  catch { local = ""; }
   const ok = local === e.termsHash;
   const acc = (p: "buyer" | "seller") => { const a = e.acceptances?.[p]; return a ? { accepted: true, at: a.at, signatureValid: ok && verifyTermsSig(p === "buyer" ? e.buyerPubkey : e.sellerPubkey, local, a.sig) } : { accepted: false }; };
   const accepted = { buyer: acc("buyer"), seller: acc("seller") };
-  return { terms: e.terms, termsHash: local, legacy: false, hashVerified: ok, accepted, agreed: ok && accepted.buyer.signatureValid === true && accepted.seller.signatureValid === true };
+  return { terms: e.terms, termsHash: local, termsVersion: tv, legacy: false, hashVerified: ok, accepted, agreed: ok && accepted.buyer.signatureValid === true && accepted.seller.signatureValid === true,
+    ...(tv === 1 ? { termsWarning: "terms v1: the release rule, arbiter mode, deadline and webhook are not covered by the signatures" } : {}) };
 }
 
 /** Human/agent-readable deal: what it is for, who accepted, evidence. Read-only. */
@@ -164,22 +182,29 @@ export async function show(c: Ctx, id: string) {
   const want = e.terms?.deliverableSha256;
   for (const x of evidence as any[]) if (want && x.sha256) x.deliverableMatch = x.sha256 === want;
   const rep = await counterpartyReputation(c, e, role); const ruleWarning = counterpartyRule(c, e, role);
-  return { id: e.id, state: e.state, myRole: role, counterpartyReputation: rep, ...(ruleWarning ? { ruleWarning } : {}), ...statusOf(e), amountSats: e.amountSats, deadline: e.deadline, ...v, feeTerms: e.fees ?? null, feeSummary: feeSummary(e.fees ?? null, e.amountSats), evidence,
+  const dealCheck = await verifyDeal(c, e).then((x) => ({ ok: true, ...x }), (x: any) => ({ ok: false, code: x?.code ?? "ERROR", error: String(x?.message ?? x) }));
+  return { id: e.id, state: e.state, myRole: role, counterpartyReputation: rep, ...(ruleWarning ? { ruleWarning } : {}), dealCheck, ...statusOf(e), amountSats: e.amountSats, deadline: e.deadline, ...v, feeTerms: e.fees ?? null, feeSummary: feeSummary(e.fees ?? null, e.amountSats), evidence,
     dispute: e.dispute ?? null, ruling: e.ruling ?? null,
-    next: e.state === "expired" ? expiredNote(e) : v.legacy ? "legacy deal (no terms)" : !v.hashVerified ? "TERMS HASH MISMATCH: do not accept or fund" : !iAccepted ? `review the terms, then: mark escrow accept ${e.id}` : !v.agreed ? "waiting for the counterparty to accept" : e.state === "created" ? (role === "buyer" ? `both accepted; fund with: mark escrow fund ${e.id}` : "both accepted; waiting for the buyer to fund") : undefined };
+    next: e.state === "expired" ? expiredNote(e) : !dealCheck.ok ? `DEAL CHECK FAILED (${(dealCheck as any).code}): do not accept or fund` : v.legacy ? "legacy deal (no terms)" : !v.hashVerified ? "TERMS HASH MISMATCH: do not accept or fund" : !iAccepted ? `review the terms, then: mark escrow accept ${e.id}` : !v.agreed ? "waiting for the counterparty to accept" : e.state === "created" ? (role === "buyer" ? `both accepted; fund with: mark escrow fund ${e.id}` : "both accepted; waiting for the buyer to fund") : undefined };
 }
 
 /** Accept the deal terms: verify termsHash locally, then BIP340-sign it with this wallet's escrow key. */
-export async function accept(c: Ctx, id: string) {
+export async function accept(c: Ctx, id: string, o: { allowCounterpartyRule?: boolean } = {}) {
   const e = await c.api.get(requireId(id)); const role = myRole(c, e);
   if (!e.terms) throw new MarkError("NO_TERMS", "legacy deal has no terms to accept");
   const v = verifyDealTerms(c, e);
   if (!v.hashVerified) throw new MarkError("TERMS_HASH_MISMATCH", "server termsHash does not match the terms shown; refusing to sign", { serverTermsHash: e.termsHash, localTermsHash: v.termsHash });
+  const check = await verifyDeal(c, e); // address + arbiter attestation before I sign anything
+  // v2: my signature covers the release rule, so this is where a buyer consents to a rule the seller chose (hash lock / webhook)
+  const risk = v.termsVersion === 2 && !(v.accepted as any)[role].signatureValid ? counterpartyRule(c, e, role) : null;
+  if (risk && !o.allowCounterpartyRule) throw new MarkError("UNSAFE_RULE", `refusing to accept: ${risk.warning} Your signature would bind you to it. To accept anyway: mark escrow accept ${id} --allow-counterparty-rule`, risk);
   const r = (v.accepted as any)[role].signatureValid ? e : await c.api.accept(id, { party: role, termsHash: v.termsHash!, sig: signHash(c.secret, v.termsHash!) });
+  if (r !== e) c.index.set(id, { signedTermsHash: v.termsHash!, role: c.index.get(id).role ?? role });
   const after = verifyDealTerms(c, r);
   const missing = (["buyer", "seller"] as const).filter((p) => !(after.accepted as any)[p].accepted);
   const rep = await counterpartyReputation(c, r, role); const ruleWarning = counterpartyRule(c, r, role);
-  return { escrowId: id, myRole: role, counterpartyReputation: rep, ...(ruleWarning ? { ruleWarning } : {}), accepted: true, alreadyAccepted: r === e, state: r.state, ...statusOf(r),
+  return { escrowId: id, myRole: role, counterpartyReputation: rep, ...(ruleWarning ? { ruleWarning } : {}), termsVersion: v.termsVersion, ...((v as any).termsWarning ? { termsWarning: (v as any).termsWarning } : {}),
+    dealCheck: check, accepted: true, alreadyAccepted: r === e, state: r.state, ...statusOf(r),
     status: !after.agreed ? `you accepted; waiting for the ${missing.join(" and ") || "counterparty"}` : r.state === "created" ? "both parties accepted the terms; not funded yet (state 'created' means waiting for the buyer's funding)" : `both accepted; escrow is ${r.state}`, terms: after.terms, termsHash: after.termsHash, acceptedBy: after.accepted, agreed: after.agreed,
     next: !after.agreed ? `waiting for the ${missing.join(" and ") || "counterparty"} to accept: mark escrow accept ${id}` : r.state === "created" ? (role === "buyer" ? `both accepted; fund with: mark escrow fund ${id}` : "both accepted; waiting for the buyer to fund") : undefined };
 }
@@ -296,8 +321,12 @@ export async function fund(c: Ctx, id: string, o: { wait?: boolean; timeoutSec?:
   const v = verifyDealTerms(c, e); // legacy deals (terms null) fund as before
   if (!v.agreed) throw new MarkError("TERMS_NOT_ACCEPTED", v.hashVerified === false ? "terms hash mismatch; refusing to fund" : `both parties must accept the terms before funding (buyer: ${(v.accepted as any).buyer.accepted}, seller: ${(v.accepted as any).seller.accepted}). Run: mark escrow accept ${id}`, { accepted: v.accepted });
   const l = c.index.get(id);
-  // never start funding a deal whose auto-release rule the buyer did not choose, unless explicitly allowed (an existing swap continues)
-  const risk = l.fundSwap ? null : counterpartyRule(c, e, l.role ?? myRole(c, e));
+  if (l.signedTermsHash && e.termsHash !== l.signedTermsHash) throw new MarkError("TERMS_CHANGED", `the server's deal hash ${e.termsHash} is not the termsHash I signed (${l.signedTermsHash}); refusing to fund`, { signed: l.signedTermsHash, server: e.termsHash });
+  // the address must be the 2-of-3 contract of the deal's keys (derived locally) and the arbiter attested by the pinned identity
+  const check = await verifyDeal(c, e);
+  // never start funding a deal whose auto-release rule the buyer did not choose, unless explicitly allowed (an existing swap continues).
+  // v2 deals both parties signed: my own acceptance already covers the rule (accept asked for consent), so no second prompt.
+  const risk = l.fundSwap || (v.termsVersion === 2 && v.agreed) ? null : counterpartyRule(c, e, l.role ?? myRole(c, e));
   if (risk && !o.allowCounterpartyRule) throw new MarkError("UNSAFE_RULE", `refusing to fund: ${risk.warning} To fund anyway: mark escrow fund ${id} --allow-counterparty-rule`, risk);
   // a new invoice must be payable (and claimed) before the deal expires at deadline + grace; else the payment would land on an expired deal
   const left = Math.floor((expiresAtMs(e) - Date.now()) / 1000);
@@ -305,7 +334,7 @@ export async function fund(c: Ctx, id: string, o: { wait?: boolean; timeoutSec?:
   const s = await c.swaps();
   let swapId = l.fundSwap, invoice: string | undefined;
   if (!swapId) { const r = await s.createReceive(e.amountSats, e.address); swapId = r.id; invoice = r.invoice; c.index.set(id, { fundSwap: swapId, role: l.role ?? myRole(c, e) }); }
-  const base = { escrowId: id, escrowAddress: e.address, amountSats: e.amountSats, swapId, invoice };
+  const base = { escrowId: id, escrowAddress: e.address, amountSats: e.amountSats, swapId, invoice, dealCheck: check, ...((v as any).termsWarning ? { termsWarning: (v as any).termsWarning } : {}) };
   if (!o.wait) return { ...base, note: `pay the invoice, then run: mark escrow fund ${id} --wait (claims into the escrow)` };
   if (invoice) o.onInvoice?.(base);
   const end = Date.now() + (o.timeoutSec ?? 900) * 1000;

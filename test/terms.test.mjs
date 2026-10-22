@@ -3,10 +3,10 @@ import test from "node:test"; import assert from "node:assert/strict";
 import { schnorr } from "@noble/curves/secp256k1.js"; import { hex } from "@scure/base";
 import * as uc from "../dist/src/core/usecases.js";
 import { openCtx } from "../dist/src/core/context.js";
-import { normalizeTerms, termsDocument, termsHash, verifyTermsSig, evidenceHash } from "../dist/src/core/terms.js";
+import { normalizeTerms, termsDocument, termsHash, verifyTermsSig, evidenceHash, dealTermsDocument } from "../dist/src/core/terms.js";
 import { tmpHome, mockFetch, arkAddr } from "./mockApi.mjs";
 
-const URL_ = "http://escrow.test";
+const URL_ = "https://escrow.test";
 const other = (() => { const s = schnorr.utils.randomSecretKey(); return { s, p: hex.encode(schnorr.getPublicKey(s)) }; })();
 const T = { title: "Buy 1M tokens of inference", description: "1,000,000 output tokens", acceptance: "usable within 24h" };
 async function ctx(routes) { tmpHome(); await uc.init("mutinynet"); const f = mockFetch(routes); return { c: await openCtx("mutinynet", { escrowUrl: URL_, fetchImpl: f, swapFactory: async () => ({ createReceive: async () => ({ id: "sw1", invoice: "lnbc" }) }) }), f }; }
@@ -73,4 +73,16 @@ test("evidence: signed note posted with ts; validation", async () => {
   assert.equal(await code(uc.addEvidence(c, "e1", { text: "" })), "BAD_EVIDENCE");
   assert.equal(await code(uc.addEvidence(c, "e1", { text: "x", sha256: "nothex" })), "BAD_EVIDENCE");
   assert.equal(await code(uc.addEvidence(c, "e1", { text: "x", url: "file:///etc/passwd" })), "BAD_EVIDENCE");
+});
+
+test("terms v2 hash vector (rule, arbiterMode, deadline, webhook hash bound) matches the other implementation and the API doc", () => {
+  const base = { termsVersion: 2, network: "bitcoin", amountSats: 1000, buyerPubkey: "11".repeat(32), sellerPubkey: "22".repeat(32), fees: null, terms: { title: "t", description: "d" }, arbiterMode: "auto", deadline: new Date(1800000000e3).toISOString(), webhookUrlSha256: null };
+  assert.equal(termsHash(dealTermsDocument({ ...base, rule: { type: "manual" } })), "68fa85c4cc8e8855b0d5a5567ea3a60d8d2c7c9cc7a790f2d374727a5e0a1cde");
+  assert.equal(termsHash(dealTermsDocument({ ...base, rule: { type: "hash", sha256: "AB".repeat(32) } })), "045e767052b973c9d0889f95583c3de3223c364f9f8d8dbdcea8321f22922ccb");
+  // every bound field changes the hash
+  const h0 = termsHash(dealTermsDocument({ ...base, rule: { type: "manual" } }));
+  for (const d of [{ arbiterMode: "manual" }, { deadline: new Date(1800000001e3).toISOString() }, { webhookUrlSha256: "00".repeat(32) }, { rule: { type: "webhook", url: "https://x.example/" } }])
+    assert.notEqual(termsHash(dealTermsDocument({ ...base, rule: { type: "manual" }, ...d })), h0);
+  // v1 documents are unchanged (existing deals keep verifying)
+  assert.equal(termsHash(dealTermsDocument({ network: "bitcoin", amountSats: 1000, buyerPubkey: "11".repeat(32), sellerPubkey: "22".repeat(32), terms: { title: "t", description: "d" }, deadline: "2030-01-01T00:00:00Z" })), "ab363b382879bd2d949ba40a2960e470bd4e9227b4f7d1abde39ea7a9c37a2d3");
 });

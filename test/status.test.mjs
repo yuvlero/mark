@@ -8,7 +8,7 @@ import { dealStatus, arbiterPolicy } from "../dist/src/core/status.js";
 import { normalizeTerms, termsDocument, termsHash } from "../dist/src/core/terms.js";
 import { tmpHome, mockFetch, arkAddr, psbtPaying } from "./mockApi.mjs";
 
-const URL_ = "http://escrow.test";
+const URL_ = "https://escrow.test";
 const other = (() => { const s = schnorr.utils.randomSecretKey(); return { s, p: hex.encode(schnorr.getPublicKey(s)) }; })();
 const T = { title: "t", description: "d" };
 async function ctx(routes) { tmpHome(); await uc.init("mutinynet"); return { c: await openCtx("mutinynet", { escrowUrl: URL_, fetchImpl: mockFetch(routes), swapFactory: async () => { throw new Error("no swap"); } }) }; }
