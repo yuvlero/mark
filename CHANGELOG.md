@@ -13,6 +13,9 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 ### Changed
 - `TERMS_HASH_MISMATCH` in the README error table now says to update Mark first if it printed an update notice.
 
+### Fixed
+- Security: `body-parser` 2.3.0 -> 2.4.0 (CVE-2026-111181 / GHSA-27r3-jxmh-p828, DoS via trailing bytes after a compressed request body) and `fast-uri` 3.1.8 -> 3.1.9 (GHSA-w74x-v6f9-j3xg, GHSA-wjr9-j795-jxcr, GHSA-333x-w4r6-6crp, GHSA-xhq7-xmqj-769h, URI parsing issues), with `qs` 6.16.0 -> 6.16.1 as required by the new `body-parser`. All three are transitive via `@modelcontextprotocol/sdk` and locked in `npm-shrinkwrap.json`. Mark was not exposed: it runs the MCP server over stdio only, so the SDK's Express/HTTP code (where `body-parser` lives) is never loaded, and `fast-uri` is only used by `ajv` on Mark's own tool schemas.
+
 ## [0.2.2] - 2026-10-22
 
 ### Changed
