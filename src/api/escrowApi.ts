@@ -49,7 +49,9 @@ export interface MessageList { escrowId: string; state: string; arbiterPubkey: s
 
 export interface PartyItem { id: string; role: "buyer" | "seller"; counterpartyPubkey: string; sats: number; state: string; createdAt: string; deadline?: string;
   terms: { title: string; deliverable: string | null; acceptance: string | null; termsHash: string | null } | null; termsAccepted: { mine: boolean | null; theirs: boolean | null };
-  needs: ("accept" | "fund" | "sign")[]; nextStep: { text: string; command: string } }
+  needs: ("accept" | "fund" | "sign")[]; nextStep: { text: string; command: string };
+  /** newer servers: auto-refund countdown for this role (see core/deadline.ts); absent on older servers */
+  deadlineCountdown?: Record<string, unknown> }
 export interface PartyList { party: string; count: number; escrows: PartyItem[]; nextCursor: string | null }
 
 /** GET /reputation/:pubkey: public aggregates over funded deals (an indicator, not a guarantee). */

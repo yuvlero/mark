@@ -17,6 +17,7 @@ import type { Escrow, Party, Payout, ProposalFull, Message, MessageList, Reputat
 import { assertEscrowCap } from "./limits.js";
 import type { Ctx } from "./context.js";
 import { dealStatus, arbiterPolicy } from "./status.js";
+import { deadlineCountdown, countdownFor } from "./deadline.js";
 import { serverLimits, supportsTermsV2, verifyDeal } from "./dealCheck.js";
 import { rememberPolicy } from "./clientVersion.js";
 import type { Role } from "./localIndex.js";
@@ -31,6 +32,15 @@ export interface PayoutOpts { payoutInvoice?: string; payoutLnaddr?: string; pay
 export interface TermsInput { title?: string; description?: string; deliverable?: string; acceptance?: string; deliverableSha256?: string }
 export interface CreateOpts { role: Role; counterparty: string; sats: number; deadline: string | number; hash?: string; arbiterMode?: "auto" | "manual"; webhookUrl?: string; terms?: TermsInput }
 export interface ApproveOpts extends PayoutOpts { kind?: Kind; with?: "counterparty" | "arbiter"; preimage?: string }
+
+// ---------- auto-refund deadline countdown (both roles) ----------
+/** Computed locally from the deal (this machine's clock), so it works with servers that do not send it. Only the server knows its
+ *  auto-arbiter cap: its own `deadlineCountdown.reason` "above_auto_cap" is honoured. Returns my role's view (`note`). */
+export function myCountdown(e: Escrow, role: Role, nowMs = Date.now()) {
+  const srv = (e as any).deadlineCountdown;
+  return countdownFor(deadlineCountdown({ id: e.id, state: e.state, deadline: e.deadline, arbiterMode: e.arbiterMode, disputed: !!e.dispute, ruled: !!e.ruling,
+    aboveAutoCap: !!srv && typeof srv === "object" && srv.reason === "above_auto_cap" }, nowMs), role);
+}
 
 // ---------- expiry of unfunded deals ----------
 /** Server default: an unfunded deal expires at deadline + 1 h (servers that report `expiresAt` override this). */
@@ -184,7 +194,7 @@ export async function show(c: Ctx, id: string) {
   for (const x of evidence as any[]) if (want && x.sha256) x.deliverableMatch = x.sha256 === want;
   const rep = await counterpartyReputation(c, e, role); const ruleWarning = counterpartyRule(c, e, role);
   const dealCheck = await verifyDeal(c, e).then((x) => ({ ok: true, ...x }), (x: any) => ({ ok: false, code: x?.code ?? "ERROR", error: String(x?.message ?? x) }));
-  return { id: e.id, state: e.state, myRole: role, counterpartyReputation: rep, ...(ruleWarning ? { ruleWarning } : {}), dealCheck, ...statusOf(e), amountSats: e.amountSats, deadline: e.deadline, ...v, feeTerms: e.fees ?? null, feeSummary: feeSummary(e.fees ?? null, e.amountSats), evidence,
+  return { id: e.id, state: e.state, myRole: role, counterpartyReputation: rep, ...(ruleWarning ? { ruleWarning } : {}), dealCheck, ...statusOf(e), amountSats: e.amountSats, deadline: e.deadline, deadlineCountdown: myCountdown(e, role), ...v, feeTerms: e.fees ?? null, feeSummary: feeSummary(e.fees ?? null, e.amountSats), evidence,
     dispute: e.dispute ?? null, ruling: e.ruling ?? null,
     next: e.state === "expired" ? expiredNote(e) : !dealCheck.ok ? `DEAL CHECK FAILED (${(dealCheck as any).code}): do not accept or fund` : v.legacy ? "legacy deal (no terms)" : !v.hashVerified ? "TERMS HASH MISMATCH: do not accept or fund" : !iAccepted ? `review the terms, then: mark escrow accept ${e.id}` : !v.agreed ? "waiting for the counterparty to accept" : e.state === "created" ? (role === "buyer" ? `both accepted; fund with: mark escrow fund ${e.id}` : "both accepted; waiting for the buyer to fund") : undefined };
 }
@@ -295,7 +305,7 @@ export async function pendingAll(c: Ctx) {
 
 export async function status(c: Ctx, id: string) {
   const e = await c.api.get(requireId(id)); const l = c.index.get(id);
-  const role = myRole(c, e); const r: any = { ...e, ...statusOf(e), myRole: role, counterpartyReputation: await counterpartyReputation(c, e, role) };
+  const role = myRole(c, e); const r: any = { ...e, ...statusOf(e), myRole: role, deadlineCountdown: myCountdown(e, role), counterpartyReputation: await counterpartyReputation(c, e, role) };
   if (l.fundSwap || l.payoutSwap) {
     const s = await c.swaps();
     const look = (sid: string) => s.get(sid).catch((x: any) => ({ id: sid, error: x.message }));
