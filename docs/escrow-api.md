@@ -98,10 +98,13 @@ sig        = hex(schnorr(id_bytes, key))
 - `webhookUrl` is never returned by the public API (it often carries a secret). `hasWebhook: true|false` says whether one is set.
 
 - Also: `termsVersion` (`2`, `1`, or `null` for legacy deals), `serverPubkey` + `exitDelay` (contract inputs, see 1.4), `webhookUrlSha256` (or `null`) and `arbiterAttestation`.
-- `deadlineCountdown` (newer servers; additive, older clients ignore it): the auto-refund clock, the same for both parties. `{status, reason, deadline, secondsLeft, passed, autoRefund, autoRefundAt, disputeBy, buyer, seller}`.
+- `deadlineCountdown` (newer servers; additive, older clients ignore it): the auto-refund clock, the same for both parties. `{status, reason, deadline, secondsLeft, passed, autoRefund, autoRefundAt, disputeBy, secondsRemaining, disputeByPassed, disputeMarginSec, buyer, seller}`.
   - `status`: `running` (funded, auto arbiter: after `deadline` the buyer can refund with the arbiter's automatic co-signature), `passed` (that refund is possible now), or `not_applicable`.
   - `reason` when not applicable: `unfunded` (state `created`, see `expiresAt`), `final`, `disputed` (an open dispute stops automatic signing), `ruled`, `manual_arbiter`, `above_auto_cap`.
-  - `autoRefundAt` and `disputeBy` are the deadline while `autoRefund` is true, else `null`. Delivery does not stop the clock: a seller who delivered and was not paid must open a dispute before `disputeBy`.
+  - `deadline` / `autoRefundAt`: the refund deadline (unchanged): from then on the buyer can refund with the arbiter. `secondsLeft` counts down to it (0 once passed).
+  - `disputeBy`: the **recommended** dispute time, earlier than the deadline by a safety margin. `secondsRemaining` counts down to it (0 once passed), `disputeByPassed` says it passed, `disputeMarginSec` is the margin. A dispute still works after `disputeBy` until the refund is paid out, but leave the margin.
+  - Margin = 10% of the funded window (funding time `funding.seenAt`, else `createdAt`, to the deadline), at least 60 s, at most 24 h, and never more than half the window, so `disputeBy` is always after the funding time and never after the deadline. No window (funded after the deadline, unknown times): margin 0 and `disputeBy` = deadline. Example: funded 3 days before the deadline: margin 7.2 h.
+  - `disputeBy`, `secondsRemaining` and `disputeMarginSec` are `null` (and `disputeByPassed` false) while `autoRefund` is false. Delivery does not stop the clock: a seller who delivered and was not paid should open a dispute by `disputeBy`. The seller note reads "Dispute by <time> (recommended, leaves a margin); the refund can be paid out from <deadline>."
   - `secondsLeft` counts down to the deadline (0 once passed). `buyer` / `seller` are plain-word notes for each party; `GET /escrows?party=` items carry only the caller's (`note`). Mark recomputes the countdown locally with the same shared logic and prints its role's view in `show` / `status`.
 - Every Escrow response (GET/POST, accept, …) also carries `awaiting`, `action_required_for` and `arbiterPolicy` (see below). They are derived fields and are not signed.
 
@@ -250,7 +253,7 @@ GET
   "terms": {"title": "Logo design", "deliverable": "zip with PNG + SVG", "acceptance": "3 distinct concepts, SVG included", "termsHash": "3621…9df2"},
   "termsAccepted": {"mine": false, "theirs": true}, "needs": ["accept"], "awaiting": "seller_accept", "action_required_for": "seller",
   "nextStep": {"text": "Review the terms, then accept them (funding is blocked until both parties accept).", "command": "mark escrow show 0129… && mark escrow accept 0129…"},
-  "deadlineCountdown": {"status": "not_applicable", "reason": "unfunded", "deadline": "…", "secondsLeft": 86210, "passed": false, "autoRefund": false, "autoRefundAt": null, "disputeBy": null, "note": "Not funded yet: …"} } ] }
+  "deadlineCountdown": {"status": "not_applicable", "reason": "unfunded", "deadline": "…", "secondsLeft": 86210, "passed": false, "autoRefund": false, "autoRefundAt": null, "disputeBy": null, "secondsRemaining": null, "disputeByPassed": false, "disputeMarginSec": null, "note": "Not funded yet: …"} } ] }
 ```
 - Errors: `401 UNAUTHORIZED` (bad signature, ts outside the window, replayed or malformed nonce), `BAD_PUBKEY`, `BAD_REQUEST` (needs, state, limit, cursor), `429 RATE_LIMITED` (per key and per client IP; defaults 30 and 120 per minute).
 - Use at least 16 random bytes from a CSPRNG for each nonce, never a clock value. A replay refusal (`401 UNAUTHORIZED`, `nonce already used (replay)`) means the same signed request reached the server twice (for example re-sent by a proxy). The listing only reads, so it is safe to sign it again with a new `ts` and nonce and retry once; Mark does this.

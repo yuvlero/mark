@@ -39,7 +39,8 @@ export interface ApproveOpts extends PayoutOpts { kind?: Kind; with?: "counterpa
 export function myCountdown(e: Escrow, role: Role, nowMs = Date.now()) {
   const srv = (e as any).deadlineCountdown;
   return countdownFor(deadlineCountdown({ id: e.id, state: e.state, deadline: e.deadline, arbiterMode: e.arbiterMode, disputed: !!e.dispute, ruled: !!e.ruling,
-    aboveAutoCap: !!srv && typeof srv === "object" && srv.reason === "above_auto_cap" }, nowMs), role);
+    aboveAutoCap: !!srv && typeof srv === "object" && srv.reason === "above_auto_cap",
+    fundedAt: typeof (e.funding as any)?.seenAt === "string" ? (e.funding as any).seenAt : null, createdAt: typeof e.createdAt === "string" ? e.createdAt : null }, nowMs), role);
 }
 
 // ---------- expiry of unfunded deals ----------

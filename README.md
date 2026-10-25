@@ -348,7 +348,7 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 | `pubkey` | `mark pubkey` |
 | `escrow_demo` (offer?, url?, text?, words?, focus?, language?, question?, scope?, topic?, confirm?, expectSats?, wait?, fresh?) | `demo` (creates the real deal only with `confirm: true`) |
 | `escrow_create` (role, counterparty, sats, deadline, terms{…}, hash?, arbiterMode?, webhookUrl?) | `escrow create` |
-| `escrow_show`, `escrow_accept` (id, allowCounterpartyRule?), `escrow_status` | same names (each includes `counterpartyReputation`, best effort; show/accept include `dealCheck`; show/status include `deadlineCountdown`) |
+| `escrow_show`, `escrow_accept` (id, allowCounterpartyRule?), `escrow_status` | same names (each includes `counterpartyReputation`, best effort; show/accept include `dealCheck`; show/status include `deadlineCountdown`: refund `deadline` and a recommended, earlier `disputeBy`) |
 | `escrow_reputation` (pubkey) | `reputation <pubkey>` |
 | `escrow_pending` (id? — omit for all my deals) | `escrow pending [<id>]` |
 | `escrow_limits` (sats?) | `escrow limits` |
