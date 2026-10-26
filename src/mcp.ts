@@ -14,7 +14,8 @@ const text = (o: unknown) => ({ content: [{ type: "text" as const, text: toJson(
  *  `updateNotice` already in it. `notice` is taken
  *  (demo / evidence results). A non-object result gets the notice as a second text item. */
 export function withNotice(o: unknown, n: string | null) {
-  // only Mark adds `updateNotice`: a field of that name coming from the server's payload is dropped, so it can't pose as one
+  // only Mark adds `updateNotice`: a top-level field of that name coming from the server's payload is dropped, so it can't pose as
+  // one (nested fields of that name are plain data inside the deal and are left alone)
   if (o && typeof o === "object" && !Array.isArray(o) && Object.hasOwn(o, "updateNotice")) { const { updateNotice: _drop, ...rest } = o as Record<string, unknown>; o = rest; }
   if (!n) return text(o);
   if (o && typeof o === "object" && !Array.isArray(o)) return text({ ...(o as object), updateNotice: n });

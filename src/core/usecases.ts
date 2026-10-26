@@ -41,14 +41,15 @@ export interface ApproveOpts extends PayoutOpts { kind?: Kind; with?: "counterpa
 export function myCountdown(e: Escrow, role: Role, nowMs = Date.now()) {
   const srv = e.deadlineCountdown;
   const srvAbove = !!srv && typeof srv === "object" && (srv as { reason?: unknown }).reason === "above_auto_cap";
-  const input = { id: e.id, state: e.state, deadline: e.deadline, arbiterMode: e.arbiterMode, disputed: !!e.dispute, ruled: !!e.ruling,
+  // the id and deadline end up in a suggested command / sentence: only a plain id is embedded, the deadline is printed normalized
+  const input = { id: typeof e.id === "string" && /^[\w-]{1,80}$/.test(e.id) ? e.id : undefined, state: e.state, deadline: e.deadline, arbiterMode: e.arbiterMode, disputed: !!e.dispute, ruled: !!e.ruling,
     fundedAt: typeof e.funding?.seenAt === "string" ? e.funding.seenAt : null, createdAt: typeof e.createdAt === "string" ? e.createdAt : null };
   const c = countdownFor(deadlineCountdown({ ...input, aboveAutoCap: srvAbove }, nowMs), role);
   if (c.reason !== "above_auto_cap") return c;
   const local = deadlineCountdown({ ...input, aboveAutoCap: false }, nowMs);
   if (local.status === "not_applicable") return { ...c, aboveAutoCapSource: "server" as const };
   const safe = role === "seller"
-    ? ` This is the escrow server's statement; Mark cannot check its cap. If it were wrong, the buyer could refund with the arbiter from ${local.deadline}: if you delivered and were not paid, dispute by ${local.disputeBy} to be safe (mark escrow dispute ${e.id} --reason "...").`
+    ? ` This is the escrow server's statement; Mark cannot check its cap. If it were wrong, the buyer could refund with the arbiter from ${new Date(Date.parse(e.deadline)).toISOString()}: if you delivered and were not paid, dispute by ${local.disputeBy} to be safe (mark escrow dispute ${input.id ?? "<id>"} --reason "...").`
     : ` This is the escrow server's statement; Mark cannot check its cap.`;
   return { ...c, aboveAutoCapSource: "server" as const, note: c.note + safe };
 }

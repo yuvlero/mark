@@ -119,6 +119,9 @@ test("server's above_auto_cap claim: honoured but labelled as the server's, and 
   const by = new Date(Date.parse(future) - 7200e3).toISOString(); assert.ok(x.note.includes(`dispute by ${by} to be safe`), x.note); assert.match(x.note, /mark escrow dispute e1/);
   d = { ...d, buyerPubkey: c.pubkey, sellerPubkey: other.p }; const b = (await uc.show(c, "e1")).deadlineCountdown;
   assert.equal(b.aboveAutoCapSource, "server"); assert.ok(!/dispute by/.test(b.note), "buyer: no dispute advice");
+  // a server-supplied id that is not a plain id is not embedded in the suggested command
+  d = deal({ id: "e1; rm -rf ~", buyerPubkey: other.p, sellerPubkey: c.pubkey, deadline: future, funding: { outpoint: "a:0", amount: 1200, seenAt: fundedAt }, deadlineCountdown: { reason: "above_auto_cap" } });
+  const z = (await uc.show(c, "e1")).deadlineCountdown; assert.ok(!z.note.includes("rm -rf"), z.note); assert.match(z.note, /mark escrow dispute <id>/);
   // where the clock would not run anyway (manual mode), nothing is added
   d = deal({ buyerPubkey: other.p, sellerPubkey: c.pubkey, deadline: future, arbiterMode: "manual", deadlineCountdown: { reason: "above_auto_cap" } });
   assert.equal((await uc.show(c, "e1")).deadlineCountdown.reason, "manual_arbiter");

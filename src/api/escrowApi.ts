@@ -16,23 +16,25 @@ export const UPGRADE_HINT = { command: "npx -y @yuvlero/mark@latest", global: "n
 /** Terminal-safe text: drops ANSI/OSC escape sequences, C0/C1 control characters and bidi overrides (a server could otherwise
  *  rewrite or hide what the user sees), collapses whitespace. */
 export function plainText(v: string): string {
-  return v.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g, " ")
+  return v.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/[\x00-\x1f\x7f-\x9f\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g, " ")
     .replace(/\s+/g, " ").trim();
 }
-/** A command the user is asked to run: a plain npx/npm command line for @yuvlero/mark, no shell operators. */
-const CMD_OK = /^(npx|npm)( [\w@./=:~^-]+)+$/, PKG_OK = /^@yuvlero\/mark(@[\w.~^-]+)?$/;
-const cmdOk = (t: string) => CMD_OK.test(t) && t.split(" ").some((w) => PKG_OK.test(w));
-/** The server's upgrade instructions (GET /limits client.upgrade, 426 details.upgrade), field by field: kept only when it is a string
- *  that names @yuvlero/mark after plainText(); `command` / `global` must also look like a plain npx/npm command. Otherwise (missing,
- *  null, wrong type, anything else) the built-in UPGRADE_HINT text is used, so a server can't make Mark print an arbitrary command. */
+/** Commands the user is asked to run: exactly these shapes, nothing else (no extra packages, flags, registries, URLs or tarballs). */
+const VER = "(@[0-9A-Za-z.~^-]+)?";
+const COMMAND_OK = new RegExp(`^npx (-y|--yes) @yuvlero/mark${VER}$`), GLOBAL_OK = new RegExp(`^npm (i|install) (-g|--global) @yuvlero/mark${VER}$`);
+/** MCP hint prose: must name @yuvlero/mark, and once that name is removed, carry no other package, command, URL or shell syntax. */
+const mcpOk = (t: string) => t.includes("@yuvlero/mark") && !/(npx|npm|pnpm|yarn|bunx|curl|wget|:\/\/|@|[`$|;&<>\\])/i.test(t.replace(new RegExp(`@yuvlero/mark${VER}`, "g"), ""));
+/** The server's upgrade instructions (GET /limits client.upgrade, 426 details.upgrade), field by field: a string (<= 500 chars) that,
+ *  after plainText(), is exactly `npx -y @yuvlero/mark[@tag]` (command), `npm install -g @yuvlero/mark[@tag]` (global), or a plain MCP
+ *  sentence about @yuvlero/mark (mcp). Anything else (missing, null, wrong type, extra packages/flags/registries, URLs, shell syntax)
+ *  is replaced by the built-in UPGRADE_HINT text, so a server can't make Mark print an arbitrary command. */
 export function safeUpgrade(u: unknown): { command: string; global: string; mcp: string } {
   const o: Record<string, unknown> = u && typeof u === "object" && !Array.isArray(u) ? (u as Record<string, unknown>) : {};
-  const pick = (k: "command" | "global" | "mcp") => {
+  const pick = (k: "command" | "global" | "mcp", ok: (t: string) => boolean) => {
     const v = o[k]; if (typeof v !== "string" || v.length > 500) return UPGRADE_HINT[k];
-    const t = plainText(v); if (!t.includes("@yuvlero/mark")) return UPGRADE_HINT[k];
-    return k === "mcp" ? (/[`$|;&<>]/.test(t) ? UPGRADE_HINT[k] : t) : cmdOk(t) ? t : UPGRADE_HINT[k];
+    const t = plainText(v); return ok(t) ? t : UPGRADE_HINT[k];
   };
-  return { command: pick("command"), global: pick("global"), mcp: pick("mcp") };
+  return { command: pick("command", (t) => COMMAND_OK.test(t)), global: pick("global", (t) => GLOBAL_OK.test(t)), mcp: pick("mcp", mcpOk) };
 }
 
 export type Party = "buyer" | "seller" | "arbiter";
@@ -142,10 +144,10 @@ export function upgradeRequired(url: string, j: any): MarkError {
   const d = j?.details && typeof j.details === "object" ? j.details : {};
   const up = safeUpgrade(d.upgrade);
   const min = typeof d.minMarkVersion === "string" ? plainText(d.minMarkVersion).slice(0, 64) : null;
-  let msg = typeof j?.error === "string" && plainText(j.error) ? plainText(j.error).slice(0, 1000) : `Mark ${MARK_VERSION} is too old for the escrow server ${url}${min ? ` (minimum ${min})` : ""}.`;
-  if (!msg.includes(up.command)) msg += ` Update Mark: ${up.command} (global install: ${up.global}).`;
-  if (!msg.includes("MCP")) msg += ` ${up.mcp}`;
-  return new MarkError("UPGRADE_REQUIRED", `${msg} Mark never updates itself.`, { ...d, markVersion: MARK_VERSION, escrowUrl: url, upgrade: up });
+  // the server's own text (escape-stripped, marked as the server's), then ALWAYS Mark's instructions: server text can't suppress them
+  const said = typeof j?.error === "string" ? plainText(j.error).slice(0, 1000) : "";
+  const msg = said ? `${said} [message from the escrow server ${url}]` : `Mark ${MARK_VERSION} is too old for the escrow server ${url}${min ? ` (minimum ${min})` : ""}.`;
+  return new MarkError("UPGRADE_REQUIRED", `${msg} Update Mark: ${up.command} (global install: ${up.global}). ${up.mcp} Mark never updates itself.`, { ...d, markVersion: MARK_VERSION, escrowUrl: url, upgrade: up });
 }
 /** The server's signed-listing replay refusal (401 UNAUTHORIZED "nonce already used (replay)"). */
 export const isReplayError = (e: unknown) => e instanceof MarkError && e.code === "UNAUTHORIZED" && /nonce already used/i.test(e.message);
