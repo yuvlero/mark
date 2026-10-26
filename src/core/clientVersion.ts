@@ -1,16 +1,17 @@
 /** "Is this Mark out of date?" The escrow server publishes its Mark version policy in GET /limits (`client`: minMarkVersion,
  *  latestMarkVersion, upgrade instructions). Mark caches it per escrow URL in <dataDir>/version-policy.json for 6 h, refreshing it
- *  whenever a command fetches /limits anyway, and otherwise fetching /limits at most once per 6 h. Below latest: a soft notice
+ *  whenever a command fetches /limits anyway, and otherwise fetching /limits at most once per 6 h (a failed fetch: retried at most every 15 min, across runs). Below latest: a soft notice
  *  (CLI: one stderr line; MCP: an `updateNotice` field). Below min the server refuses with UPGRADE_REQUIRED (api/escrowApi.ts).
  *  Never auto-updates, never throws. */
 import fs from "node:fs"; import path from "node:path";
 import { MARK_VERSION } from "../version.js";
 import { parseSemver, semverLt } from "./semver.js";
-import { UPGRADE_HINT, type ClientPolicy, type Limits } from "../api/escrowApi.js";
+import { safeUpgrade, type ClientPolicy, type Limits } from "../api/escrowApi.js";
 import type { Ctx } from "./context.js";
 
 export const VERSION_POLICY_TTL_MS = 6 * 3600_000;
-type Entry = { fetchedAt: string; minMarkVersion: string | null; latestMarkVersion: string | null; upgrade?: ClientPolicy["upgrade"] };
+/** attemptAt: last failed extra /limits attempt (ISO); kept across processes so a failing /limits is not retried on every CLI run. */
+type Entry = { fetchedAt: string; minMarkVersion: string | null; latestMarkVersion: string | null; upgrade?: ClientPolicy["upgrade"]; attemptAt?: string };
 const file = (c: Pick<Ctx, "dir">) => path.join(c.dir, "version-policy.json");
 function readAll(c: Pick<Ctx, "dir">): Record<string, Entry> { try { const j = JSON.parse(fs.readFileSync(file(c), "utf8")); return j && typeof j === "object" && !Array.isArray(j) ? j : {}; } catch { return {}; } }
 const ver = (v: unknown) => (typeof v === "string" && parseSemver(v) ? v : null);
@@ -23,8 +24,22 @@ export function rememberPolicy(c: Pick<Ctx, "dir" | "cfg">, l: Pick<Limits, "cli
     const p: any = l?.client && typeof l.client === "object" ? l.client : {};
     const up = p.upgrade && typeof p.upgrade === "object" ? { command: str(p.upgrade.command), global: str(p.upgrade.global), mcp: str(p.upgrade.mcp) } : undefined;
     const all = readAll(c); all[url] = { fetchedAt: new Date(now).toISOString(), minMarkVersion: ver(p.minMarkVersion), latestMarkVersion: ver(p.latestMarkVersion), ...(up ? { upgrade: up } : {}) };
-    fs.writeFileSync(file(c), JSON.stringify(all, null, 2) + "\n", { mode: 0o600 });
+    writeAll(c, all);
   } catch { /* a cache only */ }
+}
+function writeAll(c: Pick<Ctx, "dir">, all: Record<string, Entry>) {
+  const f = file(c); fs.writeFileSync(f, JSON.stringify(all, null, 2) + "\n", { mode: 0o600 }); try { fs.chmodSync(f, 0o600); } catch { /* best effort */ }
+}
+/** Remember a failed extra /limits attempt for this escrow URL (the cached policy, if any, is left as it was). Never throws. */
+function rememberAttempt(c: Pick<Ctx, "dir" | "cfg">, now: number) {
+  const url = c.cfg.escrowUrl; if (!url) return;
+  try { const all = readAll(c); const e = all[url] && typeof all[url] === "object" ? all[url] : { fetchedAt: "", minMarkVersion: null, latestMarkVersion: null };
+    all[url] = { ...e, attemptAt: new Date(now).toISOString() }; writeAll(c, all); } catch { /* a cache only */ }
+}
+/** When the last failed extra /limits attempt for this URL was (ms), or null. */
+function lastAttempt(c: Pick<Ctx, "dir" | "cfg">): number | null {
+  const url = c.cfg.escrowUrl; if (!url) return null; const a = readAll(c)[url]?.attemptAt; const t = typeof a === "string" ? Date.parse(a) : NaN;
+  return Number.isFinite(t) ? t : null;
 }
 /** The cached policy for this escrow URL if younger than the TTL. */
 export function cachedPolicy(c: Pick<Ctx, "dir" | "cfg">, now = Date.now()): Entry | null {
@@ -36,25 +51,30 @@ export function cachedPolicy(c: Pick<Ctx, "dir" | "cfg">, now = Date.now()): Ent
 /** The notice text for `version` under policy `p`, or null when this Mark is current (or the server has no policy). */
 export function noticeFor(p: Pick<Entry, "minMarkVersion" | "latestMarkVersion" | "upgrade"> | null, escrowUrl: string, version = MARK_VERSION): string | null {
   if (!p || !parseSemver(version)) return null;
-  const up = { ...UPGRADE_HINT, ...Object.fromEntries(Object.entries(p.upgrade ?? {}).filter(([, v]) => typeof v === "string")) };
+  const up = safeUpgrade(p.upgrade); // the server's text only if it is a plain @yuvlero/mark command, else the built-in one
   const how = `Update: ${up.command} (global install: ${up.global}). ${up.mcp} Mark never updates itself.`;
   if (p.minMarkVersion && semverLt(version, p.minMarkVersion)) return `Mark ${version} is below the minimum ${p.minMarkVersion} of the escrow server ${escrowUrl}: it refuses this version (UPGRADE_REQUIRED). ${how}`;
   if (p.latestMarkVersion && semverLt(version, p.latestMarkVersion)) return `Mark ${p.latestMarkVersion} is available (this is ${version}); the escrow server ${escrowUrl} recommends updating before older versions stop working. ${how}`;
   return null;
 }
 
-/** Last refresh attempt per context: a long-lived MCP server retries a failed refresh at most every 15 minutes. */
+/** Last refresh attempt per context (in memory) and per escrow URL (attemptAt in version-policy.json, so it holds across CLI runs):
+ *  a failed refresh is retried at most every 15 minutes. */
 const tried = new WeakMap<object, number>();
 export const RETRY_MS = 15 * 60_000;
-/** The update notice for this context: from the cache, else (fetch !== false) one GET /limits (5 s timeout). Never throws. */
+/** Timeout of the extra /limits request (the CLI waits for it before exiting). */
+export const NOTICE_TIMEOUT_MS = 2_000;
+/** The update notice for this context: from the cache, else (fetch !== false) one GET /limits (2 s timeout). Never throws. */
 export async function updateNotice(c: Ctx, o: { fetch?: boolean; now?: number } = {}): Promise<string | null> {
   try {
     const url = c.cfg.escrowUrl; if (!url) return null;
     const now = o.now ?? Date.now();
     let p = cachedPolicy(c, now);
-    if (!p && o.fetch !== false && now - (tried.get(c) ?? -Infinity) >= RETRY_MS) {
+    const last = Math.max(tried.get(c) ?? -Infinity, lastAttempt(c) ?? -Infinity);
+    if (!p && o.fetch !== false && !(now - last < RETRY_MS && last <= now + 60_000)) {
       tried.set(c, now);
-      try { rememberPolicy(c, await c.api.limits(undefined, 5_000), now); } catch (e: any) { if (e?.code === "NOT_FOUND") rememberPolicy(c, null, now); }
+      try { rememberPolicy(c, await c.api.limits(undefined, NOTICE_TIMEOUT_MS), now); }
+      catch (e: any) { if (e?.code === "NOT_FOUND") rememberPolicy(c, null, now); else rememberAttempt(c, now); }
       p = cachedPolicy(c, now);
     }
     return noticeFor(p, url);

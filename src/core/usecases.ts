@@ -35,12 +35,22 @@ export interface ApproveOpts extends PayoutOpts { kind?: Kind; with?: "counterpa
 
 // ---------- auto-refund deadline countdown (both roles) ----------
 /** Computed locally from the deal (this machine's clock), so it works with servers that do not send it. Only the server knows its
- *  auto-arbiter cap: its own `deadlineCountdown.reason` "above_auto_cap" is honoured. Returns my role's view (`note`). */
+ *  auto-arbiter cap (GET /limits does not publish it), so its own `deadlineCountdown.reason` "above_auto_cap" is honoured, but the
+ *  result says it is the server's claim (`aboveAutoCapSource: "server"`) and, when the clock would otherwise run, the note keeps the
+ *  local dispute-by time: a wrong claim must not talk a seller out of disputing. Returns my role's view (`note`). */
 export function myCountdown(e: Escrow, role: Role, nowMs = Date.now()) {
-  const srv = (e as any).deadlineCountdown;
-  return countdownFor(deadlineCountdown({ id: e.id, state: e.state, deadline: e.deadline, arbiterMode: e.arbiterMode, disputed: !!e.dispute, ruled: !!e.ruling,
-    aboveAutoCap: !!srv && typeof srv === "object" && srv.reason === "above_auto_cap",
-    fundedAt: typeof (e.funding as any)?.seenAt === "string" ? (e.funding as any).seenAt : null, createdAt: typeof e.createdAt === "string" ? e.createdAt : null }, nowMs), role);
+  const srv = e.deadlineCountdown;
+  const srvAbove = !!srv && typeof srv === "object" && (srv as { reason?: unknown }).reason === "above_auto_cap";
+  const input = { id: e.id, state: e.state, deadline: e.deadline, arbiterMode: e.arbiterMode, disputed: !!e.dispute, ruled: !!e.ruling,
+    fundedAt: typeof e.funding?.seenAt === "string" ? e.funding.seenAt : null, createdAt: typeof e.createdAt === "string" ? e.createdAt : null };
+  const c = countdownFor(deadlineCountdown({ ...input, aboveAutoCap: srvAbove }, nowMs), role);
+  if (c.reason !== "above_auto_cap") return c;
+  const local = deadlineCountdown({ ...input, aboveAutoCap: false }, nowMs);
+  if (local.status === "not_applicable") return { ...c, aboveAutoCapSource: "server" as const };
+  const safe = role === "seller"
+    ? ` This is the escrow server's statement; Mark cannot check its cap. If it were wrong, the buyer could refund with the arbiter from ${local.deadline}: if you delivered and were not paid, dispute by ${local.disputeBy} to be safe (mark escrow dispute ${e.id} --reason "...").`
+    : ` This is the escrow server's statement; Mark cannot check its cap.`;
+  return { ...c, aboveAutoCapSource: "server" as const, note: c.note + safe };
 }
 
 // ---------- expiry of unfunded deals ----------

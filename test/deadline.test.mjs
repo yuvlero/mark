@@ -11,7 +11,7 @@ const NOW = Date.parse("2026-10-25T12:00:00Z");
 const D = "2026-10-25T13:00:00.000Z"; // 1 h after NOW
 const cd = (o) => deadlineCountdown({ id: "e1", state: "funded", deadline: D, arbiterMode: "auto", ...o }, NOW);
 
-test("countdown: funded + auto arbiter runs; disputeBy = autoRefundAt = deadline; seconds left; notes per role", () => {
+test("countdown: funded + auto arbiter runs; no funding/creation time known -> margin 0, disputeBy = autoRefundAt = deadline; seconds left; notes per role", () => {
   const r = cd({});
   assert.equal(r.status, "running"); assert.equal(r.reason, "running"); assert.equal(r.autoRefund, true);
   assert.equal(r.deadline, D); assert.equal(r.autoRefundAt, D); assert.equal(r.disputeBy, D); assert.equal(r.secondsLeft, 3600); assert.equal(r.passed, false);
@@ -103,4 +103,26 @@ test("show as BUYER gets the same clock with the buyer note; server's above_auto
 test("MCP: escrow_show / escrow_status descriptions name deadlineCountdown (tool output = the same JSON)", () => {
   const src = fs.readFileSync(new URL("../src/mcp.ts", import.meta.url), "utf8");
   for (const t of ["escrow_show", "escrow_status"]) assert.match(src.split(`s.tool("${t}"`)[1].split("\n")[0], /deadlineCountdown/, t);
+});
+
+test("unknown future state -> unknown_state (not 'final'); no deadline -> deadline null; window < 120 s: half-window cap beats the 60 s floor", () => {
+  const u = cd({ state: "settling_v9" }); assert.equal(u.status, "not_applicable"); assert.equal(u.reason, "unknown_state"); assert.match(u.seller, /Unknown deal state/); assert.match(u.seller, /update Mark/);
+  const n = cd({ deadline: undefined }); assert.equal(n.reason, "bad_deadline"); assert.equal(n.deadline, null);
+  assert.equal(disputeMarginSec(0, 60_000), 30); assert.equal(disputeMarginSec(0, 119_000), 59); assert.equal(disputeMarginSec(0, 120_000), 60);
+});
+test("server's above_auto_cap claim: honoured but labelled as the server's, and the seller still gets the local dispute-by time", async () => {
+  let d; const c = await ctx({ "GET /escrows/e1": async () => [200, d], [`GET /reputation/${other.p}`]: async () => [404, { code: "NOT_FOUND", error: "x" }] });
+  const future = new Date(Date.now() + 10 * 3600e3).toISOString(), fundedAt = new Date(Date.now() - 10 * 3600e3).toISOString(); // window 20 h -> margin 2 h
+  d = deal({ buyerPubkey: other.p, sellerPubkey: c.pubkey, deadline: future, funding: { outpoint: "a:0", amount: 1200, seenAt: fundedAt }, deadlineCountdown: { status: "not_applicable", reason: "above_auto_cap" } });
+  const x = (await uc.show(c, "e1")).deadlineCountdown;
+  assert.equal(x.reason, "above_auto_cap"); assert.equal(x.aboveAutoCapSource, "server"); assert.match(x.note, /escrow server's statement; Mark cannot check its cap/);
+  const by = new Date(Date.parse(future) - 7200e3).toISOString(); assert.ok(x.note.includes(`dispute by ${by} to be safe`), x.note); assert.match(x.note, /mark escrow dispute e1/);
+  d = { ...d, buyerPubkey: c.pubkey, sellerPubkey: other.p }; const b = (await uc.show(c, "e1")).deadlineCountdown;
+  assert.equal(b.aboveAutoCapSource, "server"); assert.ok(!/dispute by/.test(b.note), "buyer: no dispute advice");
+  // where the clock would not run anyway (manual mode), nothing is added
+  d = deal({ buyerPubkey: other.p, sellerPubkey: c.pubkey, deadline: future, arbiterMode: "manual", deadlineCountdown: { reason: "above_auto_cap" } });
+  assert.equal((await uc.show(c, "e1")).deadlineCountdown.reason, "manual_arbiter");
+  // no `as any` left in myCountdown
+  const src = fs.readFileSync(new URL("../src/core/usecases.ts", import.meta.url), "utf8"); const fn = src.slice(src.indexOf("export function myCountdown"), src.indexOf("// ---------- expiry"));
+  assert.ok(fn.length > 100 && !/as any/.test(fn));
 });

@@ -10,9 +10,12 @@ import * as uc from "./core/usecases.js";
 import { MARK_VERSION } from "./version.js";
 
 const text = (o: unknown) => ({ content: [{ type: "text" as const, text: toJson(o, 0) }] });
-/** Adds `updateNotice` (this Mark is older than the escrow server's latestMarkVersion) to an object result. `notice` is taken
+/** Adds `updateNotice` (this Mark is older than the escrow server's latestMarkVersion) to an object result, after removing any
+ *  `updateNotice` already in it. `notice` is taken
  *  (demo / evidence results). A non-object result gets the notice as a second text item. */
 export function withNotice(o: unknown, n: string | null) {
+  // only Mark adds `updateNotice`: a field of that name coming from the server's payload is dropped, so it can't pose as one
+  if (o && typeof o === "object" && !Array.isArray(o) && Object.hasOwn(o, "updateNotice")) { const { updateNotice: _drop, ...rest } = o as Record<string, unknown>; o = rest; }
   if (!n) return text(o);
   if (o && typeof o === "object" && !Array.isArray(o)) return text({ ...(o as object), updateNotice: n });
   const t = text(o); return { content: [...t.content, { type: "text" as const, text: toJson({ updateNotice: n }, 0) }] };

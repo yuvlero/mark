@@ -6,7 +6,7 @@
  * who delivered to a silent buyer must open a dispute BEFORE the deadline; `disputeBy` recommends a time with a margin. An open dispute stops automatic signing.
  */
 export type CountdownStatus = "running" | "passed" | "not_applicable";
-export type CountdownReason = "running" | "passed" | "unfunded" | "final" | "disputed" | "ruled" | "manual_arbiter" | "above_auto_cap" | "bad_deadline";
+export type CountdownReason = "running" | "passed" | "unfunded" | "final" | "disputed" | "ruled" | "manual_arbiter" | "above_auto_cap" | "bad_deadline" | "unknown_state";
 export interface CountdownInput {
   state: string; deadline: string; arbiterMode?: string; disputed?: boolean; ruled?: boolean;
   /** when the deal was funded (ISO, funding.seenAt); start of the funded window. Missing: createdAt, else no margin */
@@ -16,8 +16,8 @@ export interface CountdownInput {
 }
 export interface DeadlineCountdown {
   status: CountdownStatus; reason: CountdownReason;
-  /** the deal deadline (ISO), always shown */
-  deadline: string;
+  /** the deal deadline (ISO), always shown; null only when the deal has no deadline string at all (reason bad_deadline) */
+  deadline: string | null;
   /** seconds until the deadline, 0 once passed (null if the deadline is unreadable) */
   secondsLeft: number | null; passed: boolean;
   /** true while passing the deadline lets the buyer refund with the arbiter's automatic co-signature */
@@ -36,7 +36,8 @@ export interface DeadlineCountdown {
   buyer: string; seller: string;
 }
 /** Recommended dispute margin = 10% of the funded window (funding time -> deadline), at least 60 s, at most 24 h, and never more
- *  than half the window (so disputeBy stays after the funding time and before the deadline). No usable window: 0. */
+ *  than half the window (so disputeBy stays after the funding time and before the deadline). The half-window cap wins over the 60 s
+ *  floor: a window under 120 s gets less than 60 s (60 s window -> 30 s). No usable window: 0. */
 export const DISPUTE_MARGIN_PCT = 10, DISPUTE_MARGIN_MIN_SEC = 60, DISPUTE_MARGIN_MAX_SEC = 86400;
 export function disputeMarginSec(startMs: number, deadlineMs: number): number {
   const w = Math.floor((deadlineMs - startMs) / 1000);
@@ -50,14 +51,15 @@ export function deadlineCountdown(d: CountdownInput, nowMs: number): DeadlineCou
   const left = ok ? Math.max(0, Math.floor((t - nowMs) / 1000)) : null; const passed = ok && nowMs >= t;
   const id = d.id ?? "<id>";
   const na = (reason: CountdownReason, both: string, seller = both) =>
-    ({ status: "not_applicable" as const, reason, deadline: d.deadline, secondsLeft: left, passed, autoRefund: false, autoRefundAt: null, disputeBy: null,
+    ({ status: "not_applicable" as const, reason, deadline: typeof d.deadline === "string" ? d.deadline : null, secondsLeft: left, passed, autoRefund: false, autoRefundAt: null, disputeBy: null,
       secondsRemaining: null, disputeByPassed: false, disputeMarginSec: null, buyer: both, seller });
   if (!ok) return na("bad_deadline", "The deadline is unreadable; ask the operator (mark escrow messages).");
   if (FINAL.includes(d.state)) return na("final", `Final (${d.state}): no deadline applies any more.`);
   if (d.state === "created") return na("unfunded", "Not funded yet: no refund clock runs. An unfunded deal expires shortly after the deadline (see expiresAt).", "Not funded yet: do not deliver before the deal is funded. An unfunded deal expires shortly after the deadline (see expiresAt).");
   if (d.ruled) return na("ruled", "Ruled by the operator: the ruling decides the payout, not the deadline.");
   if (d.disputed || d.state === "disputed") return na("disputed", "Dispute open: the automatic refund is stopped until the operator rules.");
-  if (!ACTIVE.includes(d.state)) return na("final", `State ${d.state}: no refund clock.`);
+  // a state this code does not know (a newer server): do not claim "no refund clock", say it is unknown
+  if (!ACTIVE.includes(d.state)) return na("unknown_state", `Unknown deal state ${JSON.stringify(String(d.state)).slice(0, 40)}: this countdown cannot tell whether a refund clock runs. Check the deal with the operator (mark escrow messages) or update Mark; if you are the seller and delivered, do not wait past the deadline ${d.deadline} to dispute.`);
   if (d.arbiterMode === "manual") return na("manual_arbiter", "Manual arbiter mode: there is no automatic refund at the deadline; only buyer + seller, or an operator ruling, move the funds.");
   if (d.aboveAutoCap) return na("above_auto_cap", "Above the server's auto-arbiter cap: there is no automatic refund at the deadline; only buyer + seller, or an operator ruling, move the funds.");
   const startMs = [d.fundedAt, d.createdAt].map((x) => (typeof x === "string" ? Date.parse(x) : NaN)).find((x) => Number.isFinite(x)) ?? t;

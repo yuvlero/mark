@@ -5,12 +5,35 @@
 import { MarkError } from "../errors.js";
 import type { FeeTerms } from "../core/fees.js";
 import { MARK_VERSION, MARK_USER_AGENT } from "../version.js";
+import type { DeadlineCountdown } from "../core/deadline.js";
 
 /** What the server says about Mark versions (GET /limits `client`; absent on older servers). */
 export interface ClientPolicy { minMarkVersion: string | null; latestMarkVersion: string | null; refuseUnversioned?: boolean; upgrade?: { command?: string; global?: string; mcp?: string } }
-/** Fallback upgrade instructions (the server's own `client.upgrade` wins when present). Mark never updates itself. */
+/** Built-in upgrade instructions (the server's own `client.upgrade` is shown instead only if it passes safeUpgrade()). Mark never updates itself. */
 export const UPGRADE_HINT = { command: "npx -y @yuvlero/mark@latest", global: "npm install -g @yuvlero/mark@latest",
   mcp: 'MCP: in your MCP client config set the mark server\'s args to ["-y", "@yuvlero/mark@latest", "mcp"] (a bare @yuvlero/mark can keep running an old cached copy), then restart the MCP client.' };
+
+/** Terminal-safe text: drops ANSI/OSC escape sequences, C0/C1 control characters and bidi overrides (a server could otherwise
+ *  rewrite or hide what the user sees), collapses whitespace. */
+export function plainText(v: string): string {
+  return v.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g, " ")
+    .replace(/\s+/g, " ").trim();
+}
+/** A command the user is asked to run: a plain npx/npm command line for @yuvlero/mark, no shell operators. */
+const CMD_OK = /^(npx|npm)( [\w@./=:~^-]+)+$/, PKG_OK = /^@yuvlero\/mark(@[\w.~^-]+)?$/;
+const cmdOk = (t: string) => CMD_OK.test(t) && t.split(" ").some((w) => PKG_OK.test(w));
+/** The server's upgrade instructions (GET /limits client.upgrade, 426 details.upgrade), field by field: kept only when it is a string
+ *  that names @yuvlero/mark after plainText(); `command` / `global` must also look like a plain npx/npm command. Otherwise (missing,
+ *  null, wrong type, anything else) the built-in UPGRADE_HINT text is used, so a server can't make Mark print an arbitrary command. */
+export function safeUpgrade(u: unknown): { command: string; global: string; mcp: string } {
+  const o: Record<string, unknown> = u && typeof u === "object" && !Array.isArray(u) ? (u as Record<string, unknown>) : {};
+  const pick = (k: "command" | "global" | "mcp") => {
+    const v = o[k]; if (typeof v !== "string" || v.length > 500) return UPGRADE_HINT[k];
+    const t = plainText(v); if (!t.includes("@yuvlero/mark")) return UPGRADE_HINT[k];
+    return k === "mcp" ? (/[`$|;&<>]/.test(t) ? UPGRADE_HINT[k] : t) : cmdOk(t) ? t : UPGRADE_HINT[k];
+  };
+  return { command: pick("command"), global: pick("global"), mcp: pick("mcp") };
+}
 
 export type Party = "buyer" | "seller" | "arbiter";
 export interface Auth { party: "buyer" | "seller"; ts: number; sig: string }
@@ -27,7 +50,10 @@ export interface Escrow {
   /** 2 = signed terms v2 (termsHash covers rule, arbiterMode, deadline, webhookUrlSha256 too); 1 / absent = v1; null = legacy */
   termsVersion?: number | null; webhookUrlSha256?: string | null;
   arbiterAttestation?: { v: string; identityPubkey: string; sig: string } | null;
-  funding?: { outpoint: string; amount: number }; proposals: ProposalSummary[];
+  /** seenAt: when the server saw the funding (newer servers) */
+  funding?: { outpoint: string; amount: number; seenAt?: string }; proposals: ProposalSummary[];
+  /** newer servers: the server's own auto-refund countdown (Mark recomputes it locally, see core/usecases.ts myCountdown) */
+  deadlineCountdown?: unknown;
   /** null on legacy deals */
   terms?: { title: string; description: string; deliverable?: string; acceptance?: string; deliverableSha256?: string } | null; termsHash?: string | null;
   acceptances?: Partial<Record<"buyer" | "seller", { sig: string; at: string }>> | null; termsAgreed?: boolean;
@@ -51,7 +77,7 @@ export interface PartyItem { id: string; role: "buyer" | "seller"; counterpartyP
   terms: { title: string; deliverable: string | null; acceptance: string | null; termsHash: string | null } | null; termsAccepted: { mine: boolean | null; theirs: boolean | null };
   needs: ("accept" | "fund" | "sign")[]; nextStep: { text: string; command: string };
   /** newer servers: auto-refund countdown for this role (see core/deadline.ts); absent on older servers */
-  deadlineCountdown?: Record<string, unknown> }
+  deadlineCountdown?: Partial<Omit<DeadlineCountdown, "buyer" | "seller">> & { note?: string } }
 export interface PartyList { party: string; count: number; escrows: PartyItem[]; nextCursor: string | null }
 
 /** GET /reputation/:pubkey: public aggregates over funded deals (an indicator, not a guarantee). */
@@ -114,8 +140,9 @@ const enc = encodeURIComponent;
 /** 426 UPGRADE_REQUIRED: this Mark is older than the server's minimum. The message always carries the update command and the MCP hint. */
 export function upgradeRequired(url: string, j: any): MarkError {
   const d = j?.details && typeof j.details === "object" ? j.details : {};
-  const up = { ...UPGRADE_HINT, ...(d.upgrade && typeof d.upgrade === "object" ? d.upgrade : {}) };
-  let msg = typeof j?.error === "string" && j.error ? j.error : `Mark ${MARK_VERSION} is too old for the escrow server ${url}${d.minMarkVersion ? ` (minimum ${d.minMarkVersion})` : ""}.`;
+  const up = safeUpgrade(d.upgrade);
+  const min = typeof d.minMarkVersion === "string" ? plainText(d.minMarkVersion).slice(0, 64) : null;
+  let msg = typeof j?.error === "string" && plainText(j.error) ? plainText(j.error).slice(0, 1000) : `Mark ${MARK_VERSION} is too old for the escrow server ${url}${min ? ` (minimum ${min})` : ""}.`;
   if (!msg.includes(up.command)) msg += ` Update Mark: ${up.command} (global install: ${up.global}).`;
   if (!msg.includes("MCP")) msg += ` ${up.mcp}`;
   return new MarkError("UPGRADE_REQUIRED", `${msg} Mark never updates itself.`, { ...d, markVersion: MARK_VERSION, escrowUrl: url, upgrade: up });
