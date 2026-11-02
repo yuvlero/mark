@@ -2,7 +2,7 @@
 
 **Let your agent pay another agent, and get paid, without trusting it.** Mark is a CLI and MCP server for non-custodial 2-of-3 Bitcoin escrow. Two agents sign the terms. The buyer funds over Lightning, the seller delivers and is paid over Lightning, and a neutral arbiter key only matters if they disagree or one goes silent. No accounts and no custody: each agent holds its own key, and every command prints JSON that agents can act on.
 
-**Proof:** a real agent-to-agent deal on Bitcoin mainnet ran from create to payout in about 9 minutes. Production deal `6930c46a`: 5,000 sats, 330 sats platform fee, 4,634 sats delivered to the seller over Lightning.
+**Proof:** a real agent-to-agent deal on Bitcoin mainnet ran from create to payout in about 9 minutes. Production deal `6930c46a`: 5,000 sats, 330 sats platform fee (the fee schedule before 0.3.0; that deal size is free now), 4,634 sats delivered to the seller over Lightning.
 
 ## Try a real deal in about 10 minutes
 
@@ -15,7 +15,7 @@ npx -y @yuvlero/mark escrow fund <id> --wait                                 # 3
 npx -y @yuvlero/mark escrow messages <id>                                    # 4. read the delivery (a Markdown summary of the page)
 npx -y @yuvlero/mark escrow approve <id>                                     # 5. release the payment to the seller
 ```
-- Step 2 waits up to 3 minutes for the seller to accept; if it is still waiting, run step 2 again later (it resumes the same deal, nothing new is created). `--expect-sats 350` refuses if the price changed since your preview. Deals under 3,300 sats pay no platform fee; your wallet pays a few sats of Lightning swap fee on top.
+- Step 2 waits up to 3 minutes for the seller to accept; if it is still waiting, run step 2 again later (it resumes the same deal, nothing new is created). `--expect-sats 350` refuses if the price changed since your preview. Deals up to 33,000 sats pay no platform fee; your wallet pays a few sats of Lightning swap fee on top.
 - **Non-custodial:** your key stays on your machine (`~/.mark/bitcoin`, back it up with `npx -y @yuvlero/mark backup`). Funds sit in a 2-of-3 escrow, and the service holds only the arbiter key.
 - **If nothing is delivered**, you can claim a refund after the deadline (24 hours for the demo): `npx -y @yuvlero/mark escrow refund <id> --payout-lnaddr you@wallet`, and the arbiter co-signs it.
 
@@ -154,8 +154,8 @@ mark escrow limits --sats 5000
 ```
 ```json
 {"minDealSats":{"lightning":335,"ark":330,"enforced":335},"maxDealSats":1000000, …,
- "feePreview":{"amountSats":5000,"platformFeeSats":330,"possibleDisputeFeeSats":330,"estimatedSwapCostSats":38,"swapCostUpperBoundSats":62,
-   "payeeReceives":{"arkSats":4670,"lightningSatsEstimate":4632,"lightningSatsAtLeast":4608,"ifDisputeRuledArkSats":4340}, …}}
+ "feePreview":{"amountSats":5000,"platformFeeSats":0,"possibleDisputeFeeSats":330,"estimatedSwapCostSats":38,"swapCostUpperBoundSats":62,
+   "payeeReceives":{"arkSats":5000,"lightningSatsEstimate":4962,"lightningSatsAtLeast":4938,"ifDisputeRuledArkSats":4670}, …}}
 ```
 
 > **Payouts: use `--payout-lnaddr you@wallet` by default.** It needs no invoice amount math. Invoices (`--payout-invoice`) and Ark (`--payout-ark`) are alternatives.
@@ -173,7 +173,7 @@ mark escrow create --role buyer --counterparty <S pubkey> --sats 5000 --deadline
 ```json
 {"id":"01290412-1cca-45a9-afb1-b7e288c8056c","state":"created","amountSats":5000,"deadline":"2026-10-16T11:41:22.755Z",
  "termsHash":"36210e22…9df2","termsAccepted":{"buyer":true,"seller":false},"termsAgreed":false,
- "feePreview":{"platformFeeSats":330,"possibleDisputeFeeSats":330, …},
+ "feePreview":{"platformFeeSats":0,"possibleDisputeFeeSats":330, …},
  "next":"share the escrow id with your counterparty; they must run: mark escrow show 0129… then mark escrow accept 0129…. Funding is blocked until both accepted."}
 ```
 - `--deadline` is seconds from now or an ISO time. After it passes, the buyer can get a refund co-signed by the arbiter.
@@ -262,13 +262,13 @@ mark escrow approve <id> --payout-lnaddr seller@walletofsatoshi.com
 mark escrow quote <id> --dest seller@walletofsatoshi.com   # or --dest <any bolt11 from your wallet>
 ```
 ```json
-{"path":"release","payee":"seller","escrowSats":5000,"payeeLegSats":4670,"quoteType":"exact",
- "lightning":{"invoiceSats":4651,"minInvoiceSats":4558,"maxInvoiceSats":4651,"recommendedInvoiceSats":4651, …},
- "fees":{"platformFeeSats":330,"disputeFeeSats":0,"feeOutputSats":330, …}}
+{"path":"release","payee":"seller","escrowSats":5000,"payeeLegSats":5000,"quoteType":"exact",
+ "lightning":{"invoiceSats":4980,"minInvoiceSats":4880,"maxInvoiceSats":4980,"recommendedInvoiceSats":4980, …},
+ "fees":{"platformFeeSats":0,"disputeFeeSats":0,"feeOutputSats":0, …}}
 ```
 (Illustrative numbers: the exact values depend on the route.) Create an invoice for `lightning.recommendedInvoiceSats` (anywhere in `minInvoiceSats..maxInvoiceSats` works), valid for at least 10 more minutes, then:
 ```bash
-mark escrow approve <id> --payout-invoice lnbc46510n1…
+mark escrow approve <id> --payout-invoice lnbc49800n1…
 ```
 - Without `--dest` the quote is an **estimate** (`quoteType: "estimate"`, routing fees vary by destination), and `recommendedInvoiceSats` already subtracts a safety margin.
 - **Option C: Ark address:** `--payout-ark ark1…`. You receive `payeeLegSats` (escrow minus platform fee), with no swap fee.
@@ -292,19 +292,18 @@ The seller's Lightning wallet receives the payment and the state becomes `releas
 
 | Item | Value |
 |---|---|
-| Deal under 3,300 sats | **free** |
-| 3,300 – 33,000 sats | **330 sats flat** |
-| Above 33,000 sats | **1 %** (rounded up) |
-| Ruled dispute | **+ max(5 %, 330 sats)**, only for deals ≥ 3,300; taken before the winner's payout |
+| Deal up to 33,000 sats | **free** (no platform fee) |
+| Above 33,000 sats | **1 % of the whole amount** (rounded up to the next sat): 33,001 → 331, 100,000 → 1,000 |
+| Ruled dispute (unchanged) | **+ max(5 %, 330 sats)**, only for deals ≥ 3,300 (also when the platform fee is 0); taken before the winner's payout |
 | Max deal | 1,000,000 sats |
 | Min deal | **335 sats on mainnet** (Satora minimum). Test networks may differ (mutinynet: 1,000). **Always read `GET /limits` → `minDealSats.enforced`** (`mark escrow limits`) |
 | Satora swap minimum | 335 sats per swap on mainnet (`limits.satora.minSats`) |
 | Ark dust | 330 sats (fees below dust are waived) |
-| Lightning payout swap cost | Satora protocol fee **0.3 %** (live rate) + Lightning routing (typically ~0.4–0.5 %). Example: 5,000-sat deal → 4,670 payee leg → **~36 sats** swap cost (4,634 received). `feePreview.estimatedSwapCostSats` is that realistic estimate; `swapCostUpperBoundSats` is the most you lose when invoicing the estimate's `recommendedInvoiceSats` (includes a safety margin). Exact cost: `quote --dest` |
+| Lightning payout swap cost | Satora protocol fee **0.3 %** (live rate) + Lightning routing (typically ~0.4–0.5 %). Example: 5,000-sat deal → 5,000 payee leg → **~38 sats** swap cost (about 4,962 received). `feePreview.estimatedSwapCostSats` is that realistic estimate; `swapCostUpperBoundSats` is the most you lose when invoicing the estimate's `recommendedInvoiceSats` (includes a safety margin). Exact cost: `quote --dest` |
 | Amountless BOLT11 | **unsupported** (use an amount or a Lightning address) |
 
-Examples (normal payout fee → payee on Ark; ruled dispute fee → winner): 3,299 → 0 / 0. 5,000 → 330 → 4,670 / 660 → 4,340. 33,000 → 330 / 1,980. 100,000 → 1,000 / 6,000. 1,000,000 → 10,000 / 60,000.
-The fee terms are stamped into each deal and signed as part of `termsHash`. `mark escrow show` prints `feeTerms` and `feeSummary`.
+Examples (normal payout fee → payee on Ark; ruled dispute fee → winner): 3,299 → 0 / 0. 5,000 → 0 → 5,000 / 330 → 4,670. 33,000 → 0 / 1,650. 33,001 → 331 / 1,982. 100,000 → 1,000 / 6,000. 1,000,000 → 10,000 / 60,000.
+The fee terms are stamped into each deal and signed as part of `termsHash`, so a deal keeps the schedule it was created with (deals created before 0.3.0 under the old schedule, free under 3,300 and 330 sats flat up to 33,000, keep it). `mark escrow show` prints `feeTerms` and `feeSummary`.
 
 ## 6. Messages and disputes
 

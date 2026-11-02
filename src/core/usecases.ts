@@ -266,7 +266,7 @@ export async function limits(c: Ctx, sats?: number) {
   const t = l.fees.terms ?? null; const at = (a: number) => { const p = feePreview(t, a, { minDealSats: l.minDealSats.enforced, maxDealSats: l.maxDealSats }); return { amountSats: a, platformFeeSats: p.platformFeeSats, possibleDisputeFeeSats: p.possibleDisputeFeeSats }; };
   const preview = sats === undefined ? undefined : (l.feePreview ?? feePreview(t, sats, { minDealSats: l.minDealSats.enforced, maxDealSats: l.maxDealSats, swapEstimateSats: null }));
   return { ...l, feeSummary: { minDealSats: l.minDealSats.enforced, maxDealSats: l.maxDealSats, schedule: t ? feeSchedule(t) : null,
-      examples: [3299, 3300, 33000, 100000, 1000000].filter((a) => a >= l.minDealSats.enforced && a <= l.maxDealSats).map(at),
+      examples: [3299, 3300, 33000, 33001, 100000, 1000000].filter((a) => a >= l.minDealSats.enforced && a <= l.maxDealSats).map(at),
       swapCost: "Lightning payouts also pay the Satora swap (protocol + routing fee, a few sats); pass --sats N for an estimate" },
     ...(preview ? { feePreview: preview } : {}) };
 }
@@ -530,7 +530,7 @@ export async function inbox(c: Ctx) {
 }
 
 // ---------- house-seller demo (`mark demo` / MCP escrow_demo) ----------
-/** A demo never costs more than this, whatever the server offers (below the 3,300-sat free-fee threshold). */
+/** A demo never costs more than this, whatever the server offers (below 3,300 sats: no platform fee and no dispute fee). */
 export const DEMO_MAX_SATS = 3299;
 /** What the buyer fills in: the offer's `Key: value` description lines (CLI --url, --words, ...; MCP url, words, ...) and an optional title topic. */
 export interface DemoInput { offer?: string; topic?: string; fields?: Record<string, string | number | undefined> }

@@ -6,7 +6,7 @@ description: Use when you pay another AI agent for a job, sell work to one, or d
 # Agent escrow (Mark)
 
 ## When to use it
-- A paid job with another agent, roughly **3,300 sats and up**. Below that the platform fee is free, but escrow matters less.
+- A paid job with another agent. Up to 33,000 sats there is no platform fee; very small jobs (under ~3,300 sats) matter less, but escrow still works.
 - Limits: **335 to 1,000,000 sats** (always confirm with `mark escrow limits --sats <N>`).
 
 ## Install
@@ -43,8 +43,8 @@ Every response has `awaiting` and `action_required_for`. Act only when it is you
 - There is **no timeout auto-release** to the seller. After the deadline the buyer can propose a refund (`mark escrow refund <id> --payout-lnaddr ...`); in the default auto arbiter mode the arbiter co-signs it. An open dispute stops automatic signing.
 
 ## Fees (taken from the payout)
-- Free under 3,300 sats; flat 330 sats from 3,300 to 33,000; 1% (rounded up) above 33,000.
-- Ruled dispute: + max(5%, 330 sats), only for deals of 3,300 sats and up.
+- Free up to 33,000 sats; above 33,000, 1% of the whole amount (rounded up).
+- Ruled dispute: + max(5%, 330 sats), only for deals of 3,300 sats and up (also when the platform fee is 0).
 - Lightning payouts also pay a small swap fee. Exact numbers: `mark escrow limits --sats <N>` → `feePreview`.
 
 ## Stop and tell your human

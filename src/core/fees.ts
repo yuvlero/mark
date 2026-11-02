@@ -18,9 +18,12 @@ export interface FeeTermsV1 {
   address: string;
 }
 
-/** v2 fee terms (current schedule). Platform fee per payout: free below freeBelowSats; flatSats up to flatUntilSats
+/** v2 fee terms. Platform fee per payout: free below freeBelowSats; flatSats up to flatUntilSats
  *  (inclusive); above that max(flatSats, ceil(amount * feeBps / 10000)). Ruled dispute: + max(disputeMinSats,
- *  ceil(amount * disputeFeeBps / 10000)) (also free below freeBelowSats). Both go in ONE fee output. */
+ *  ceil(amount * disputeFeeBps / 10000)) (also free below freeBelowSats). Both go in ONE fee output.
+ *  Current schedule (flatSats 0): free up to flatUntilSats (33,000), then feeBps (1%) of the WHOLE amount rounded up;
+ *  freeBelowSats (3,300) is then only the floor of the ruled-dispute fee. Same math, so deals stamped with older v2 terms
+ *  (flatSats 330) compute exactly as before. */
 export interface FeeTermsV2 {
   v: 2;
   freeBelowSats: number;
@@ -79,6 +82,8 @@ export function computeFees(terms: FeeTerms | null | undefined, amountSats: numb
 
 /** Human-readable schedule (for /limits and Mark). */
 export function feeSchedule(t: FeeTerms) {
+  if (t.v === 2 && t.flatSats === 0) return { platform: `free up to ${t.flatUntilSats} sats; above ${t.flatUntilSats}: ${t.feeBps / 100}% of the whole amount, rounded up`,
+    dispute: `ruled dispute: + ${t.disputeFeeBps / 100}% (min ${t.disputeMinSats} sats), only from ${t.freeBelowSats} sats; same single fee output` };
   if (t.v === 2) return { platform: `free below ${t.freeBelowSats} sats; ${t.flatSats} sats flat from ${t.freeBelowSats} to ${t.flatUntilSats}; above ${t.flatUntilSats}: ${t.feeBps / 100}% rounded up`,
     dispute: `ruled dispute: + ${t.disputeFeeBps / 100}% (min ${t.disputeMinSats} sats), only from ${t.freeBelowSats} sats; same single fee output` };
   return { platform: `${t.feeBps / 100}% (free below ${t.freeBelowSats} sats; sub-dust fees bumped or waived)`, dispute: `ruled dispute: + ${t.disputeFeeBps / 100}%` };
@@ -88,7 +93,7 @@ export function feeSchedule(t: FeeTerms) {
 export const maxFeeOutput = (terms: FeeTerms | null | undefined, amountSats: number) => Math.max(computeFees(terms, amountSats, amountSats, true).feeOutputSats, computeFees(terms, amountSats, amountSats, false).feeOutputSats);
 
 /** Smallest amount whose payee leg is >= minPayeeSats under the worst-case fee. Searches upward from minPayeeSats.
- *  The fee jumps at freeBelowSats (free -> flat), so a free-tier candidate only counts if the first charged amount also works. */
+ *  The worst-case fee jumps at freeBelowSats (free -> flat or dispute minimum), so a free-tier candidate only counts if the first charged amount also works. */
 export function minDealFor(terms: FeeTerms | null | undefined, minPayeeSats: number, limit = 100_000_000): number {
   const ok = (a: number) => a - maxFeeOutput(terms, a) >= minPayeeSats;
   for (let a = Math.max(1, minPayeeSats); a <= limit; a++) if (ok(a)) { if (terms && a < terms.freeBelowSats && !ok(terms.freeBelowSats)) { a = terms.freeBelowSats - 1; continue; } return a; }

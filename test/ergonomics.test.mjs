@@ -59,7 +59,7 @@ test("limits --sats: fee preview (platform, possible dispute, swap estimate, min
   const { c, f } = await ctx({ "GET /limits": async () => [200, LIMITS] });
   const l = await uc.limits(c, 50000); assert.equal(f.calls[0].key, "GET /limits?sats=50000");
   assert.deepEqual([l.feePreview.platformFeeSats, l.feePreview.possibleDisputeFeeSats, l.feePreview.minDealSats, l.feePreview.maxDealSats, l.feePreview.estimatedSwapCostSats], [500, 2500, 1000, 1000000, null]);
-  assert.deepEqual(l.feeSummary.examples.map((x) => [x.amountSats, x.platformFeeSats, x.possibleDisputeFeeSats]), [[3299, 0, 0], [3300, 330, 330], [33000, 330, 1650], [100000, 1000, 5000], [1000000, 10000, 50000]]);
+  assert.deepEqual(l.feeSummary.examples.map((x) => [x.amountSats, x.platformFeeSats, x.possibleDisputeFeeSats]), [[3299, 0, 0], [3300, 330, 330], [33000, 330, 1650], [33001, 331, 1651], [100000, 1000, 5000], [1000000, 10000, 50000]]);
   assert.equal(await code(uc.limits(c, 2000000)), "LIMIT_EXCEEDED");
   const plain = await uc.limits(c); assert.equal(plain.feePreview, undefined);
 });

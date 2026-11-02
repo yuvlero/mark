@@ -10,7 +10,7 @@ import { tmpHome, mockFetch, arkAddr } from "./mockApi.mjs";
 
 const OTHER = "11".repeat(32), URL_ = "https://escrow.test", FEE = arkAddr(9), DEST = arkAddr(7);
 const TERMS = { v: 1, feeBps: 100, disputeFeeBps: 500, freeBelowSats: 1000, dustSats: 330, dustBumpMaxBps: 200, address: FEE }; // legacy v1 (old deals)
-const T2 = { v: 2, freeBelowSats: 3300, flatSats: 330, flatUntilSats: 33000, feeBps: 100, disputeFeeBps: 500, disputeMinSats: 330, dustSats: 330, address: FEE }; // current schedule
+const T2 = { v: 2, freeBelowSats: 3300, flatSats: 330, flatUntilSats: 33000, feeBps: 100, disputeFeeBps: 500, disputeMinSats: 330, dustSats: 330, address: FEE }; // schedule stamped on deals before 0.3.0 (still honoured)
 /** PSBT with the given outputs plus a zero-value P2A anchor (like a real Ark tx). */
 function psbt(outs) {
   const t = new Transaction({ allowUnknownOutputs: true, allowUnknownInputs: true, disableScriptCheck: true });
@@ -90,7 +90,7 @@ test("fee math matches the server table", () => {
 });
 // Byte-parity of the shared modules (fees, status, terms) is enforced by a test in the escrow server repo, which reads this repo's copies.
 
-// ---- v2 schedule (current): free < 3300, flat 330 to 33000, then 1%; ruled dispute + max(5%, 330) ----
+// ---- v2 schedule before 0.3.0 (old deals keep it): free < 3300, flat 330 to 33000, then 1%; ruled dispute + max(5%, 330) ----
 test("v2 fee math matches the server README table", () => {
   const r = (a, d) => computeFees(T2, a, a, d).feeOutputSats;
   assert.deepEqual([3299, 3300, 10000, 33000, 33001, 100000, 1000000].map((a) => [r(a, false), r(a, true)]),
@@ -111,4 +111,23 @@ test("v2 co-sign: free tier (3299) = single output; 1000000 = 1%", async () => {
 test("unknown fee terms version -> refuse to sign", async () => {
   const { c, signedFlag } = await setup(psbt([[DEST, 49500], [FEE, 500]]), { fees: { ...T2, v: 3 } });
   assert.notEqual(await code(uc.approve(c, "e1")), "OK"); assert.equal(signedFlag(), false);
+});
+
+// ---- 0.3.0 schedule: same v2 terms with flatSats 0 = free up to 33,000, then 1% of the whole amount; ruled dispute unchanged ----
+const T3 = { ...T2, flatSats: 0 };
+test("0.3.0 fee math: free up to 33000, 1% of the whole amount above (rounded up); dispute part unchanged", () => {
+  const r = (a, d) => computeFees(T3, a, a, d).feeOutputSats;
+  assert.deepEqual([3299, 3300, 5000, 33000, 33001, 33100, 33101, 100000, 1000000].map((a) => [r(a, false), r(a, true)]),
+    [[0, 0], [0, 330], [0, 330], [0, 1650], [331, 1982], [331, 1986], [332, 1988], [1000, 6000], [10000, 60000]]);
+  for (const a of [3300, 5000, 20000, 33000, 33001, 100000]) assert.equal(computeFees(T3, a, a, true).disputeFeeSats, computeFees(T2, a, a, true).disputeFeeSats);
+});
+test("0.3.0 co-sign: 5000 = single output (no zero-sat fee output); the old 330 fee is refused for new terms", async () => {
+  const ok = await setup(psbt([[DEST, 5000]]), { amount: 5000, fees: T3 }); assert.ok(await passesChecks(uc.approve(ok.c, "e1")));
+  const bad = await setup(psbt([[DEST, 4670], [FEE, 330]]), { amount: 5000, fees: T3 }); assert.equal(await code(uc.approve(bad.c, "e1")), "UNSAFE_TX"); assert.equal(bad.signedFlag(), false);
+  const old = await setup(psbt([[DEST, 4670], [FEE, 330]]), { amount: 5000, fees: T2 }); assert.ok(await passesChecks(uc.approve(old.c, "e1")), "a deal stamped before 0.3.0 keeps its 330 fee");
+});
+test("0.3.0 co-sign: ruled dispute on a zero-platform-fee deal = 330 dispute fee only; 33001 = 331", async () => {
+  assert.ok(await passesChecks(uc.approve((await setup(psbt([[DEST, 4670], [FEE, 330]]), { amount: 5000, fees: T3, ruled: true })).c, "e1")));
+  assert.equal(await code(uc.approve((await setup(psbt([[DEST, 5000]]), { amount: 5000, fees: T3, ruled: true })).c, "e1")), "UNSAFE_TX");
+  assert.ok(await passesChecks(uc.approve((await setup(psbt([[DEST, 32670], [FEE, 331]]), { amount: 33001, fees: T3 })).c, "e1")));
 });

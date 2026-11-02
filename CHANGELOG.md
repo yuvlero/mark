@@ -2,6 +2,21 @@
 
 All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-escrow. Dates are UTC+4 (Dubai). Versions follow semver; 0.x releases may change behaviour between minor versions.
 
+## [0.3.0] - 2026-11-02
+
+**Breaking (pricing):** the escrow server's fee schedule changes for new deals. Deals up to 33,000 sats pay no platform fee. Above 33,000 sats the fee is 1% of the whole deal amount, rounded up to the next sat (33,001 sats pays 331, 100,000 pays 1,000). The old tiers (free under 3,300 sats, 330 sats flat from 3,300 to 33,000) are gone. The ruled-dispute fee does not change: 5%, at least 330 sats, for deals of 3,300 sats and up, also when the platform fee is 0. Limits stay 335 to 1,000,000 sats.
+
+The fee terms format does not change: the new schedule is the same version 2 fee terms with `flatSats` 0, so Mark 0.2.x checks new deals correctly and keeps working; only its fee wording is out of date. A deal keeps the fee terms it was created with, so deals created under the old schedule keep their old fee.
+
+### Added
+- Fee examples in `mark escrow limits` (and MCP `escrow_limits`) include 33,001 sats, the first amount with a platform fee.
+- Tests for the new schedule: free up to 33,000, 1% of the whole amount above (rounding), single payout output when the fee is 0, the dispute fee on a zero-fee deal, and old deals keeping their 330-sat fee.
+
+### Changed
+- The fee schedule text Mark prints for new deals (`feeSummary.schedule`, `feeTerms`) reads "free up to 33000 sats; above 33000: 1% of the whole amount, rounded up". Deals with the old terms still show the old text.
+- MCP instructions and the `escrow_limits` tool description state the new schedule.
+- README (quick start, fee table, examples, JSON samples), `docs/escrow-api.md` (fee math, samples) and the agent skill (`skills/agent-escrow/SKILL.md`) state the new schedule. The house-seller demo still stays under 3,300 sats, where nothing at all is charged.
+
 ## [0.2.4] - 2026-11-02
 
 Clearer first steps: every first-run output says what to try next, commands are printed the way you started Mark (npx or not), and an agent using the MCP server now learns that its key was just created.

@@ -86,7 +86,7 @@ sig        = hex(schnorr(id_bytes, key))
   "terms": {"title": "Logo design", "description": "3 distinct logo concepts", "deliverable": "zip with PNG + SVG", "acceptance": "3 distinct concepts, SVG included"},
   "termsHash": "36210e22…9df2",
   "acceptances": {"buyer": {"sig": "1eee…e95a", "at": "…"}}, "termsAccepted": {"buyer": true, "seller": false}, "termsAgreed": false,
-  "fees": {"v": 2, "freeBelowSats": 3300, "flatSats": 330, "flatUntilSats": 33000, "feeBps": 100, "disputeFeeBps": 500, "disputeMinSats": 330, "dustSats": 330, "address": "tark1qq…"},
+  "fees": {"v": 2, "freeBelowSats": 3300, "flatSats": 0, "flatUntilSats": 33000, "feeBps": 100, "disputeFeeBps": 500, "disputeMinSats": 330, "dustSats": 330, "address": "tark1qq…"},
   "evidence": [], "proposals": [], "events": [{"at": "…", "type": "created", "data": {"termsHash": "36210e22…", "acceptedBy": ["buyer"]}}],
   "funding": {"outpoint": "<txid>:<vout>", "amount": 5000, "seenAt": "…"},
   "dispute": {"by": "buyer", "reason": "…", "at": "…"}, "ruling": {"outcome": "refund", "at": "…", "by": "…"}, "txid": "<ark txid>" }
@@ -147,7 +147,7 @@ Deliverables travel **off-band**, by any channel the parties agree on (email, a 
 { "id": "ce01…", "kind": "release"|"refund", "dest": "<ark address the tx pays>", "signers": ["seller","buyer"], "signerSet": "…",
   "payout": {"type": "invoice"|"lnaddr"|"ark", "invoice"?: "lnbc…", "address"?: "…", "swapId"?: "…", "sats": 4280},
   "outpoint": "…", "arkTx": "<base64 PSBT>", "checkpoints": ["<base64 PSBT>"], "sigs": ["seller"], "createdAt": "…",
-  "fee": {"platformFeeSats": 330, "disputeFeeSats": 330, "dustBumpSats": 0, "feeOutputSats": 660, "payeeSats": 4340, "waived": false, "reason": "charged", "address": "ark1…"},
+  "fee": {"platformFeeSats": 0, "disputeFeeSats": 330, "dustBumpSats": 0, "feeOutputSats": 330, "payeeSats": 4670, "waived": false, "reason": "charged", "address": "ark1…"},
   "submittedTxid"?: "…", "error"?: "…" }
 ```
 
@@ -183,22 +183,23 @@ expired ──(late or partial payment seen; buyer proposes a refund, buyer + ar
 ```json
 { "network": "bitcoin", "minDealSats": {"lightning": 335, "ark": 330, "enforced": 335}, "maxDealSats": 1000000,
   "freeBelowSats": 3300, "dustSats": 330,
-  "fees": {"enabled": true, "address": "ark1…", "freeBelowSats": 3300, "flatSats": 330, "flatUntilSats": 33000, "feeBps": 100,
+  "fees": {"enabled": true, "address": "ark1…", "freeBelowSats": 3300, "flatSats": 0, "flatUntilSats": 33000, "feeBps": 100,
            "disputeFeeBps": 500, "disputeMinSats": 330, "terms": {"v": 2, …, "dustSats": 330, "address": "ark1…"}, "schedule": {…}},
   "satora": {"minSats": 335, "maxSats": 1000000, "fetchedAt": "…", "stale": false}, "note": "…",
   "expiry": {"graceSec": 3600, "expiredWatchSec": 604800, "note": "…"},
   "termsVersions": [1, 2], "arbiter": {"identityPubkey": "<64 hex>", "attestation": "mark-escrow-arbiter/1", "note": "…"},
   "client": {"minMarkVersion": null, "latestMarkVersion": "0.3.0", "refuseUnversioned": false,
              "upgrade": {"command": "npx -y @yuvlero/mark@latest", "global": "npm install -g @yuvlero/mark@latest", "mcp": "MCP: in your MCP client config set the mark server's args to [\"-y\", \"@yuvlero/mark@latest\", \"mcp\"] …, then restart the MCP client."}},
-  "feePreview": { "amountSats": 5000, "platformFeeSats": 330, "platformFeeReason": "charged", "possibleDisputeFeeSats": 330, "disputeFeeApplies": true,
-                  "estimatedSwapCostSats": 38, "swapCostUpperBoundSats": 62, "payeeReceives": {"arkSats": 4670, "lightningSatsEstimate": 4632, "lightningSatsAtLeast": 4608, "ifDisputeRuledArkSats": 4340},
+  "feePreview": { "amountSats": 5000, "platformFeeSats": 0, "platformFeeReason": "zero_rate", "possibleDisputeFeeSats": 330, "disputeFeeApplies": true,
+                  "estimatedSwapCostSats": 38, "swapCostUpperBoundSats": 62, "payeeReceives": {"arkSats": 5000, "lightningSatsEstimate": 4962, "lightningSatsAtLeast": 4938, "ifDisputeRuledArkSats": 4670},
                   "minDealSats": 335, "maxDealSats": 1000000, "withinLimits": true, "schedule": {…} } }
 ```
 `client` is the Mark version policy (§7; `null` = not set; absent on older servers). `feePreview` is only present with `?sats=`. `estimatedSwapCostSats` (Lightning payouts only) = live Satora protocol fee (~0.3 %) + a routing allowance (0.5 %), a realistic figure (a 4,670-sat payout cost 36 in practice). `swapCostUpperBoundSats` = payee leg − the estimate quote's `recommendedInvoiceSats` (includes the safety margin). The exact cost per destination comes from `quote?dest=`. **Always read `minDealSats.enforced` before creating a deal**: it is 335 sats on mainnet (the Satora minimum), and test networks may differ (mutinynet: 1,000). Put `fees.terms` into the termsHash you sign.
 
 **Fee math (terms v2):**
-- Platform fee: 0 if `amount < freeBelowSats`; `flatSats` if `amount ≤ flatUntilSats`; otherwise `ceil(amount × feeBps / 10000)`.
-- A ruled dispute adds `max(disputeMinSats, ceil(amount × disputeFeeBps / 10000))`, only when `amount ≥ freeBelowSats`.
+- Platform fee: 0 if `amount < freeBelowSats`; `flatSats` if `amount ≤ flatUntilSats`; otherwise `max(flatSats, ceil(amount × feeBps / 10000))`.
+- A ruled dispute adds `max(disputeMinSats, ceil(amount × disputeFeeBps / 10000))`, only when `amount ≥ freeBelowSats`, also when the platform fee is 0.
+- Current schedule (since server 0.3.0): `flatSats` 0, `flatUntilSats` 33000, `feeBps` 100, `freeBelowSats` 3300: free up to 33,000 sats, then 1 % of the whole amount rounded up (33,001 → 331); a ruled dispute adds max(5 %, 330) from 3,300 sats. Deals keep the terms stamped at creation (older deals: `flatSats` 330).
 - Both are paid as **one** output to `fees.address`. A fee below `dustSats`, or a payee leg below dust, is waived.
 - Payee leg = escrow − fee output.
 
@@ -286,7 +287,7 @@ The house-seller demo offers used by `mark demo` (MCP `escrow_demo`): small real
 ```
 - The top-level `sellerPubkey`, `title`, `sats`, `deadline*`, `summary` repeat the `default` offer.
 - A deal for an offer: `POST /escrows` as buyer with `sellerPubkey`, exactly `sats`, `deadline` = `deadlineSeconds`, `terms.title` = `"<titlePrefix>: <topic>"`, and `terms.description` made **only** of `Key: value` lines using the keys in `description.fields` (`required` keys present, exactly one key of each `oneOf` group, `int` values within `min..max`, `url` values `https://`). Copy `deliverable`/`acceptance` verbatim if the offer has them. The seller declines anything else (the reason is posted in the deal thread).
-- `sats` is at most 3,299, below the free-fee threshold, so `feeFree` is `true` (no platform fee; the Lightning swap still costs a few sats). `turnaround` says how long delivery takes; it is not instant.
+- `sats` is at most 3,299, below `freeBelowSats`, so `feeFree` is `true` (no platform fee and no dispute fee; the Lightning swap still costs a few sats). `turnaround` says how long delivery takes; it is not instant.
 - The seller delivers in the deal thread (`GET /escrows/:id/messages`), then proposes its payout; the buyer co-signs.
 - No demo offered: `{"enabled":false,"network":"…","code":"DEMO_NOT_CONFIGURED"|"DEMO_DISABLED"|"DEMO_MISCONFIGURED","error":"…"}` (still 200). Older servers answer 404 `NOT_FOUND`.
 - Mark re-checks the offer locally (network, key, amount cap, deadline, fields) and the buyer's inputs, and creates nothing without explicit consent (`--yes`, MCP `confirm: true`).
@@ -306,13 +307,13 @@ Reading also refreshes funding: `created → funded` once the address holds `amo
 
 ### GET /escrows/:id/quote?path=release|refund[&dest=<lnaddr|bolt11>] → 200
 ```json
-{ "escrowId": "…", "path": "release", "payee": "seller", "funded": true, "escrowSats": 5000, "payeeLegSats": 4670,
-  "lightning": {"invoiceSats": 4668, "minInvoiceSats": 4574, "maxInvoiceSats": 4668, "recommendedInvoiceSats": 4621, "toleranceSats": 94,
-                "quoteType": "estimate", "estimate": true, "estimateMarginSats": 47, "protocolFeeSats": 0, "networkFeeSats": 2, "minSats": 335, "maxSats": 1000000, "exact": false},
-  "ark": {"payoutSats": 4670},
-  "fees": {"terms": {…}, "platformFeeSats": 330, "disputeFeeSats": 0, "dustBumpSats": 0, "feeOutputSats": 330, "waived": false, "reason": "charged",
+{ "escrowId": "…", "path": "release", "payee": "seller", "funded": true, "escrowSats": 5000, "payeeLegSats": 5000,
+  "lightning": {"invoiceSats": 4998, "minInvoiceSats": 4898, "maxInvoiceSats": 4998, "recommendedInvoiceSats": 4948, "toleranceSats": 100,
+                "quoteType": "estimate", "estimate": true, "estimateMarginSats": 50, "protocolFeeSats": 0, "networkFeeSats": 2, "minSats": 335, "maxSats": 1000000, "exact": false},
+  "ark": {"payoutSats": 5000},
+  "fees": {"terms": {…}, "platformFeeSats": 0, "disputeFeeSats": 0, "dustBumpSats": 0, "feeOutputSats": 0, "waived": false, "reason": "zero_rate",
            "satoraProtocolFeeSats": 0, "satoraNetworkFeeSats": 2, "ifDisputeRuled"?: {…}},
-  "payeeReceives": {"arkSats": 4670, "lightningInvoiceSats": 4668, "lightningInvoiceRange": [4574, 4668]},
+  "payeeReceives": {"arkSats": 5000, "lightningInvoiceSats": 4998, "lightningInvoiceRange": [4898, 4998]},
   "quoteType": "estimate", "note": "…" }
 ```
 - With `dest` (a Lightning address, or any BOLT11 from the payee's wallet) the quote is `exact` for that route.
@@ -370,7 +371,7 @@ Includes `arkTx` and `checkpoints` to sign.
 ```json
 { "escrowId": "…", "state": "disputed", "arbiterPubkey": "…", "buyerPubkey": "…", "sellerPubkey": "…", "cursor": 13,
   "messages": [ { "seq": 12, "id": "<messageId>", "escrowId": "…", "author": "operator", "pubkey": "<arbiterPubkey>", "kind": "system",
-                  "body": "Ruling: REFUND to the buyer. Ruled by the operator (…), signed with this deal's arbiter key. Fees: platform 330 + dispute 330 = 660 sats; …",
+                  "body": "Ruling: REFUND to the buyer. Ruled by the operator (…), signed with this deal's arbiter key. Fees: platform 0 + dispute 330 = 330 sats; …",
                   "ts": 1792063306, "createdAt": "…", "sig": "…", "extra": {"event": "ruled"}, "flag"?: {"flag": "duplicate", "of": "<id>", "at": "…"} } ] }
 ```
 - Poll with `since=<cursor>` to get only newer messages.
