@@ -101,7 +101,7 @@ test("MCP: updateNotice field on object results (notice is taken), second text i
   assert.deepEqual(withNotice({ a: 1 }, null), { content: [{ type: "text", text: '{"a":1}' }] });
   assert.deepEqual(JSON.parse(withNotice({ a: 1, notice: "demo" }, "update!").content[0].text), { a: 1, notice: "demo", updateNotice: "update!" });
   const arr = withNotice([1], "update!"); assert.equal(arr.content.length, 2); assert.deepEqual(JSON.parse(arr.content[1].text), { updateNotice: "update!" });
-  const src = fs.readFileSync(new URL("../src/mcp.ts", import.meta.url), "utf8"); assert.match(src, /withNotice\(o, await notice\(\)\)/); assert.match(src, /withNotice\(errorJson\(e\), await notice\(e\)\)/);
+  const src = fs.readFileSync(new URL("../src/mcp.ts", import.meta.url), "utf8"); assert.match(src, /withNotice\(withKeyNotice\(o, takeKeyNotice\(\)\), await notice\(\)\)/); assert.match(src, /withNotice\(withKeyNotice\(errorJson\(e\), takeKeyNotice\(\)\), await notice\(e\)\)/);
 });
 
 // ---- CLI end to end against a local HTTP server (stderr notice; UPGRADE_REQUIRED) ----

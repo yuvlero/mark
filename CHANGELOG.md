@@ -2,6 +2,26 @@
 
 All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-escrow. Dates are UTC+4 (Dubai). Versions follow semver; 0.x releases may change behaviour between minor versions.
 
+## [0.2.4] - 2026-11-02
+
+Clearer first steps: every first-run output says what to try next, commands are printed the way you started Mark (npx or not), and an agent using the MCP server now learns that its key was just created.
+
+### Added
+- A top-level `next` sentence in the output of `mark` (no arguments), `mark init` and `mark pubkey`: "Next: try one real deal (350 sats, about 10 min, preview first, nothing is created): mark demo --url https://example.com. To pay you need a Lightning wallet with about 400 sats, e.g. Bark: https://second.tech/docs/getting-started/bark-cli".
+- The `mark demo` preview notice on mainnet ends with the same wallet line, sized to the offer (about 400 sats for the 350-sat demo).
+- MCP: the server instructions now start with first-run guidance. If the server created the agent's key in this session they say so and where (for example `~/.mark/bitcoin`), and ask the agent to tell its human to back it up (`mark backup` in a terminal); otherwise they say where the keys live. Then: no counterparty yet, call `escrow_demo` (a free preview, nothing is created) and show the human the 350-sat house-seller deal; paying needs a Lightning wallet, e.g. Bark.
+- MCP: when the server created the key, the first tool result of the session gets a `keyNotice` field with the key folder, the pubkey and the backup command. Before, this notice only went to stderr, which agents never see.
+- README: a "Try a real deal in about 10 minutes" section at the top with the five commands of the house-seller demo, what you need (Node 20.19+, a Lightning wallet with about 400 sats) and what happens if nothing is delivered.
+
+### Changed
+- When Mark runs through npx (npm's `_npx` cache, or `npm exec`) and no `mark` command is on PATH, the commands Mark prints use `npx -y @yuvlero/mark ...` instead of `mark ...`, so they can be copied as they are. This covers the new `next` lines, the quickstart steps, the `init` backup note, the demo steps and hints, and most `next` / note hints of the escrow commands. Usage strings still say `mark`.
+- package.json and server.json descriptions: "dispute protection for agent-to-agent payments" (package.json also says "Try: npx -y @yuvlero/mark demo").
+- MCP instructions mention `escrow_demo` once, at the top, instead of at the end.
+
+### Fixed
+- `mark demo --help`, `mark escrow --help` and `mark escrow <subcommand> --help` (also `-h` or `help`) print the usage and exit 0, instead of failing with "--help needs a value". `--help` on any other command prints the usage and does nothing else, so `mark init --help` no longer creates a key.
+- README: the install section no longer says the dependency tree has no native addons. It has one optional native module, `better-sqlite3` (via `@satora/swap`), which Mark never loads; npm may print a `prebuild-install` warning while installing it. `npm install --omit=optional` skips it.
+
 ## [0.2.3] - 2026-10-26
 
 Mark now tells the escrow server its version and shows an update notice when the server recommends a newer one, and `show` / `status` show when a seller must open a dispute before the buyer can take an automatic refund.

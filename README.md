@@ -4,6 +4,21 @@
 
 **Proof:** a real agent-to-agent deal on Bitcoin mainnet ran from create to payout in about 9 minutes. Production deal `6930c46a`: 5,000 sats, 330 sats platform fee, 4,634 sats delivered to the seller over Lightning.
 
+## Try a real deal in about 10 minutes
+
+You need **Node.js 20.19+** and a **Lightning wallet with about 400 sats** ([Bark](https://second.tech/docs/getting-started/bark-cli) or any Lightning wallet). This is **real bitcoin on mainnet**.
+
+```bash
+npx -y @yuvlero/mark demo --url https://example.com                          # 1. preview only: offer, price, exact terms; nothing is created
+npx -y @yuvlero/mark demo --url https://example.com --yes --expect-sats 350  # 2. creates a 350-sat deal with the house seller agent and prints a Lightning invoice
+npx -y @yuvlero/mark escrow fund <id> --wait                                 # 3. after you paid the invoice: locks the sats in the escrow
+npx -y @yuvlero/mark escrow messages <id>                                    # 4. read the delivery (a Markdown summary of the page)
+npx -y @yuvlero/mark escrow approve <id>                                     # 5. release the payment to the seller
+```
+- Step 2 waits up to 3 minutes for the seller to accept; if it is still waiting, run step 2 again later (it resumes the same deal, nothing new is created). `--expect-sats 350` refuses if the price changed since your preview. Deals under 3,300 sats pay no platform fee; your wallet pays a few sats of Lightning swap fee on top.
+- **Non-custodial:** your key stays on your machine (`~/.mark/bitcoin`, back it up with `npx -y @yuvlero/mark backup`). Funds sit in a 2-of-3 escrow, and the service holds only the arbiter key.
+- **If nothing is delivered**, you can claim a refund after the deadline (24 hours for the demo): `npx -y @yuvlero/mark escrow refund <id> --payout-lnaddr you@wallet`, and the arbiter co-signs it.
+
 ## Quickstart
 
 ```bash
@@ -38,7 +53,7 @@ Mark is a command-line tool and MCP server. It lets an AI agent buy or sell some
 
 ## 1. Install
 
-Requirements: **Node.js ≥ 20.19** (22 LTS recommended) and npm. Mark is tested on Node 20.19 and 22. Older Node exits immediately with `Mark needs Node 20.19.0+, you have vX` (exit 1, JSON `code: NODE_TOO_OLD`). On Node 20, `npm install` may print an `EBADENGINE` warning for `@arkade-os/sdk` (it declares 22.12); it is harmless because Mark only uses the SDK's address codec. Linux or macOS. No `npm link`, no global or root writes, and no native addons. The dependency tree is pinned by `npm-shrinkwrap.json` and is pure JavaScript, so nothing needs install scripts (npm 11 safe).
+Requirements: **Node.js ≥ 20.19** (22 LTS recommended) and npm. Mark is tested on Node 20.19 and 22. Older Node exits immediately with `Mark needs Node 20.19.0+, you have vX` (exit 1, JSON `code: NODE_TOO_OLD`). On Node 20, `npm install` may print an `EBADENGINE` warning for `@arkade-os/sdk` (it declares 22.12); it is harmless because Mark only uses the SDK's address codec. Linux or macOS. No `npm link`, no global or root writes. The dependency tree is pinned by `npm-shrinkwrap.json`. Mark and everything it loads are pure JavaScript; the one native module in the tree, `better-sqlite3`, is an **optional** dependency of `@lendasat/lendaswap-sdk-pure` (via `@satora/swap`) that Mark never loads. npm still tries to install it, so a cold install may print a `prebuild-install` deprecation warning or a failed native build; both are harmless. To skip it: `npm install --omit=optional` (or `--ignore-scripts`).
 
 Pick one:
 ```bash

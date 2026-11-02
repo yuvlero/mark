@@ -8,6 +8,8 @@ import { openCtx, type Ctx, type CtxOptions } from "./core/context.js";
 import { updateNotice } from "./core/clientVersion.js";
 import * as uc from "./core/usecases.js";
 import { MARK_VERSION } from "./version.js";
+import { mk, DEMO_SATS, WALLET_DOCS } from "./invocation.js";
+import os from "node:os";
 
 const text = (o: unknown) => ({ content: [{ type: "text" as const, text: toJson(o, 0) }] });
 /** Adds `updateNotice` (this Mark is older than the escrow server's latestMarkVersion) to an object result, after removing any
@@ -22,16 +24,40 @@ export function withNotice(o: unknown, n: string | null) {
   const t = text(o); return { content: [...t.content, { type: "text" as const, text: toJson({ updateNotice: n }, 0) }] };
 }
 let ctx: Ctx | undefined;
+/** Set when this server generated the agent key: added once, as `keyNotice`, to the first tool result (many MCP clients never show
+ *  the server instructions or stderr to the model). */
+let keyNotice: string | null = null;
+/** Adds the one-time `keyNotice` to an object result (a top-level `keyNotice` from anywhere else is dropped first). */
+export function withKeyNotice(o: unknown, n: string | null): unknown {
+  if (!o || typeof o !== "object" || Array.isArray(o)) return o;
+  const { keyNotice: _drop, ...rest } = o as Record<string, unknown>;
+  return n ? { ...rest, keyNotice: n } : rest;
+}
+const takeKeyNotice = () => { const n = keyNotice; keyNotice = null; return n; };
 const notice = (e?: any) => (ctx && e?.code !== "UPGRADE_REQUIRED" ? updateNotice(ctx, { fetch: !["ESCROW_UNREACHABLE", "ESCROW_URL_MISSING", "ESCROW_BAD_RESPONSE"].includes(e?.code) }) : Promise.resolve(null));
-const wrap = (fn: () => Promise<unknown>) => fn().then(async (o) => withNotice(o, await notice())).catch(async (e) => ({ ...withNotice(errorJson(e), await notice(e)), isError: true }));
+const wrap = (fn: () => Promise<unknown>) => fn().then(async (o) => withNotice(withKeyNotice(o, takeKeyNotice()), await notice()))
+  .catch(async (e) => ({ ...withNotice(withKeyNotice(errorJson(e), takeKeyNotice()), await notice(e)), isError: true }));
 const payout = { payoutInvoice: z.string().optional(), payoutLnaddr: z.string().optional(), payoutArk: z.string().optional() };
 
 /** Server-level description that MCP clients show the model (tool search / selection). */
-export const MCP_INSTRUCTIONS = "Agent Escrow (Mark): non-custodial 2-of-3 bitcoin escrow for deals between AI agents, with Lightning in and out. Use it when you pay another agent for a job or get paid by one and neither side should have to trust the other: funds are locked until delivery, released when both sign, refunded after the deadline, or ruled by a neutral arbiter on dispute. The operator holds only the arbiter key and cannot move funds alone. Start: escrow_limits (fees: free under 3,300 sats, 330 sats to 33,000, 1% above), escrow_reputation (check the counterparty), escrow_create (buyer or seller), then act on awaiting and action_required_for in each response. No counterparty yet: escrow_demo. Mainnet is real money.";
+const MCP_BODY = "Agent Escrow (Mark): non-custodial 2-of-3 bitcoin escrow for deals between AI agents, with Lightning in and out. Use it when you pay another agent for a job or get paid by one and neither side should have to trust the other: funds are locked until delivery, released when both sign, refunded after the deadline, or ruled by a neutral arbiter on dispute. The operator holds only the arbiter key and cannot move funds alone. Start: escrow_limits (fees: free under 3,300 sats, 330 sats to 33,000, 1% above), escrow_reputation (check the counterparty), escrow_create (buyer or seller), then act on awaiting and action_required_for in each response. Mainnet is real money.";
+const tilde = (d: string) => { const h = os.homedir(); return h && (d === h || d.startsWith(h + "/")) ? "~" + d.slice(h.length) : d; };
+/** Server instructions: first-run guidance at the very top, then what the server is for. `keyCreated` only when this server
+ *  generated the key in this session (else the generic "keys live in" line). */
+export function mcpInstructions(o: { keyCreated?: boolean; dir?: string; network?: string; cmd?: string } = {}) {
+  const dir = tilde(o.dir ?? "~/.mark/bitcoin"), backup = `${o.cmd ?? "mark"} backup${o.network && o.network !== "bitcoin" ? ` --network ${o.network}` : ""}`;
+  const key = o.keyCreated ? `First time? This server just created this agent's key in ${dir}. Tell your human to back it up (\`${backup}\` in a terminal).`
+    : `This agent's keys live in ${dir}; your human can back them up with \`${backup}\` in a terminal.`;
+  return `${key} No counterparty yet: call escrow_demo (free preview, nothing is created) and show your human the ${DEMO_SATS}-sat house-seller deal. Paying needs a Lightning wallet, e.g. Bark: ${WALLET_DOCS}. ${MCP_BODY}`;
+}
+/** The generic instructions (no key created this session, default data dir). */
+export const MCP_INSTRUCTIONS = mcpInstructions();
 
 export async function runMcp(network: NetworkName, o: CtxOptions = {}) {
   const c = (ctx = await openCtx(network, o));
-  const s = new McpServer({ name: "mark", version: MARK_VERSION }, { instructions: MCP_INSTRUCTIONS });
+  const instructions = mcpInstructions({ keyCreated: c.keyCreated, dir: c.dir, network, cmd: mk() });
+  if (c.keyCreated) keyNotice = `This server just created this agent's key in ${tilde(c.dir)} (pubkey ${c.pubkey}). Tell your human to back it up now: run \`${mk()} backup${network !== "bitcoin" ? ` --network ${network}` : ""}\` in a terminal. Deleting that folder loses this identity and access to its deals.`;
+  const s = new McpServer({ name: "mark", version: MARK_VERSION }, { instructions });
   s.tool("pubkey", "This agent's escrow public key (x-only hex)", {}, () => wrap(async () => uc.pubkey(c)));
   s.tool("escrow_create", "Start an escrowed deal with another agent so you can pay it (role buyer) or get paid by it (role seller) without trusting it: non-custodial 2-of-3 bitcoin escrow, funded and paid out over Lightning. Terms you write here are signed by both sides and are what the arbiter rules on. Check escrow_limits and escrow_reputation first; next the counterparty calls escrow_accept, then the buyer calls escrow_fund.", { role: z.enum(["buyer", "seller"]), counterparty: z.string(), sats: z.number().int().positive(), deadline: z.string().describe("seconds from now or ISO time"), hash: z.string().optional(), arbiterMode: z.enum(["auto", "manual"]).optional(),
       terms: z.object({ title: z.string().max(120), description: z.string().max(4000), deliverable: z.string().max(1000).optional(), acceptance: z.string().max(2000).optional(), deliverableSha256: z.string().optional() }).describe("What is being traded; the arbiter rules disputes on this. Signed by you at create; the counterparty must escrow_accept before funding") },

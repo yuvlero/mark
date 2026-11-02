@@ -20,6 +20,7 @@ import { dealStatus, arbiterPolicy } from "./status.js";
 import { deadlineCountdown, countdownFor } from "./deadline.js";
 import { serverLimits, supportsTermsV2, verifyDeal } from "./dealCheck.js";
 import { rememberPolicy } from "./clientVersion.js";
+import { mk, walletLine } from "../invocation.js";
 import type { Role } from "./localIndex.js";
 
 /** Machine-readable status (shared logic: status.ts, identical to the server's). */
@@ -49,7 +50,7 @@ export function myCountdown(e: Escrow, role: Role, nowMs = Date.now()) {
   const local = deadlineCountdown({ ...input, aboveAutoCap: false }, nowMs);
   if (local.status === "not_applicable") return { ...c, aboveAutoCapSource: "server" as const };
   const safe = role === "seller"
-    ? ` This is the escrow server's statement; Mark cannot check its cap. If it were wrong, the buyer could refund with the arbiter from ${new Date(Date.parse(e.deadline)).toISOString()}: if you delivered and were not paid, dispute by ${local.disputeBy} to be safe (mark escrow dispute ${input.id ?? "<id>"} --reason "...").`
+    ? ` This is the escrow server's statement; Mark cannot check its cap. If it were wrong, the buyer could refund with the arbiter from ${new Date(Date.parse(e.deadline)).toISOString()}: if you delivered and were not paid, dispute by ${local.disputeBy} to be safe (${mk()} escrow dispute ${input.id ?? "<id>"} --reason "...").`
     : ` This is the escrow server's statement; Mark cannot check its cap.`;
   return { ...c, aboveAutoCapSource: "server" as const, note: c.note + safe };
 }
@@ -64,7 +65,7 @@ export function expiresAtMs(e: Escrow): number { const x = typeof e.expiresAt ==
 /** Expired deal that still holds sats (late or partial payment): the buyer refunds them (buyer + arbiter). */
 export const expiredWithFunds = (e: Escrow) => e.state === "expired" && !!(e.funding || e.partialFunding || e.fundedAfterExpiry);
 const expiredNote = (e: Escrow) => expiredWithFunds(e)
-  ? `expired: not funded by the deadline, but sats reached the escrow address afterwards. The deal is not revived; refund them with: mark escrow refund ${e.id} --payout-lnaddr <you@wallet>`
+  ? `expired: not funded by the deadline, but sats reached the escrow address afterwards. The deal is not revived; refund them with: ${mk()} escrow refund ${e.id} --payout-lnaddr <you@wallet>`
   : "expired: not funded by the deadline (+ grace). Do not fund it; create a new deal if you still want one";
 
 // ---------- shared validation ----------
@@ -94,7 +95,7 @@ export async function init(network: NetworkName, o: { escrowUrl?: string } = {})
   if (o.escrowUrl) { const raw = JSON.parse(fs.readFileSync(configPath(network), "utf8")); saveConfig({ ...raw, escrowUrl: normalizeUrl(o.escrowUrl) }); } // persist only the flag, never env
   const cfg = loadConfig(network);
   return { ok: true, created: fresh, network, dataDir: dir, pubkey: (await escrowKey(ks.mnemonic, NETWORKS[network].isMainnet)).xonly,
-    escrowUrl: cfg.escrowUrl ?? null, limits: cfg.limits, note: fresh ? "Backup phrase: run `mark backup` in an interactive terminal." : "already initialized" };
+    escrowUrl: cfg.escrowUrl ?? null, limits: cfg.limits, note: fresh ? `Backup phrase: run \`${mk()} backup\` in an interactive terminal.` : "already initialized" };
 }
 export const pubkey = (c: Ctx) => ({ network: c.network, pubkey: c.pubkey });
 
@@ -116,7 +117,7 @@ export async function create(c: Ctx, o: CreateOpts) {
   const buyerPubkey = role === "buyer" ? c.pubkey : other, sellerPubkey = role === "seller" ? c.pubkey : other;
   // Fee terms the server will stamp (and that I sign as part of termsHash). Old servers without /limits: no fees.
   const lim = await serverLimits(c);
-  if (lim && o.sats < lim.minDealSats.enforced) throw new MarkError("AMOUNT_TOO_SMALL", `amount ${o.sats} is below the server's minimum deal size ${lim.minDealSats.enforced} sats (Lightning payout must meet Satora's minimum after fees); see mark escrow limits`, { minDealSats: lim.minDealSats.enforced });
+  if (lim && o.sats < lim.minDealSats.enforced) throw new MarkError("AMOUNT_TOO_SMALL", `amount ${o.sats} is below the server's minimum deal size ${lim.minDealSats.enforced} sats (Lightning payout must meet Satora's minimum after fees); see ${mk()} escrow limits`, { minDealSats: lim.minDealSats.enforced });
   const fees = lim?.fees.terms ?? null;
   const rule = o.hash ? { type: "hash", sha256: requireXonly(o.hash) } : { type: "manual" };
   if (o.arbiterMode !== undefined && o.arbiterMode !== "auto" && o.arbiterMode !== "manual") throw new MarkError("BAD_REQUEST", "arbiter mode must be auto or manual");
@@ -139,7 +140,7 @@ export async function create(c: Ctx, o: CreateOpts) {
   // upfront fee preview: server's (with live swap estimate) if present, else computed locally from the published terms
   const preview = (e as any).feePreview ?? (lim ? feePreview(fees, o.sats, { minDealSats: lim.minDealSats.enforced, maxDealSats: lim.maxDealSats, swapEstimateSats: null }) : null);
   return { ...e, feeTerms: fees, feeSummary: feeSummary(fees, o.sats), feePreview: preview, dealCheck: check,
-    ...(v2 ? {} : { termsWarning: V1_SERVER_WARNING }), ...(check.arbiter.attested ? {} : { arbiterWarning: check.arbiter.warning }), next: `share the escrow id with your counterparty; they must run: mark escrow show ${e.id} then mark escrow accept ${e.id}. Funding is blocked until both accepted.` };
+    ...(v2 ? {} : { termsWarning: V1_SERVER_WARNING }), ...(check.arbiter.attested ? {} : { arbiterWarning: check.arbiter.warning }), next: `share the escrow id with your counterparty; they must run: ${mk()} escrow show ${e.id} then ${mk()} escrow accept ${e.id}. Funding is blocked until both accepted.` };
 }
 
 export const V1_SERVER_WARNING = "this escrow server only supports signed terms v1: the release rule, arbiter mode, deadline and webhook are NOT covered by the signatures. Upgrade the server; the next Mark release will require terms v2.";
@@ -208,7 +209,7 @@ export async function show(c: Ctx, id: string) {
   const dealCheck = await verifyDeal(c, e).then((x) => ({ ok: true, ...x }), (x: any) => ({ ok: false, code: x?.code ?? "ERROR", error: String(x?.message ?? x) }));
   return { id: e.id, state: e.state, myRole: role, counterpartyReputation: rep, ...(ruleWarning ? { ruleWarning } : {}), dealCheck, ...statusOf(e), amountSats: e.amountSats, deadline: e.deadline, deadlineCountdown: myCountdown(e, role), ...v, feeTerms: e.fees ?? null, feeSummary: feeSummary(e.fees ?? null, e.amountSats), evidence,
     dispute: e.dispute ?? null, ruling: e.ruling ?? null,
-    next: e.state === "expired" ? expiredNote(e) : !dealCheck.ok ? `DEAL CHECK FAILED (${(dealCheck as any).code}): do not accept or fund` : v.legacy ? "legacy deal (no terms)" : !v.hashVerified ? "TERMS HASH MISMATCH: do not accept or fund" : !iAccepted ? `review the terms, then: mark escrow accept ${e.id}` : !v.agreed ? "waiting for the counterparty to accept" : e.state === "created" ? (role === "buyer" ? `both accepted; fund with: mark escrow fund ${e.id}` : "both accepted; waiting for the buyer to fund") : undefined };
+    next: e.state === "expired" ? expiredNote(e) : !dealCheck.ok ? `DEAL CHECK FAILED (${(dealCheck as any).code}): do not accept or fund` : v.legacy ? "legacy deal (no terms)" : !v.hashVerified ? "TERMS HASH MISMATCH: do not accept or fund" : !iAccepted ? `review the terms, then: ${mk()} escrow accept ${e.id}` : !v.agreed ? "waiting for the counterparty to accept" : e.state === "created" ? (role === "buyer" ? `both accepted; fund with: ${mk()} escrow fund ${e.id}` : "both accepted; waiting for the buyer to fund") : undefined };
 }
 
 /** Accept the deal terms: verify termsHash locally, then BIP340-sign it with this wallet's escrow key. */
@@ -220,7 +221,7 @@ export async function accept(c: Ctx, id: string, o: { allowCounterpartyRule?: bo
   const check = await verifyDeal(c, e); // address + arbiter attestation before I sign anything
   // v2: my signature covers the release rule, so this is where a buyer consents to a rule the seller chose (hash lock / webhook)
   const risk = v.termsVersion === 2 && !(v.accepted as any)[role].signatureValid ? counterpartyRule(c, e, role) : null;
-  if (risk && !o.allowCounterpartyRule) throw new MarkError("UNSAFE_RULE", `refusing to accept: ${risk.warning} Your signature would bind you to it. To accept anyway: mark escrow accept ${id} --allow-counterparty-rule`, risk);
+  if (risk && !o.allowCounterpartyRule) throw new MarkError("UNSAFE_RULE", `refusing to accept: ${risk.warning} Your signature would bind you to it. To accept anyway: ${mk()} escrow accept ${id} --allow-counterparty-rule`, risk);
   const r = (v.accepted as any)[role].signatureValid ? e : await c.api.accept(id, { party: role, termsHash: v.termsHash!, sig: signHash(c.secret, v.termsHash!) });
   if (r !== e) c.index.set(id, { signedTermsHash: v.termsHash!, role: c.index.get(id).role ?? role });
   const after = verifyDealTerms(c, r);
@@ -229,7 +230,7 @@ export async function accept(c: Ctx, id: string, o: { allowCounterpartyRule?: bo
   return { escrowId: id, myRole: role, counterpartyReputation: rep, ...(ruleWarning ? { ruleWarning } : {}), termsVersion: v.termsVersion, ...((v as any).termsWarning ? { termsWarning: (v as any).termsWarning } : {}),
     dealCheck: check, accepted: true, alreadyAccepted: r === e, state: r.state, ...statusOf(r),
     status: !after.agreed ? `you accepted; waiting for the ${missing.join(" and ") || "counterparty"}` : r.state === "created" ? "both parties accepted the terms; not funded yet (state 'created' means waiting for the buyer's funding)" : `both accepted; escrow is ${r.state}`, terms: after.terms, termsHash: after.termsHash, acceptedBy: after.accepted, agreed: after.agreed,
-    next: !after.agreed ? `waiting for the ${missing.join(" and ") || "counterparty"} to accept: mark escrow accept ${id}` : r.state === "created" ? (role === "buyer" ? `both accepted; fund with: mark escrow fund ${id}` : "both accepted; waiting for the buyer to fund") : undefined };
+    next: !after.agreed ? `waiting for the ${missing.join(" and ") || "counterparty"} to accept: ${mk()} escrow accept ${id}` : r.state === "created" ? (role === "buyer" ? `both accepted; fund with: ${mk()} escrow fund ${id}` : "both accepted; waiting for the buyer to fund") : undefined };
 }
 
 /** Add a signed, timestamped evidence note (either party, any state; especially during a dispute). */
@@ -306,7 +307,7 @@ export async function pendingAll(c: Ctx) {
       for (const s of e.proposals.filter((p) => !p.submittedTxid)) {
         const p = await c.api.proposal(id, s.id); const awaiting = p.signers.filter((x) => !p.sigs.includes(x)); const mine = awaiting.includes(role);
         items.push({ escrowId: id, state: e.state, myRole: role, ...payoutDetails(e, p), signers: p.signers, signedBy: p.sigs, awaiting, needsMySignature: mine, txMatchesFeeTerms: txMatchesFeeTerms(e, p.arkTx, p.dest),
-          next: mine ? `review, then co-sign: mark escrow approve ${id}` : `waiting for ${awaiting.join(" and ") || "submission"}` });
+          next: mine ? `review, then co-sign: ${mk()} escrow approve ${id}` : `waiting for ${awaiting.join(" and ") || "submission"}` });
       }
     } catch (x: any) { errors.push({ escrowId: id, code: x.code ?? "ERROR", error: String(x.message).slice(0, 200) }); }
   }
@@ -342,7 +343,7 @@ export async function fund(c: Ctx, id: string, o: { wait?: boolean; timeoutSec?:
   if (e.state === "expired") return { escrowId: id, state: e.state, expiredAt: e.expiredAt ?? null, note: expiredNote(e) };
   if (e.state !== "created") return { escrowId: id, state: e.state, note: "already funded" };
   const v = verifyDealTerms(c, e); // legacy deals (terms null) fund as before
-  if (!v.agreed) throw new MarkError("TERMS_NOT_ACCEPTED", v.hashVerified === false ? "terms hash mismatch; refusing to fund" : `both parties must accept the terms before funding (buyer: ${(v.accepted as any).buyer.accepted}, seller: ${(v.accepted as any).seller.accepted}). Run: mark escrow accept ${id}`, { accepted: v.accepted });
+  if (!v.agreed) throw new MarkError("TERMS_NOT_ACCEPTED", v.hashVerified === false ? "terms hash mismatch; refusing to fund" : `both parties must accept the terms before funding (buyer: ${(v.accepted as any).buyer.accepted}, seller: ${(v.accepted as any).seller.accepted}). Run: ${mk()} escrow accept ${id}`, { accepted: v.accepted });
   const l = c.index.get(id);
   if (l.signedTermsHash && e.termsHash !== l.signedTermsHash) throw new MarkError("TERMS_CHANGED", `the server's deal hash ${e.termsHash} is not the termsHash I signed (${l.signedTermsHash}); refusing to fund`, { signed: l.signedTermsHash, server: e.termsHash });
   // the address must be the 2-of-3 contract of the deal's keys (derived locally) and the arbiter attested by the pinned identity
@@ -350,7 +351,7 @@ export async function fund(c: Ctx, id: string, o: { wait?: boolean; timeoutSec?:
   // never start funding a deal whose auto-release rule the buyer did not choose, unless explicitly allowed (an existing swap continues).
   // v2 deals both parties signed: my own acceptance already covers the rule (accept asked for consent), so no second prompt.
   const risk = l.fundSwap || (v.termsVersion === 2 && v.agreed) ? null : counterpartyRule(c, e, l.role ?? myRole(c, e));
-  if (risk && !o.allowCounterpartyRule) throw new MarkError("UNSAFE_RULE", `refusing to fund: ${risk.warning} To fund anyway: mark escrow fund ${id} --allow-counterparty-rule`, risk);
+  if (risk && !o.allowCounterpartyRule) throw new MarkError("UNSAFE_RULE", `refusing to fund: ${risk.warning} To fund anyway: ${mk()} escrow fund ${id} --allow-counterparty-rule`, risk);
   // a new invoice must be payable (and claimed) before the deal expires at deadline + grace; else the payment would land on an expired deal
   const left = Math.floor((expiresAtMs(e) - Date.now()) / 1000);
   if (!l.fundSwap && left < FUND_INVOICE_LIFETIME_SEC) throw new MarkError("DEADLINE_TOO_CLOSE", `refusing to fund: the deal expires in ${Math.max(0, left)} s (deadline ${e.deadline} + grace), less than a funding invoice's lifetime (${FUND_INVOICE_LIFETIME_SEC} s). A late payment would land on an expired deal and need a refund. Create a new deal with a later deadline.`, { deadline: e.deadline, expiresAt: new Date(expiresAtMs(e)).toISOString(), secondsLeft: Math.max(0, left), invoiceLifetimeSec: FUND_INVOICE_LIFETIME_SEC });
@@ -358,7 +359,7 @@ export async function fund(c: Ctx, id: string, o: { wait?: boolean; timeoutSec?:
   let swapId = l.fundSwap, invoice: string | undefined;
   if (!swapId) { const r = await s.createReceive(e.amountSats, e.address); swapId = r.id; invoice = r.invoice; c.index.set(id, { fundSwap: swapId, role: l.role ?? myRole(c, e) }); }
   const base = { escrowId: id, escrowAddress: e.address, amountSats: e.amountSats, swapId, invoice, dealCheck: check, ...((v as any).termsWarning ? { termsWarning: (v as any).termsWarning } : {}) };
-  if (!o.wait) return { ...base, note: `pay the invoice, then run: mark escrow fund ${id} --wait (claims into the escrow)` };
+  if (!o.wait) return { ...base, note: `pay the invoice, then run: ${mk()} escrow fund ${id} --wait (claims into the escrow)` };
   if (invoice) o.onInvoice?.(base);
   const end = Date.now() + (o.timeoutSec ?? 900) * 1000;
   while (Date.now() < end) {
@@ -409,7 +410,7 @@ async function payoutSpec(c: Ctx, e: Escrow, kind: Kind, o: PayoutOpts): Promise
   const amount = dealFee(e).payeeSats; // payee leg: escrow minus the platform fee output
   if (o.payoutInvoice) {
     const q = await c.api.quote(e.id, kind, o.payoutInvoice); // route-specific: same pricing as swap creation
-    if (isAmountless(o.payoutInvoice)) throw new MarkError("AMOUNTLESS_INVOICE_UNSUPPORTED", `amountless invoices cannot be paid (Satora requires the amount). Create the invoice for ${q.amountlessInvoice?.setInvoiceAmountSats ?? q.lightning.recommendedInvoiceSats} sats (estimate with safety margin), or run: mark escrow quote ${e.id} --dest <your lightning address> for the exact value`, { setInvoiceAmountSats: q.amountlessInvoice?.setInvoiceAmountSats ?? q.lightning.recommendedInvoiceSats, quoteType: q.quoteType ?? "estimate" });
+    if (isAmountless(o.payoutInvoice)) throw new MarkError("AMOUNTLESS_INVOICE_UNSUPPORTED", `amountless invoices cannot be paid (Satora requires the amount). Create the invoice for ${q.amountlessInvoice?.setInvoiceAmountSats ?? q.lightning.recommendedInvoiceSats} sats (estimate with safety margin), or run: ${mk()} escrow quote ${e.id} --dest <your lightning address> for the exact value`, { setInvoiceAmountSats: q.amountlessInvoice?.setInvoiceAmountSats ?? q.lightning.recommendedInvoiceSats, quoteType: q.quoteType ?? "estimate" });
     validatePayoutInvoice(o.payoutInvoice, q.lightning.invoiceSats, c.network); // fail fast before creating a swap
   } else if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(o.payoutLnaddr!)) throw new MarkError("BAD_DEST", "payout-lnaddr must be a lightning address");
   const s = await c.swaps();
@@ -505,7 +506,7 @@ export async function messages(c: Ctx, id: string, since?: number) {
   if (l.cursor > (c.index.get(id).msgSeen ?? 0)) c.index.set(id, { msgSeen: l.cursor, role: c.index.get(id).role ?? role });
   const bad = msgs.filter((m) => !m.verified).length;
   return { escrowId: id, state: e.state, myRole: role, cursor: l.cursor, messages: msgs, ...(bad ? { warning: `${bad} message(s) failed signature verification: ignore them` } : {}),
-    next: `reply: mark escrow message ${id} --text "..." [--kind question|dispute|evidence|info] [--reply-to <messageId>]; poll: mark escrow messages ${id} --since ${l.cursor}` };
+    next: `reply: ${mk()} escrow message ${id} --text "..." [--kind question|dispute|evidence|info] [--reply-to <messageId>]; poll: ${mk()} escrow messages ${id} --since ${l.cursor}` };
 }
 /** Post a signed message (kind: question|dispute|evidence|info). */
 export async function postMessage(c: Ctx, id: string, o: { text?: string; kind?: string; replyTo?: string }) {
@@ -514,7 +515,7 @@ export async function postMessage(c: Ctx, id: string, o: { text?: string; kind?:
   const e = await c.api.get(requireId(id)); const role = myRole(c, e); const ts = Math.floor(Date.now() / 1000);
   const r = await c.api.postMessage(id, { author: role, ts, ...m, sig: signHash(c.secret, messageHash(id, role, ts, m)) });
   return { escrowId: id, myRole: role, posted: { id: r.id, seq: r.seq, kind: r.kind ?? null, replyTo: r.replyTo ?? null, createdAt: r.createdAt },
-    note: m.kind === "dispute" ? `a dispute MESSAGE does not open a dispute; to stop auto-arbitration run: mark escrow dispute ${id} --reason "..."` : "your counterparty and the operator both see this thread and either may reply here; poll with mark escrow inbox (or use a webhook: message.created)" };
+    note: m.kind === "dispute" ? `a dispute MESSAGE does not open a dispute; to stop auto-arbitration run: ${mk()} escrow dispute ${id} --reason "..."` : "your counterparty and the operator both see this thread and either may reply here; poll with mark escrow inbox (or use a webhook: message.created)" };
 }
 /** Unread messages (not mine, after my last-seen cursor) across this identity's deals (local index). Does not mark read. */
 export async function inbox(c: Ctx) {
@@ -616,8 +617,8 @@ const demoNotice = (c: Ctx, sats: number, turnaround?: string | null) => (NETWOR
   : `Test deal on ${c.network}: ${sats} test sats, no real money.`) + ` Not instant: delivery ${turnaround ?? "follows the seller's own schedule"}.`;
 const demoSteps = (sats: number, id = "<id>") => [
   `1. Mark creates a ${sats}-sat escrow deal with the house seller and signs the terms; the seller accepts on its own, usually within a few minutes.`,
-  `2. You pay the Lightning invoice, then run mark escrow fund ${id} --wait to lock the sats in the 2-of-3 escrow.`,
-  `3. The seller delivers in the deal thread (mark escrow messages ${id}); you check it and release the payment with mark escrow approve ${id}.`,
+  `2. You pay the Lightning invoice, then run ${mk()} escrow fund ${id} --wait to lock the sats in the 2-of-3 escrow.`,
+  `3. The seller delivers in the deal thread (${mk()} escrow messages ${id}); you check it and release the payment with ${mk()} escrow approve ${id}.`,
 ];
 /** The seller's verified thread messages (untrusted text), its signed evidence, and an open payout proposal. */
 async function demoThread(c: Ctx, e: Escrow) {
@@ -638,27 +639,27 @@ async function demoDelivery(c: Ctx, e: Escrow) {
 async function demoView(c: Ctx, e: Escrow, extra: Record<string, unknown> = {}) {
   const id = e.id; const st = statusOf(e); const l = c.index.get(id);
   const base: any = { notice: demoNotice(c, e.amountSats, (extra.turnaround as string) ?? l.demoTurnaround), escrowId: id, state: e.state, ...st, amountSats: e.amountSats, deadline: e.deadline, sellerPubkey: e.sellerPubkey, terms: e.terms ?? null, ...extra };
-  if (e.state === "released") return { demo: "done", ...base, next: `done: you released the payment and the seller was paid. Record: mark escrow show ${id}. Next, deal with any agent: mark escrow create --role buyer --counterparty <pubkey> ...` };
-  if (e.state === "refunded") return { demo: "done", ...base, next: `done: the deal was refunded to you. Record: mark escrow show ${id}` };
-  if (e.state === "disputed") return { demo: "disputed", ...base, next: `the deal is in dispute; a human operator will rule. Follow: mark escrow show ${id} and mark escrow messages ${id}` };
+  if (e.state === "released") return { demo: "done", ...base, next: `done: you released the payment and the seller was paid. Record: ${mk()} escrow show ${id}. Next, deal with any agent: ${mk()} escrow create --role buyer --counterparty <pubkey> ...` };
+  if (e.state === "refunded") return { demo: "done", ...base, next: `done: the deal was refunded to you. Record: ${mk()} escrow show ${id}` };
+  if (e.state === "disputed") return { demo: "disputed", ...base, next: `the deal is in dispute; a human operator will rule. Follow: ${mk()} escrow show ${id} and ${mk()} escrow messages ${id}` };
   if (e.state === "created" && !sellerAccepted(e)) return { demo: "seller_accept", ...base, sellerMessages: await demoThread(c, e),
-    next: `waiting for the house seller to accept (it checks for new deals every few minutes; if it declines, the reason is in the thread: mark escrow messages ${id}). Nothing to pay yet. Check again: mark demo (or keep waiting: mark demo --wait)` };
+    next: `waiting for the house seller to accept (it checks for new deals every few minutes; if it declines, the reason is in the thread: ${mk()} escrow messages ${id}). Nothing to pay yet. Check again: ${mk()} demo (or keep waiting: ${mk()} demo --wait)` };
   if (e.state === "created") {
     const f: any = await fund(c, id); // first call creates the Satora swap + invoice; later calls reuse the swap
     if (f.invoice) c.index.set(id, { fundInvoice: f.invoice });
     const invoice = f.invoice ?? c.index.get(id).fundInvoice ?? null;
     let invoiceSats: number | null = null; try { invoiceSats = invoice ? decodeInvoice(invoice).sats ?? null : null; } catch { invoiceSats = null; }
     return { demo: "awaiting_payment", ...base, invoice, invoiceSats, swapId: f.swapId ?? l.fundSwap ?? null, newInvoice: !!f.invoice,
-      next: `pay the Lightning invoice${invoiceSats ? ` (${invoiceSats} sats)` : ""} from any wallet, then run: mark escrow fund ${id} --wait . That step claims the payment into the escrow: funding stays pending until you run it, even after you paid. (mark demo --wait does it for you and then waits for the delivery.)` };
+      next: `pay the Lightning invoice${invoiceSats ? ` (${invoiceSats} sats)` : ""} from any wallet, then run: ${mk()} escrow fund ${id} --wait . That step claims the payment into the escrow: funding stays pending until you run it, even after you paid. (${mk()} demo --wait does it for you and then waits for the delivery.)` };
   }
   const d = await demoDelivery(c, e);
-  const failed = `If the seller says the job failed, propose the refund: mark escrow refund ${id} --payout-lnaddr <you@wallet> --with counterparty (it co-signs)`;
+  const failed = `If the seller says the job failed, propose the refund: ${mk()} escrow refund ${id} --payout-lnaddr <you@wallet> --with counterparty (it co-signs)`;
   if (d.payoutRequest?.needsMySignature) return { demo: "review_delivery", ...base, delivery: d,
-    next: `the seller delivered in the thread (delivery.sellerMessages; full thread: mark escrow messages ${id}) and asked to be paid. Check the work and the payout (mark escrow pending ${id}), then release: mark escrow approve ${id} . If it does not meet the terms: mark escrow dispute ${id} --reason "..."` };
-  if (d.payoutRequest) return { demo: "payout", ...base, delivery: d, next: `payout in progress; check: mark escrow status ${id}` };
+    next: `the seller delivered in the thread (delivery.sellerMessages; full thread: ${mk()} escrow messages ${id}) and asked to be paid. Check the work and the payout (${mk()} escrow pending ${id}), then release: ${mk()} escrow approve ${id} . If it does not meet the terms: ${mk()} escrow dispute ${id} --reason "..."` };
+  if (d.payoutRequest) return { demo: "payout", ...base, delivery: d, next: `payout in progress; check: ${mk()} escrow status ${id}` };
   return { demo: "awaiting_delivery", ...base, delivery: d,
-    next: d.delivered ? `the seller posted in the thread (read it: mark escrow messages ${id}); once it requests its payout, release with mark escrow approve ${id} (wait: mark demo --wait). ${failed}`
-      : `funded. The seller delivers in the deal thread: mark escrow messages ${id} (or wait: mark demo --wait). Deadline ${e.deadline}.` };
+    next: d.delivered ? `the seller posted in the thread (read it: ${mk()} escrow messages ${id}); once it requests its payout, release with ${mk()} escrow approve ${id} (wait: ${mk()} demo --wait). ${failed}`
+      : `funded. The seller delivers in the deal thread: ${mk()} escrow messages ${id} (or wait: ${mk()} demo --wait). Deadline ${e.deadline}.` };
 }
 /** --wait: drive the demo deal forward until it needs a decision from you (release), finishes, or times out. */
 async function demoAdvance(c: Ctx, id: string, o: DemoOpts, extra: Record<string, unknown>) {
@@ -668,13 +669,13 @@ async function demoAdvance(c: Ctx, id: string, o: DemoOpts, extra: Record<string
     if (!o.wait || ["review_delivery", "done", "disputed"].includes(v.demo)) return v;
     if (v.demo === "awaiting_payment" && !paid) {
       if (v.newInvoice && !o.onProgress) return v; // nobody has seen this invoice yet: hand it over instead of blocking on it
-      if (!shown && o.onProgress) { o.onProgress({ ...v, next: `pay this invoice from any wallet now. Mark is waiting and claims it into the escrow by itself (keep this running; if you stop it, run mark escrow fund ${id} --wait after paying)` }); shown = true; }
+      if (!shown && o.onProgress) { o.onProgress({ ...v, next: `pay this invoice from any wallet now. Mark is waiting and claims it into the escrow by itself (keep this running; if you stop it, run ${mk()} escrow fund ${id} --wait after paying)` }); shown = true; }
       const r: any = await fund(c, id, { wait: true, timeoutSec: Math.max(1, Math.round((end - Date.now()) / 1000)) });
       paid = !!(r.claim || r.escrow);
-      if (!paid) return { ...v, funding: r, next: r.swapStatus ? `the funding swap ended as ${r.swapStatus}; check mark escrow status ${id}` : `no payment seen yet. Pay the invoice, then run: mark escrow fund ${id} --wait (or mark demo --wait)` };
+      if (!paid) return { ...v, funding: r, next: r.swapStatus ? `the funding swap ended as ${r.swapStatus}; check ${mk()} escrow status ${id}` : `no payment seen yet. Pay the invoice, then run: ${mk()} escrow fund ${id} --wait (or ${mk()} demo --wait)` };
       continue;
     }
-    if (Date.now() > end) return { ...v, timedOut: true, next: `still ${v.demo.replace(/_/g, " ")}. Keep waiting: mark demo --wait (or check mark escrow messages ${id})` };
+    if (Date.now() > end) return { ...v, timedOut: true, next: `still ${v.demo.replace(/_/g, " ")}. Keep waiting: ${mk()} demo --wait (or check ${mk()} escrow messages ${id})` };
     await sleep(poll);
   }
 }
@@ -695,19 +696,19 @@ export async function demo(c: Ctx, o: DemoOpts = {}) {
   const offer = { id: item.id, sellerPubkey: item.sellerPubkey, titlePrefix: item.titlePrefix, summary: item.summary, sats: item.sats, deadlineSeconds: item.deadlineSeconds, turnaround: item.turnaround, feeFree: item.feeFree,
     inputs: item.fields.map((f) => ({ flag: flagOf(f.key), key: f.key, required: !!f.required, type: f.type ?? "text", ...(f.default !== undefined ? { default: f.default } : {}), ...(f.min !== undefined ? { min: f.min, max: f.max } : {}) })),
     ...(item.oneOf.length ? { oneOf: item.oneOf.map((g) => g.map(flagOf)) } : {}), otherOffers: ids.filter((x) => x !== item.id) };
-  const head = { notice: demoNotice(c, item.sats, item.turnaround), realMoney: NETWORKS[c.network].isMainnet, network: c.network };
-  if (o.expectSats !== undefined && o.expectSats !== item.sats) throw new MarkError("DEMO_OFFER_CHANGED", `the ${item.id} demo now costs ${item.sats} sats, not ${o.expectSats}; nothing was created. Review it again: mark demo`, { sats: item.sats });
+  const head = { notice: demoNotice(c, item.sats, item.turnaround) + (NETWORKS[c.network].isMainnet ? ` ${walletLine(item.sats)}.` : ""), realMoney: NETWORKS[c.network].isMainnet, network: c.network };
+  if (o.expectSats !== undefined && o.expectSats !== item.sats) throw new MarkError("DEMO_OFFER_CHANGED", `the ${item.id} demo now costs ${item.sats} sats, not ${o.expectSats}; nothing was created. Review it again: ${mk()} demo`, { sats: item.sats });
   const sel = o.offer ? ` --offer ${item.id}` : "";
   const example = item.fields.filter((f) => f.required || item.oneOf.some((g) => g[0] === f.key)).map((f) => `${flagOf(f.key)} ${f.type === "url" ? "https://example.com/page" : "\"...\""}`).join(" ");
   if (missing.length) {
-    if (o.confirm) throw new MarkError("DEMO_INPUT_REQUIRED", `the ${item.id} demo needs ${missing.join(", ")}; nothing was created. Example: mark demo${sel} ${example} --yes --expect-sats ${item.sats}`, { missing, offer });
+    if (o.confirm) throw new MarkError("DEMO_INPUT_REQUIRED", `the ${item.id} demo needs ${missing.join(", ")}; nothing was created. Example: ${mk()} demo${sel} ${example} --yes --expect-sats ${item.sats}`, { missing, offer });
     return { demo: "preview", ...head, steps: demoSteps(item.sats), offer, missing, confirmRequired: true,
-      next: `nothing was created. Fill in ${missing.join(", ")} to see the exact terms: mark demo${sel} ${example}` };
+      next: `nothing was created. Fill in ${missing.join(", ")} to see the exact terms: ${mk()} demo${sel} ${example}` };
   }
   if (!o.confirm) {
     const args = [sel.trim(), ...Object.entries(o.fields ?? {}).filter(([, v]) => v !== undefined && String(v).trim() !== "").map(([k, v]) => `${flagOf(k)} ${JSON.stringify(String(v))}`), ...(o.topic ? [`--topic ${JSON.stringify(o.topic)}`] : [])].filter(Boolean).join(" ");
     return { demo: "preview", ...head, steps: demoSteps(item.sats), offer, terms, confirmRequired: true,
-      next: `nothing was created. To start this ${head.realMoney ? "real-money" : "test"} ${item.sats}-sat deal with these terms run: mark demo ${args} --yes --expect-sats ${item.sats}  (MCP: escrow_demo with the same inputs, confirm=true, expectSats=${item.sats})` };
+      next: `nothing was created. To start this ${head.realMoney ? "real-money" : "test"} ${item.sats}-sat deal with these terms run: ${mk()} demo ${args} --yes --expect-sats ${item.sats}  (MCP: escrow_demo with the same inputs, confirm=true, expectSats=${item.sats})` };
   }
   const created = await create(c, { role: "buyer", counterparty: item.sellerPubkey, sats: item.sats, deadline: item.deadlineSeconds, terms });
   c.index.set(created.id, { demo: true, ...(item.turnaround ? { demoTurnaround: item.turnaround } : {}) });

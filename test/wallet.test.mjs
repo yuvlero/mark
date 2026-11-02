@@ -18,7 +18,7 @@ test("`mark` with no args: usage/defaultNetwork/firstRun/steps unchanged, exit 0
   tmpHome();
   const r = spawnSync(process.execPath, [new URL("../dist/src/cli.js", import.meta.url).pathname], { env: process.env, encoding: "utf8" });
   assert.equal(r.status, 0); const j = JSON.parse(r.stdout);
-  assert.deepEqual(Object.keys(j), ["usage", "defaultNetwork", "quickstart"]); assert.match(j.usage, /^mark </); assert.equal(j.defaultNetwork, "bitcoin");
+  assert.deepEqual(Object.keys(j), ["usage", "defaultNetwork", "quickstart", "next"]); assert.match(j.usage, /^mark </); assert.equal(j.defaultNetwork, "bitcoin");
   assert.deepEqual(Object.keys(j.quickstart), ["firstRun", "steps", "noWallet", "recommendedWallet"]); assert.equal(j.quickstart.steps.length, 3);
   assert.match(j.quickstart.noWallet, /^No wallet yet\? We recommend Bark/); assert.ok(j.quickstart.noWallet.includes(DOCS));
   assert.deepEqual(j.quickstart.recommendedWallet, JSON.parse(JSON.stringify(RECOMMENDED_WALLET)));

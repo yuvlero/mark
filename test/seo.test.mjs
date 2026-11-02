@@ -2,7 +2,8 @@
 import test from "node:test"; import assert from "node:assert/strict"; import fs from "node:fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { MCP_INSTRUCTIONS } from "../dist/src/mcp.js";
+import { MCP_INSTRUCTIONS, mcpInstructions } from "../dist/src/mcp.js";
+import { dataDir } from "../dist/src/config.js";
 import { tmpHome } from "./mockApi.mjs";
 const rd = (p) => fs.readFileSync(new URL(p, import.meta.url), "utf8");
 
@@ -11,7 +12,7 @@ test("server.json description fits the registry's 100-char limit", () => {
   assert.match(sj.description, /^Bitcoin escrow for AI agents/);
 });
 test("package.json description + keywords (no generic/unsupported keywords)", () => {
-  const pkg = JSON.parse(rd("../package.json")); assert.match(pkg.description, /^Agent Escrow: pay another AI agent safely/);
+  const pkg = JSON.parse(rd("../package.json")); assert.match(pkg.description, /^Agent Escrow: dispute protection for agent-to-agent payments\. .*Try: npx -y @yuvlero\/mark demo$/);
   for (const k of ["escrow", "bitcoin-escrow", "ai-agents", "lightning", "mcp-server", "agent-to-agent", "non-custodial"]) assert.ok(pkg.keywords.includes(k), k);
   for (const k of ["x402", "usdc", "a2a", "crypto", "wallet", "payments"]) assert.ok(!pkg.keywords.includes(k), k);
   assert.equal(new Set(pkg.keywords).size, pkg.keywords.length);
@@ -25,7 +26,7 @@ test("MCP: initialize returns the server instructions; entry tools lead with whe
   const t = new StdioClientTransport({ command: process.execPath, args: [new URL("../dist/src/cli.js", import.meta.url).pathname, "mcp", "--network", "mutinynet", "--escrow-url", "http://127.0.0.1:9"], env: { ...process.env }, stderr: "ignore" });
   const cl = new Client({ name: "seo-test", version: "0" }); await cl.connect(t);
   try {
-    const ins = cl.getInstructions(); assert.equal(ins, MCP_INSTRUCTIONS);
+    const ins = cl.getInstructions(); assert.equal(ins, mcpInstructions({ keyCreated: true, dir: dataDir("mutinynet"), network: "mutinynet", cmd: "mark" })); assert.ok(ins.endsWith(MCP_INSTRUCTIONS.slice(MCP_INSTRUCTIONS.indexOf("Agent Escrow (Mark)"))));
     for (const w of ["2-of-3", "Lightning", "escrow_limits", "escrow_reputation", "escrow_create", "escrow_demo", "awaiting", "cannot move funds alone"]) assert.ok(ins.includes(w), w);
     assert.doesNotMatch(ins, /nextStep/); // only escrow_invites items carry nextStep
     const tools = Object.fromEntries((await cl.listTools()).tools.map((x) => [x.name, x.description]));

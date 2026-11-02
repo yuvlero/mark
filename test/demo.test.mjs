@@ -61,7 +61,8 @@ test("demo preview without inputs: real-money + not-instant notice up front, 3 s
   assert.deepEqual(r.offer.inputs.find((x) => x.key === "Words"), { flag: "--words", key: "Words", required: false, type: "int", default: 200, min: 50, max: 400 });
   assert.match(r.next, /nothing was created/); assert.match(r.next, /mark demo --url https:\/\/example\.com\/page/);
   assert.equal(counts.create, 0); assert.deepEqual(f.calls.map((x) => x.key), ["GET /demo"]);
-  const t = await setup(); assert.match((await uc.demo(t.c)).notice, /no real money/);
+  assert.ok(r.notice.endsWith(" To pay you need a Lightning wallet with about 400 sats, e.g. Bark: https://second.tech/docs/getting-started/bark-cli."), r.notice);
+  const t = await setup(); const tn = (await uc.demo(t.c)).notice; assert.match(tn, /no real money/); assert.doesNotMatch(tn, /Lightning wallet with about/, "test network: no wallet line");
 });
 test("demo preview with --url: exact terms (title prefix + topic, description only Key: value lines, Words default), consent command", async () => {
   const { c, counts } = await setup();

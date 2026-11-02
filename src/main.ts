@@ -7,7 +7,8 @@ import { openCtx as openCtx_, type Ctx, type CtxOptions } from "./core/context.j
 import { updateNotice } from "./core/clientVersion.js";
 import type { NetworkName } from "./config.js";
 import * as uc from "./core/usecases.js";
-import { checkEscrowArgs, checkDemoArgs, parseArgs } from "./cliArgs.js";
+import { checkEscrowArgs, checkDemoArgs, parseArgs, helpFor } from "./cliArgs.js";
+import { mk, firstDealNext } from "./invocation.js";
 import { walletFile } from "./crypto/keystore.js";
 import { RECOMMENDED_WALLET } from "./wallet.js";
 export { parseArgs };
@@ -31,18 +32,19 @@ const USAGE = "mark <init|pubkey|demo|reputation <pubkey>|backup|mcp|escrow crea
 function quickstart(network: ReturnType<typeof normalizeNetwork>) {
   let firstRun = true; try { firstRun = !fs.existsSync(walletFile(dataDir(network))); } catch { /* keep true */ }
   return { firstRun, steps: [
-    "1. mark init: create this agent's key (any command also does it on first use); mark pubkey prints it for counterparties",
-    "2. mark demo: preview one real deal with the house seller agent (a small paid task under 3,300 sats, e.g. a web page summary; delivery takes minutes to an hour); nothing is created without --yes",
-    "3. docs: https://github.com/yuvlero/mark#readme and the agent skill https://agentescrow.to/skill.md; as an MCP server: mark mcp" ],
+    `1. ${mk()} init: create this agent's key (any command also does it on first use); ${mk()} pubkey prints it for counterparties`,
+    `2. ${mk()} demo: preview one real deal with the house seller agent (a small paid task under 3,300 sats, e.g. a web page summary; delivery takes minutes to an hour); nothing is created without --yes`,
+    `3. docs: https://github.com/yuvlero/mark#readme and the agent skill https://agentescrow.to/skill.md; as an MCP server: ${mk()} mcp` ],
     noWallet: `No wallet yet? We recommend ${RECOMMENDED_WALLET.name} to pay funding invoices and receive payouts over Lightning: ${RECOMMENDED_WALLET.docs}`,
     recommendedWallet: RECOMMENDED_WALLET };
 }
 async function main(): Promise<"keep" | void> {
   const { pos, f } = parseArgs(process.argv.slice(2));
+  const help = helpFor(pos, f, USAGE); if (help) return void out(help);
   const network = normalizeNetwork(s(f.network)); const escrowUrl = s(f["escrow-url"]); const arbiterPubkey = s(f["arbiter-pubkey"]);
   switch (pos[0]) {
-    case "init": return void out(await uc.init(network, { escrowUrl }));
-    case "pubkey": return void out(uc.pubkey(await openCtx_(network, { escrowUrl, arbiterPubkey }))); // local only: no version check request
+    case "init": return void out({ ...(await uc.init(network, { escrowUrl })), next: firstDealNext() });
+    case "pubkey": return void out({ ...uc.pubkey(await openCtx_(network, { escrowUrl, arbiterPubkey })), next: firstDealNext() }); // local only: no version check request
     case "reputation": {
       if (!pos[1]) throw new MarkError("USAGE", "mark reputation <pubkey>  (64-hex x-only key; public aggregates from the escrow server)");
       return void out(await uc.reputation(await openCtx(network, { escrowUrl, arbiterPubkey }), String(pos[1])));
@@ -86,7 +88,7 @@ async function main(): Promise<"keep" | void> {
       }
       throw new MarkError("USAGE", USAGE);
     }
-    default: out({ usage: USAGE, defaultNetwork: normalizeNetwork(), quickstart: quickstart(network) });
+    default: out({ usage: USAGE, defaultNetwork: normalizeNetwork(), quickstart: quickstart(network), next: firstDealNext() });
   }
 }
 

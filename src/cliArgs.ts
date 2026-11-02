@@ -52,3 +52,14 @@ export function checkEscrowArgs(sub: string | undefined, id: string | undefined,
   return null;
 }
 
+/** `--help` / `-h` / `help` after a command: that command's usage (the CLI prints it, exit 0) before any check, key or network
+ *  access. `mark escrow --help fund` (the flag took the word as its value) also works. null: not a help request, or no command
+ *  (plain `mark` / `mark --help` print the full usage and quickstart). */
+export function helpFor(pos: string[], f: Record<string, string | boolean>, mainUsage: string): { usage: unknown } | null {
+  const word = typeof f.help === "string" ? f.help : undefined;
+  if (!pos[0] || (f.help === undefined && !pos.includes("-h") && pos[1] !== "help")) return null;
+  if (pos[0] === "demo") return { usage: DEMO_USAGE };
+  if (pos[0] === "escrow") { const sub = [pos[1], word].find((x) => x && x !== "help" && x !== "-h" && Object.hasOwn(ESCROW_USAGE, x)); return { usage: sub ? ESCROW_USAGE[sub] : ESCROW_USAGE }; }
+  if (pos[0] === "reputation") return { usage: "mark reputation <pubkey>  (64-hex x-only key; public aggregates from the escrow server)" };
+  return { usage: mainUsage };
+}
