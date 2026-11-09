@@ -21,7 +21,7 @@ function signInput0(psbtB64: string, secret: Uint8Array) {
   // only the shape the workaround is for: a taproot script-path spend (P2TR prevout + tapLeafScript) on input 0
   const i0: any = t.getInput(0); const spk: Uint8Array | undefined = i0?.witnessUtxo?.script;
   const p2tr = !!spk && spk.length === 34 && spk[0] === 0x51 && spk[1] === 0x20;
-  if (!p2tr || !i0.tapLeafScript?.length) throw new Error("checkScript: witnessScript without P2WSH (input 0 is not a taproot script-path spend; refusing to sign it without the script check)");
+  if (!p2tr || !i0.tapLeafScript?.length) throw new Error("refusing to sign: input 0 is not a taproot script-path spend (the library rejected it with a witnessScript error; Mark only signs taproot escrow spends without the script check)");
   t.signIdx(secret, 0);
   return { psbt: base64.encode(t.toPSBT()), txid: t.id };
 }
