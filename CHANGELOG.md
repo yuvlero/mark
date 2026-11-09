@@ -2,6 +2,25 @@
 
 All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-escrow. Dates are UTC+4 (Dubai). Versions follow semver; 0.x releases may change behaviour between minor versions.
 
+## [0.3.1] - 2026-11-09
+
+**Urgent fix for funding.** With Mark 0.3.0 a buyer's claim of the paid Lightning swap into the escrow could fail with `Failed to execute offchain Arkade claim: INVALID_CHECKPOINT_PSBT (2): malformed checkpoint psbt`, and every retry then said only `All VTXOs have already been spent.` The sats were not lost (they sat in the swap or in an unfinished claim), but the deal stayed unfunded. Update Mark itself (see README, "Upgrading to 0.3.1"): `npm update @satora/swap` does not replace the copy Mark's shrinkwrap pins.
+
+### Fixed
+- Dependencies: `@satora/swap` ^1.8.1 (was 1.7.0, pinned by the shrinkwrap). It brings `@lendasat/lendaswap-sdk-pure` 2.8.1, which no longer adds the preimage condition witness to the server-signed checkpoint a second time (the duplicate PSBT key Arkade rejected). `@arkade-os/sdk` moves to ^0.5.4, which 1.8.1 needs. `npm-shrinkwrap.json` (shipped in the package) now pins @satora/swap 1.8.1, lendaswap-sdk-pure 2.8.1 and @arkade-os/sdk 0.5.4. Swap storage is unchanged (record version 2), so swaps created by 0.3.0 still load and can be claimed.
+- Workaround for an upstream bug still in @satora/swap 1.8.1 (lendaswap-sdk-pure 2.8.1), pending Satora's fix: finishing a claim that was submitted but not finalized failed locally with `checkScript: witnessScript without P2WSH` (a `witnessScript` set on a taproot checkpoint input) and was reported as `All VTXOs have already been spent.`. Only after that exact error, Mark retries the finish step once with that one field dropped from taproot inputs, then restores the library. The claim result says `workaround` when it was used. The same fix finished a stuck mainnet claim.
+- `fund` on a swap that still waits for payment shows the same `invoice` again. Before, only the call that created the swap printed it. The invoice is saved next to the swap id; for swaps created by 0.3.0 it is read back from the swap provider while the swap is unpaid. A paid swap never shows the invoice again: `paymentReceived: true` and "Do NOT pay again".
+- `fund --wait` claims at swap status `clientredeeming` (a claim was started but not finished), not only at `serverfunded`. Before, it polled until `timeout waiting for payment` even though the invoice was paid.
+- `fund --wait` stops at once when the claim fails (`claimFailed: true`). The `note` gives the swap status, the library's error, and the next step. It no longer loops until it times out.
+- Timeouts name the last swap status, for example `timeout: swap status clientredeeming, claim not finished`, not always `timeout waiting for payment`.
+- Real claim errors: when the library only reports `All VTXOs have already been spent.`, Mark asks its finish step directly and returns that error as `claim.detail`.
+- The swap library's `console.log` progress lines (for example "No pending Arkade claim found; submitting a new claim") go to stderr. Before, they went to stdout, into the CLI's JSON output and the MCP stdio stream.
+- Swap states in which the swap ended without funding the escrow (refunded, `serverwontfund`, too late, and so on) end `--wait` with that status, not a timeout.
+
+### Added
+- `mark escrow fund <id> --resume-claim` (MCP: `escrow_fund` with `resumeClaim: true`) finishes a pending claim into the deal's escrow address, or submits it again. It works when the swap is `serverfunded` or `clientredeeming` and never creates an invoice. Without a recorded swap it refuses with `NOT_FOUND`; while the swap is unpaid it says there is nothing to resume.
+- Tests (mocked swaps, no network): the invoice shown again, `clientredeeming` claimed, a failed claim stopping with the real error, the status in timeouts, `--resume-claim`, the claim wrapper's error surfacing and workaround, a check that the installed library still has the upstream bug (it fails once Satora fixes it, so the workaround can go), and loading a swap record written by @satora/swap 1.7.0.
+
 ## [0.3.0] - 2026-11-02
 
 **Breaking (pricing):** the escrow server's fee schedule changes for new deals. Deals up to 33,000 sats pay no platform fee. Above 33,000 sats the fee is 1% of the whole deal amount, rounded up to the next sat (33,001 sats pays 331, 100,000 pays 1,000). The old tiers (free under 3,300 sats, 330 sats flat from 3,300 to 33,000) are gone. The ruled-dispute fee does not change: 5%, at least 330 sats, for deals of 3,300 sats and up, also when the platform fee is 0. Limits stay 335 to 1,000,000 sats.
