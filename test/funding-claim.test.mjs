@@ -134,3 +134,40 @@ test("swap storage written by @satora/swap 1.7.0 (version 2 record) loads with 1
   const got = await p.c.getStoredSwap(rec.swapId); assert.deepEqual(got, rec);
   const k = await p.c.continueArkadeClaimSwap(rec.swapId); assert.equal(k.success, false); assert.doesNotMatch(k.message, /not found in local storage|Expected an Arkade/, "record parsed; it fails later on the (unreachable) server");
 });
+
+test("fund --wait: once the swap is paid the result never carries the (paid) invoice, also on failure, expiry and timeout", async () => {
+  const ok = mockSwaps({ statuses: ["pending", "serverfunded"] }); const shown = [];
+  const c = await ctx(ok.s, (c) => deal(c, ok.n.claim ? { state: "funded" } : {}));
+  const r = await uc.fund(c, "e1", { wait: true, timeoutSec: 5, pollMs: 5, onInvoice: (x) => shown.push(x) });
+  assert.equal(shown.length, 1); assert.equal(shown[0].invoice, INV, "the invoice is shown while unpaid");
+  assert.equal(r.claim.success, true); assert.equal(r.invoice, undefined); assert.equal(r.paymentReceived, true);
+  const bad = mockSwaps({ statuses: ["pending", "serverfunded", "clientredeeming"], claim: () => ({ success: false, message: "x" }) });
+  const r2 = await uc.fund(await ctx(bad.s), "e1", { wait: true, timeoutSec: 5, pollMs: 5 }); assert.equal(r2.claimFailed, true); assert.equal(r2.invoice, undefined); assert.equal(r2.paymentReceived, true);
+  const slow = mockSwaps({ statuses: ["pending", "clientfunded"] });
+  const r3 = await uc.fund(await ctx(slow.s), "e1", { wait: true, timeoutSec: 0.1, pollMs: 5 }); assert.equal(r3.swapStatus, "clientfunded"); assert.equal(r3.invoice, undefined); assert.equal(r3.paymentReceived, true);
+  let n = 0; const exp = mockSwaps({ statuses: ["pending", "serverfunded"] });
+  const r4 = await uc.fund(await ctx(exp.s, (c) => deal(c, n++ >= 1 ? { state: "expired" } : {})), "e1", { wait: true, timeoutSec: 5, pollMs: 5 });
+  assert.equal(r4.state, "expired"); assert.equal(r4.invoice, undefined); assert.equal(exp.n.claim, 0);
+  const still = mockSwaps({ statuses: ["pending"] });
+  const r5 = await uc.fund(await ctx(still.s), "e1", { wait: true, timeoutSec: 0.05, pollMs: 5 }); assert.equal(r5.invoice, INV, "still unpaid: the invoice stays");
+});
+test("fund: swap status unreadable -> fail closed, no saved invoice shown; failed swap -> no invoice (also in demo)", async () => {
+  const s = { name: "mock", get: async () => { throw new Error("swap provider down"); }, createReceive: async () => { throw new Error("no"); } };
+  const c = await ctx(s); c.index.set("e1", { fundSwap: "sw1", fundInvoice: INV });
+  const r = await uc.fund(c, "e1"); assert.equal(r.invoice, undefined); assert.equal(r.swapStatus, "unknown"); assert.equal(r.paymentReceived, null); assert.match(r.note, /no invoice is shown/);
+  const f = mockSwaps({ statuses: ["clientfundedserverrefunded"] }); const c2 = await ctx(f.s); c2.index.set("e1", { fundSwap: "sw1", fundInvoice: INV });
+  const r2 = await uc.fund(c2, "e1"); assert.equal(r2.invoice, undefined); assert.match(r2.note, /swap ended as clientfundedserverrefunded/);
+});
+test("fund: resumeClaim with wait is refused for every caller (CLI, MCP, API)", async () => {
+  const { s } = mockSwaps(); const c = await ctx(s); c.index.set("e1", { fundSwap: "sw1" });
+  assert.equal((await uc.fund(c, "e1", { resumeClaim: true, wait: true }).catch((e) => e)).code, "USAGE");
+});
+test("satora claim: concurrent claims run one at a time (global console / workaround patches never overlap)", async () => {
+  let active = 0, maxActive = 0;
+  const slow = async () => { active++; maxActive = Math.max(maxActive, active); await new Promise((r) => setTimeout(r, 20)); active--; return { success: true, txId: "t" }; };
+  const p = provider({ claimArkade: slow }); const q = provider({ claimArkade: slow });
+  const rs = await Promise.all([p.claim("a", "x"), q.claim("b", "y"), p.claim("c", "z")]);
+  assert.ok(rs.every((r) => r.success)); assert.equal(maxActive, 1);
+  const failing = provider({ claimArkade: async () => { throw new Error("boom"); } }); await failing.claim("d", "w");
+  assert.equal((await p.claim("e", "v")).success, true, "a failed claim does not block the queue"); assert.equal(typeof console.log, "function");
+});

@@ -39,10 +39,18 @@ class MemWalletStorage {
 }
 
 /** The swap library prints progress with console.log; Mark's stdout is JSON (CLI) or the MCP stdio stream, so send it to stderr. */
-async function stdoutToStderr<T>(f: () => Promise<T>): Promise<T> {
-  const log = console.log, info = console.info, debug = console.debug;
-  console.log = console.info = console.debug = (...a: unknown[]) => console.error(...a);
-  try { return await f(); } finally { console.log = log; console.info = info; console.debug = debug; }
+/** Claims and refunds run one at a time per process (MCP may get concurrent calls): the console redirect and the resume-bug
+ *  workaround patch process-global objects, and overlapping patch/restore pairs could leave either one in place. */
+let serialTail: Promise<unknown> = Promise.resolve();
+function serial<T>(f: () => Promise<T>): Promise<T> {
+  const run = serialTail.then(f, f); serialTail = run.catch(() => undefined); return run;
+}
+function stdoutToStderr<T>(f: () => Promise<T>): Promise<T> {
+  return serial(async () => {
+    const log = console.log, info = console.info, debug = console.debug;
+    console.log = console.info = console.debug = (...a: unknown[]) => console.error(...a);
+    try { return await f(); } finally { console.log = log; console.info = info; console.debug = debug; }
+  });
 }
 const errText = (x: unknown) => (x instanceof Error ? x.message : String(x)).slice(0, 500);
 
