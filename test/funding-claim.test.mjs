@@ -209,3 +209,9 @@ test("fund: an ended swap reports paymentReceived null (unknown), never false, a
   const m = mockSwaps({ statuses: ["clientfundedtoolate"] }); const c = await ctx(m.s); c.index.set("e1", { fundSwap: "sw1", fundInvoice: INV });
   const r = await uc.fund(c, "e1"); assert.equal(r.paymentReceived, null); assert.equal(r.invoice, undefined);
 });
+test("fund --wait: a transient swap-provider error while polling does not end the wait", async () => {
+  const m = mockSwaps({ statuses: ["pending", "serverfunded"] }); const g = m.s.get; let fails = 2;
+  m.s.get = async (...a) => { if (m.n.get >= 1 && fails-- > 0) throw new Error("ECONNRESET"); return g(...a); };
+  const r = await uc.fund(await ctx(m.s, (c) => deal(c, m.n.claim ? { state: "funded" } : {})), "e1", { wait: true, timeoutSec: 5, pollMs: 5 });
+  assert.equal(m.n.claim, 1); assert.ok(r.escrow); assert.equal(r.claim.success, true);
+});

@@ -379,7 +379,9 @@ async function fileLock<T>(file: string, f: () => Promise<T>): Promise<T> {
       await sleep(50);
     }
   }
-  try { return await f(); } finally { fs.rmSync(file, { force: true }); }
+  // heartbeat: a slow swap-provider call never lets the lock look stale to another process
+  const beat = setInterval(() => { try { const t = new Date(); fs.utimesSync(file, t, t); } catch { /* removed */ } }, 20_000); beat.unref?.();
+  try { return await f(); } finally { clearInterval(beat); fs.rmSync(file, { force: true }); }
 }
 /** Serialize funding-swap creation per deal: in process (queue) and across processes (lock file). */
 function withFundLock<T>(c: Ctx, id: string, f: () => Promise<T>): Promise<T> {
@@ -471,7 +473,10 @@ export async function fund(c: Ctx, id: string, o: FundOpts = {}) {
   if (base.invoice) o.onInvoice?.(base);
   const end = Date.now() + (o.timeoutSec ?? 900) * 1000; let last = swapStatus;
   while (Date.now() < end) {
-    const i = await s.get(swapId!); last = i.status;
+    let i: { status: string };
+    // a transient swap-provider error does not end the wait (the timeout note reports the last status seen)
+    try { i = await s.get(swapId!); } catch { await new Promise((r) => setTimeout(r, o.pollMs ?? 3000)); continue; }
+    last = i.status;
     if (SWAP_CLAIMABLE.has(i.status)) return claimInto(i.status);
     const fin = finalState(i.status); if (fin) return fin;
     await new Promise((r) => setTimeout(r, o.pollMs ?? 3000));
