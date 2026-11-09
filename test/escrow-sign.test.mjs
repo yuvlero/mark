@@ -52,3 +52,10 @@ for (const [name, c] of Object.entries(F.cases)) test(`Mark signs ${name} (${c.s
 test("other signing errors are not swallowed", () => {
   assert.throws(() => signEscrowArkTx("not-a-psbt", sk(1))); assert.throws(() => signEscrowCheckpoints(["%%"], sk(1)));
 });
+test("fallback signs only a taproot script-path input 0 (never a P2WPKH or a bare input with a bogus witnessScript)", () => {
+  const t = new Transaction({ allowUnknownOutputs: true, disableScriptCheck: true });
+  t.addInput({ txid: new Uint8Array(32).fill(4), index: 0, witnessUtxo: { script: new Uint8Array([0x00, 0x14, ...new Uint8Array(20).fill(5)]), amount: 1000n }, witnessScript: new Uint8Array([0x51]) });
+  t.addOutput({ script: new Uint8Array([0x51, 0x20, ...new Uint8Array(32).fill(6)]), amount: 900n });
+  const b = base64.encode(t.toPSBT());
+  assert.throws(() => signEscrowArkTx(b, sk(1)), /refusing to sign/); assert.throws(() => signEscrowCheckpoints([b], sk(1)), /refusing to sign/);
+});

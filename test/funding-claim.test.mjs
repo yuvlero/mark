@@ -171,3 +171,41 @@ test("satora claim: concurrent claims run one at a time (global console / workar
   const failing = provider({ claimArkade: async () => { throw new Error("boom"); } }); await failing.claim("d", "w");
   assert.equal((await p.claim("e", "v")).success, true, "a failed claim does not block the queue"); assert.equal(typeof console.log, "function");
 });
+
+test("fund: concurrent first calls create ONE funding swap and return the same invoice", async () => {
+  let creates = 0;
+  const s = { name: "mock", createReceive: async () => { creates++; await new Promise((r) => setTimeout(r, 30)); return { id: "sw" + creates, invoice: INV + creates, amountSats: 5000, status: "pending" }; },
+    get: async (id) => ({ id, direction: "ln_to_ark", status: "pending", invoice: "lntbs-from-provider" }) };
+  const c = await ctx(s);
+  const rs = await Promise.all([uc.fund(c, "e1"), uc.fund(c, "e1"), uc.fund(c, "e1")]);
+  assert.equal(creates, 1); assert.deepEqual(new Set(rs.map((r) => r.swapId)), new Set(["sw1"])); assert.ok(rs.every((r) => r.invoice === INV + "1"));
+  assert.equal(rs.filter((r) => r.newSwap).length, 1); assert.equal(c.index.get("e1").fundSwap, "sw1");
+  assert.deepEqual(fs.readdirSync(c.dir).filter((f) => f.endsWith(".lock")), [], "lock file removed");
+});
+test("fund: a stale lock file left by a crashed process is taken over; a fresh one from another process makes fund wait", async () => {
+  const { s, n } = mockSwaps({ statuses: ["pending"] }); const c = await ctx(s);
+  const lock = path.join(c.dir, `fund-${crypto.createHash("sha256").update("e1").digest("hex").slice(0, 16)}.lock`);
+  fs.writeFileSync(lock, "999999"); const old = new Date(Date.now() - 300e3); fs.utimesSync(lock, old, old);
+  const r = await uc.fund(c, "e1"); assert.equal(r.invoice, INV); assert.equal(n.create, 1); assert.equal(fs.existsSync(lock), false);
+  const { s: s2, n: n2 } = mockSwaps({ statuses: ["pending"] }); const c2 = await ctx(s2); const lock2 = path.join(c2.dir, path.basename(lock)); fs.writeFileSync(lock2, "1");
+  let done = false; const p = uc.fund(c2, "e1").then((x) => { done = true; return x; });
+  await new Promise((r) => setTimeout(r, 200)); assert.equal(done, false, "waits for the other process"); assert.equal(n2.create, 0);
+  fs.rmSync(lock2); const r2 = await p; assert.equal(r2.invoice, INV); assert.equal(n2.create, 1);
+});
+test("fund --wait: a deal that is released/refunded meanwhile is not reported as funded by this claim", async () => {
+  for (const [st, funded] of [["refunded", false], ["released", false], ["funded", true], ["disputed", true]]) {
+    let n = 0; const m = mockSwaps({ statuses: ["pending", "serverfunded"] });
+    const r = await uc.fund(await ctx(m.s, (c) => deal(c, n++ >= 1 ? { state: st } : {})), "e1", { wait: true, timeoutSec: 5, pollMs: 5 });
+    assert.equal(m.n.claim, 0); assert.equal(!!r.escrow, funded, st); assert.equal(r.invoice, undefined);
+    if (!funded) assert.match(r.note, new RegExp(`deal is ${st}: NOT claimed`));
+  }
+});
+test("fund --wait: a stale 'pending' read after a failed claim never brings the paid invoice back", async () => {
+  const m = mockSwaps({ statuses: ["pending", "serverfunded", "pending"], claim: () => ({ success: false, message: "x" }) });
+  const r = await uc.fund(await ctx(m.s), "e1", { wait: true, timeoutSec: 5, pollMs: 5 });
+  assert.equal(r.claimFailed, true); assert.equal(r.invoice, undefined); assert.equal(r.paymentReceived, true);
+});
+test("fund: an ended swap reports paymentReceived null (unknown), never false, and no invoice", async () => {
+  const m = mockSwaps({ statuses: ["clientfundedtoolate"] }); const c = await ctx(m.s); c.index.set("e1", { fundSwap: "sw1", fundInvoice: INV });
+  const r = await uc.fund(c, "e1"); assert.equal(r.paymentReceived, null); assert.equal(r.invoice, undefined);
+});
