@@ -4,7 +4,7 @@
  */
 import fs from "node:fs";
 import { createHash } from "node:crypto";
-import { signEscrowArkTx, signEscrowCheckpoints } from "@satora/swap";
+import { signEscrowArkTx, signEscrowCheckpoints } from "../crypto/escrowSign.js";
 import { MarkError } from "../errors.js";
 import { NETWORKS, dataDir, ensureDir, defaultConfig, saveConfig, configPath, loadConfig, normalizeUrl, type NetworkName } from "../config.js";
 import { createKeystore, openKeystore, resolvePassword, walletFile } from "../crypto/keystore.js";
