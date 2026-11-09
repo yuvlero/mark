@@ -336,8 +336,37 @@ async function reportFunding(c: Ctx, id: string, swapId: string) {
   return e;
 }
 
+// ---------- funding swap states (Satora / Lendaswap LN -> Arkade) ----------
+/** Waiting for the Lightning payment: the only state in which the funding invoice is shown as payable. */
+const SWAP_AWAITING_PAYMENT = new Set(["pending"]);
+/** Paid, the provider is funding the Arkade VHTLC: keep waiting, never pay again. */
+const SWAP_PAID = new Set(["clientfundingseen", "clientfunded"]);
+/** The VHTLC holds the sats: claimable into the escrow. clientredeeming = a claim was started but not finished (resume it). */
+export const SWAP_CLAIMABLE = new Set(["serverfunded", "clientredeeming"]);
+const SWAP_DONE = new Set(["clientredeemed", "serverredeemed"]);
+/** Final states in which nothing reached (or will reach) the escrow. */
+const SWAP_FAILED = new Set(["expired", "clientrefunded", "clientfundedserverrefunded", "clientrefundedserverfunded", "clientrefundedserverrefunded", "serverwontfund", "clientinvalidfunded", "clientfundedtoolate"]);
+/** Timeout text that says where the swap stands (not always "waiting for payment"). */
+export function fundTimeoutNote(id: string, status: string | undefined) {
+  const st = status ?? "unknown";
+  if (SWAP_AWAITING_PAYMENT.has(st)) return `timeout: swap status ${st}, payment not received yet. Pay the invoice, then run: ${mk()} escrow fund ${id} --wait`;
+  if (SWAP_PAID.has(st)) return `timeout: swap status ${st}, payment seen, the swap provider has not funded the Arkade side yet. Do NOT pay again; run: ${mk()} escrow fund ${id} --wait`;
+  if (st === "clientredeeming") return `timeout: swap status clientredeeming, claim not finished. Do NOT pay again; run: ${mk()} escrow fund ${id} --resume-claim`;
+  if (st === "serverfunded") return `timeout: swap status serverfunded, not claimed yet. Do NOT pay again; run: ${mk()} escrow fund ${id} --resume-claim`;
+  return `timeout: swap status ${st}. Check: ${mk()} escrow status ${id}`;
+}
+/** Plain explanation of a failed claim into the escrow. The Lightning payment is NOT lost: it sits in the swap's VHTLC (or a pending claim). */
+export function claimFailedNote(id: string, status: string, claim: { message?: string; detail?: string }) {
+  const err = [claim.message, claim.detail].filter(Boolean).join(" | ") || "no error message from the swap library";
+  const hint = /checkpoint psbt|INVALID_CHECKPOINT/i.test(err)
+    ? " A malformed checkpoint psbt was a bug in @satora/swap < 1.8.1 (fixed in Mark 0.3.1); if you see it on 0.3.1 or later, report it with this output."
+    : /already been spent/i.test(err) ? " 'already been spent' usually means an earlier claim attempt was submitted but not finalized; --resume-claim finishes it." : "";
+  return `claim into the escrow failed (swap status ${status}): ${err}. Do NOT pay the invoice again: the sats are held by the swap for this escrow, and only this Mark home (it keeps the claim key) can claim them. Retry: ${mk()} escrow fund ${id} --resume-claim.${hint}`;
+}
+
+export interface FundOpts { wait?: boolean; timeoutSec?: number; onInvoice?: (x: unknown) => void; allowCounterpartyRule?: boolean; /** retry / finish the Arkade claim of the existing funding swap; never creates a swap */ resumeClaim?: boolean; pollMs?: number }
 /** Fund via Lightning: Satora LN->Arkade swap targeting the escrow address; THIS Mark holds the claim key and claims into the escrow. */
-export async function fund(c: Ctx, id: string, o: { wait?: boolean; timeoutSec?: number; onInvoice?: (x: unknown) => void; allowCounterpartyRule?: boolean } = {}) {
+export async function fund(c: Ctx, id: string, o: FundOpts = {}) {
   const e = await c.api.get(requireId(id));
   assertEscrowCap(c.cfg, e.amountSats);
   if (e.state === "expired") return { escrowId: id, state: e.state, expiredAt: e.expiredAt ?? null, note: expiredNote(e) };
@@ -346,6 +375,7 @@ export async function fund(c: Ctx, id: string, o: { wait?: boolean; timeoutSec?:
   if (!v.agreed) throw new MarkError("TERMS_NOT_ACCEPTED", v.hashVerified === false ? "terms hash mismatch; refusing to fund" : `both parties must accept the terms before funding (buyer: ${(v.accepted as any).buyer.accepted}, seller: ${(v.accepted as any).seller.accepted}). Run: ${mk()} escrow accept ${id}`, { accepted: v.accepted });
   const l = c.index.get(id);
   if (l.signedTermsHash && e.termsHash !== l.signedTermsHash) throw new MarkError("TERMS_CHANGED", `the server's deal hash ${e.termsHash} is not the termsHash I signed (${l.signedTermsHash}); refusing to fund`, { signed: l.signedTermsHash, server: e.termsHash });
+  if (o.resumeClaim && !l.fundSwap) throw new MarkError("NOT_FOUND", `no funding swap recorded for escrow ${id} in this Mark home; nothing to resume. Run ${mk()} escrow fund ${id} from the Mark home (MARK_HOME) that created the invoice.`);
   // the address must be the 2-of-3 contract of the deal's keys (derived locally) and the arbiter attested by the pinned identity
   const check = await verifyDeal(c, e);
   // never start funding a deal whose auto-release rule the buyer did not choose, unless explicitly allowed (an existing swap continues).
@@ -356,25 +386,54 @@ export async function fund(c: Ctx, id: string, o: { wait?: boolean; timeoutSec?:
   const left = Math.floor((expiresAtMs(e) - Date.now()) / 1000);
   if (!l.fundSwap && left < FUND_INVOICE_LIFETIME_SEC) throw new MarkError("DEADLINE_TOO_CLOSE", `refusing to fund: the deal expires in ${Math.max(0, left)} s (deadline ${e.deadline} + grace), less than a funding invoice's lifetime (${FUND_INVOICE_LIFETIME_SEC} s). A late payment would land on an expired deal and need a refund. Create a new deal with a later deadline.`, { deadline: e.deadline, expiresAt: new Date(expiresAtMs(e)).toISOString(), secondsLeft: Math.max(0, left), invoiceLifetimeSec: FUND_INVOICE_LIFETIME_SEC });
   const s = await c.swaps();
-  let swapId = l.fundSwap, invoice: string | undefined;
-  if (!swapId) { const r = await s.createReceive(e.amountSats, e.address); swapId = r.id; invoice = r.invoice; c.index.set(id, { fundSwap: swapId, role: l.role ?? myRole(c, e) }); }
-  const base = { escrowId: id, escrowAddress: e.address, amountSats: e.amountSats, swapId, invoice, dealCheck: check, ...((v as any).termsWarning ? { termsWarning: (v as any).termsWarning } : {}) };
-  if (!o.wait) return { ...base, note: `pay the invoice, then run: ${mk()} escrow fund ${id} --wait (claims into the escrow)` };
-  if (invoice) o.onInvoice?.(base);
-  const end = Date.now() + (o.timeoutSec ?? 900) * 1000;
-  while (Date.now() < end) {
-    const i = await s.get(swapId!);
-    if (i.status === "serverfunded") {
-      // never claim into a deal that expired meanwhile: left unclaimed, the swap times out and the Lightning payment is not settled
-      const now_ = await c.api.get(id);
-      if (now_.state === "expired") return { ...base, state: "expired", swapStatus: i.status, note: "expired: the deal expired before the payment could be claimed; NOT claimed into the escrow. The swap provider releases the Lightning payment when the swap times out." };
-      const claim = await s.claim(swapId!, e.address); return { ...base, claim, escrow: await reportFunding(c, id, swapId!) };
-    }
-    if (i.status === "clientredeemed" || i.status === "serverredeemed") return { ...base, swapStatus: i.status, escrow: await reportFunding(c, id, swapId!) };
-    if (i.status === "expired" || i.status === "clientrefunded") return { ...base, swapStatus: i.status, note: "swap expired" };
-    await new Promise((r) => setTimeout(r, 3000));
+  let swapId = l.fundSwap, invoice: string | undefined, swapStatus: string | undefined; const newSwap = !swapId;
+  if (!swapId) {
+    const r = await s.createReceive(e.amountSats, e.address); swapId = r.id; invoice = r.invoice; swapStatus = r.status;
+    // the invoice is public (BOLT11) and kept next to the swap id so a later `fund` can show it again while it is unpaid
+    c.index.set(id, { fundSwap: swapId, role: l.role ?? myRole(c, e), ...(r.invoice ? { fundInvoice: r.invoice } : {}) });
+  } else {
+    // existing swap: its status decides whether the invoice is still payable (never offer an invoice that was already paid)
+    let known = true;
+    try { const i = await s.get(swapId); swapStatus = i.status; if (SWAP_AWAITING_PAYMENT.has(i.status)) { invoice = l.fundInvoice ?? i.invoice; if (!l.fundInvoice && i.invoice) c.index.set(id, { fundInvoice: i.invoice }); } }
+    catch { known = false; }
+    if (!known && !o.wait && !o.resumeClaim) return { escrowId: id, escrowAddress: e.address, amountSats: e.amountSats, swapId, invoice: l.fundInvoice, swapStatus: "unknown", dealCheck: check,
+      note: `could not read the funding swap's status from the swap provider. Pay the invoice only if you have NOT paid it already; then run: ${mk()} escrow fund ${id} --wait` };
   }
-  return { ...base, note: "timeout waiting for payment" };
+  const paymentReceived = !!swapStatus && (SWAP_PAID.has(swapStatus) || SWAP_CLAIMABLE.has(swapStatus) || SWAP_DONE.has(swapStatus));
+  const base = { escrowId: id, escrowAddress: e.address, amountSats: e.amountSats, swapId, invoice, ...(swapStatus ? { swapStatus } : {}), newSwap, paymentReceived, dealCheck: check, ...((v as any).termsWarning ? { termsWarning: (v as any).termsWarning } : {}) };
+  const claimInto = async (status: string) => {
+    // never claim into a deal that expired meanwhile: left unclaimed, the swap times out and the Lightning payment is not settled
+    const now_ = await c.api.get(id);
+    if (now_.state === "expired") return { ...base, state: "expired", swapStatus: status, note: "expired: the deal expired before the payment could be claimed; NOT claimed into the escrow. The swap provider releases the Lightning payment when the swap times out." };
+    if (now_.state !== "created") return { ...base, swapStatus: status, state: now_.state, note: "already funded", escrow: now_ };
+    const claim = await s.claim(swapId!, e.address);
+    if (!claim.success) {
+      let after = status; try { after = (await s.get(swapId!)).status; } catch { /* keep the status seen before the claim */ }
+      return { ...base, swapStatus: after, claim, claimFailed: true, note: claimFailedNote(id, after, claim) };
+    }
+    return { ...base, swapStatus: status, claim, escrow: await reportFunding(c, id, swapId!) };
+  };
+  const finalState = (status: string) => SWAP_DONE.has(status) ? (async () => ({ ...base, swapStatus: status, escrow: await reportFunding(c, id, swapId!) }))()
+    : SWAP_FAILED.has(status) ? Promise.resolve({ ...base, swapStatus: status, note: status === "expired" ? "swap expired" : `swap ended as ${status}: nothing was claimed into the escrow. Check: ${mk()} escrow status ${id}` }) : null;
+  if (o.resumeClaim) {
+    if (!swapStatus) { try { swapStatus = (await s.get(swapId!)).status; } catch (x: any) { throw new MarkError("SWAP_UNREACHABLE", `could not read funding swap ${swapId}: ${x?.message ?? x}`); } }
+    const fin = finalState(swapStatus); if (fin) return fin;
+    if (!SWAP_CLAIMABLE.has(swapStatus)) return { ...base, swapStatus, note: SWAP_AWAITING_PAYMENT.has(swapStatus) ? `nothing to resume: swap status ${swapStatus}, payment not received yet. Pay the invoice, then run: ${mk()} escrow fund ${id} --wait` : `nothing to resume yet: swap status ${swapStatus} (payment seen, the swap provider has not funded the Arkade side). Do NOT pay again; run: ${mk()} escrow fund ${id} --wait` };
+    return claimInto(swapStatus);
+  }
+  if (!o.wait && swapStatus && SWAP_FAILED.has(swapStatus)) return finalState(swapStatus)!;
+  if (!o.wait) return { ...base, note: invoice ? `pay the invoice, then run: ${mk()} escrow fund ${id} --wait (claims into the escrow)`
+    : SWAP_CLAIMABLE.has(swapStatus ?? "") || SWAP_PAID.has(swapStatus ?? "") ? `payment received (swap status ${swapStatus}). Do NOT pay again; run: ${mk()} escrow fund ${id} --wait (claims into the escrow)${swapStatus === "clientredeeming" ? ` or ${mk()} escrow fund ${id} --resume-claim` : ""}`
+    : `swap status ${swapStatus}. Check: ${mk()} escrow fund ${id} --wait` };
+  if (invoice) o.onInvoice?.(base);
+  const end = Date.now() + (o.timeoutSec ?? 900) * 1000; let last = swapStatus;
+  while (Date.now() < end) {
+    const i = await s.get(swapId!); last = i.status;
+    if (SWAP_CLAIMABLE.has(i.status)) return claimInto(i.status);
+    const fin = finalState(i.status); if (fin) return fin;
+    await new Promise((r) => setTimeout(r, o.pollMs ?? 3000));
+  }
+  return { ...base, swapStatus: last, timedOut: true, note: fundTimeoutNote(id, last) };
 }
 
 /** Human-checkable payout details of a proposal (shown by a co-signer before/with signing). */
@@ -646,11 +705,10 @@ async function demoView(c: Ctx, e: Escrow, extra: Record<string, unknown> = {}) 
     next: `waiting for the house seller to accept (it checks for new deals every few minutes; if it declines, the reason is in the thread: ${mk()} escrow messages ${id}). Nothing to pay yet. Check again: ${mk()} demo (or keep waiting: ${mk()} demo --wait)` };
   if (e.state === "created") {
     const f: any = await fund(c, id); // first call creates the Satora swap + invoice; later calls reuse the swap
-    if (f.invoice) c.index.set(id, { fundInvoice: f.invoice });
-    const invoice = f.invoice ?? c.index.get(id).fundInvoice ?? null;
+    const invoice = f.paymentReceived ? null : f.invoice ?? c.index.get(id).fundInvoice ?? null; // never re-offer a paid invoice
     let invoiceSats: number | null = null; try { invoiceSats = invoice ? decodeInvoice(invoice).sats ?? null : null; } catch { invoiceSats = null; }
-    return { demo: "awaiting_payment", ...base, invoice, invoiceSats, swapId: f.swapId ?? l.fundSwap ?? null, newInvoice: !!f.invoice,
-      next: `pay the Lightning invoice${invoiceSats ? ` (${invoiceSats} sats)` : ""} from any wallet, then run: ${mk()} escrow fund ${id} --wait . That step claims the payment into the escrow: funding stays pending until you run it, even after you paid. (${mk()} demo --wait does it for you and then waits for the delivery.)` };
+    return { demo: "awaiting_payment", ...base, invoice, invoiceSats, swapId: f.swapId ?? l.fundSwap ?? null, newInvoice: !!(f.newSwap && f.invoice), paymentReceived: !!f.paymentReceived, ...(f.swapStatus ? { swapStatus: f.swapStatus } : {}),
+      next: f.paymentReceived ? `payment received (swap status ${f.swapStatus}). Do NOT pay again. Claim it into the escrow: ${mk()} escrow fund ${id} --wait (or ${mk()} demo --wait)` : `pay the Lightning invoice${invoiceSats ? ` (${invoiceSats} sats)` : ""} from any wallet, then run: ${mk()} escrow fund ${id} --wait . That step claims the payment into the escrow: funding stays pending until you run it, even after you paid. (${mk()} demo --wait does it for you and then waits for the delivery.)` };
   }
   const d = await demoDelivery(c, e);
   const failed = `If the seller says the job failed, propose the refund: ${mk()} escrow refund ${id} --payout-lnaddr <you@wallet> --with counterparty (it co-signs)`;
@@ -669,10 +727,10 @@ async function demoAdvance(c: Ctx, id: string, o: DemoOpts, extra: Record<string
     if (!o.wait || ["review_delivery", "done", "disputed"].includes(v.demo)) return v;
     if (v.demo === "awaiting_payment" && !paid) {
       if (v.newInvoice && !o.onProgress) return v; // nobody has seen this invoice yet: hand it over instead of blocking on it
-      if (!shown && o.onProgress) { o.onProgress({ ...v, next: `pay this invoice from any wallet now. Mark is waiting and claims it into the escrow by itself (keep this running; if you stop it, run ${mk()} escrow fund ${id} --wait after paying)` }); shown = true; }
+      if (!shown && o.onProgress && !v.paymentReceived) { o.onProgress({ ...v, next: `pay this invoice from any wallet now. Mark is waiting and claims it into the escrow by itself (keep this running; if you stop it, run ${mk()} escrow fund ${id} --wait after paying)` }); shown = true; }
       const r: any = await fund(c, id, { wait: true, timeoutSec: Math.max(1, Math.round((end - Date.now()) / 1000)) });
-      paid = !!(r.claim || r.escrow);
-      if (!paid) return { ...v, funding: r, next: r.swapStatus ? `the funding swap ended as ${r.swapStatus}; check ${mk()} escrow status ${id}` : `no payment seen yet. Pay the invoice, then run: ${mk()} escrow fund ${id} --wait (or ${mk()} demo --wait)` };
+      paid = !!(r.escrow || r.claim?.success);
+      if (!paid) return { ...v, funding: r, next: r.claimFailed || r.timedOut ? r.note : r.swapStatus ? `the funding swap ended as ${r.swapStatus}; check ${mk()} escrow status ${id}` : `no payment seen yet. Pay the invoice, then run: ${mk()} escrow fund ${id} --wait (or ${mk()} demo --wait)` };
       continue;
     }
     if (Date.now() > end) return { ...v, timedOut: true, next: `still ${v.demo.replace(/_/g, " ")}. Keep waiting: ${mk()} demo --wait (or check ${mk()} escrow messages ${id})` };

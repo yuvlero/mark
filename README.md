@@ -74,6 +74,8 @@ Below, `mark` means any of these.
 
 **Updating.** Mark never updates itself. When the escrow server recommends a newer Mark (its `GET /limits` → `client`, cached 6 h per escrow URL in `<data dir>/version-policy.json`), commands print one `mark: Mark x.y.z is available …` line on stderr (MCP results get an `updateNotice` field); a version below the server's minimum is refused with `UPGRADE_REQUIRED`. Update with `npx -y @yuvlero/mark@latest …` (a: plain `npx -y @yuvlero/mark` can keep an old cached copy), `git pull && npm ci` (b) or `npm install --prefix ~/.local/mark @yuvlero/mark@latest` (c). MCP clients: put `@yuvlero/mark@latest` in the npx args and restart the client. Mark sends its version (`x-mark-version`, `User-Agent: mark/<version>`) with every request so the server can tell.
 
+**Upgrading to 0.3.1 (important if you fund deals).** Mark 0.3.0 pinned `@satora/swap` 1.7.0 in its `npm-shrinkwrap.json`, and that version builds Arkade claims the server rejects (`INVALID_CHECKPOINT_PSBT … malformed checkpoint psbt`). Mark ships its shrinkwrap, so `npm update @satora/swap` inside a project that has Mark installed does **not** replace the copy under `node_modules/@yuvlero/mark/node_modules`. Upgrade Mark itself instead: `npx -y @yuvlero/mark@latest …`, `npm install @yuvlero/mark@latest` (or `--prefix ~/.local/mark @yuvlero/mark@latest`), or `git pull && npm ci`. Check with `npm ls @satora/swap` (expect 1.8.1 or newer). Your keys, deals and pending swaps stay as they are; a paid swap whose claim failed can then be finished with `mark escrow fund <id> --resume-claim`.
+
 ## 2. Configure the escrow URL
 
 **It works out of the box:** on mainnet (`bitcoin`, the default network) Mark uses the production server **https://agentescrow.to**. Sanity check (read-only):
@@ -238,6 +240,10 @@ mark escrow fund <id>
   The result is in `dealCheck`.
 - Pay the invoice from any Lightning wallet. It is slightly **above** the deal amount (here 5,002) because it includes the swap fee.
 - Then run `mark escrow fund <id> --wait`. It waits for the payment and claims the coins into the escrow. Keep it running; it times out after `--timeout` seconds (default 900).
+- Lost the invoice? Run `mark escrow fund <id>` again: while the swap still waits for payment it prints the same `invoice` (saved next to the swap id in `escrows.json`). Once it is paid, `fund` shows no invoice and says `paymentReceived: true` with "Do NOT pay again". Never pay a funding invoice twice.
+- `--wait` claims as soon as the swap is `serverfunded`, and also when it is `clientredeeming` (a claim was started but not finished). If the claim fails, it stops at once with `claimFailed: true`, the swap status and the library's real error in `claim.message` / `claim.detail` and `note`. A timeout names the last swap status, for example `timeout: swap status clientredeeming, claim not finished`.
+- **Paid, but the claim did not finish?** Run `mark escrow fund <id> --resume-claim` from the same Mark home (the claim key lives there). It finishes a submitted claim, or submits it again, into the deal's escrow address. It never creates an invoice and does not wait. The sats are not lost while the swap is `serverfunded` or `clientredeeming`; do not pay again.
+- Mark 0.3.1 works around an upstream `@satora/swap` bug (in 1.8.1, through `@lendasat/lendaswap-sdk-pure` 2.8.1): finishing a pending claim failed locally with `checkScript: witnessScript without P2WSH` and was reported as `All VTXOs have already been spent.`. Only after that exact error, Mark retries the finish step once and drops that one field from the taproot checkpoint input (the result says `workaround`). It goes away when Satora ships a fix.
 - `mark escrow status <id>` should now show `state: "funded"`.
 - **Fund in time.** `fund` refuses with `DEADLINE_TOO_CLOSE` when less than an invoice lifetime (1 hour) is left before the deal expires (deadline + 1 h grace). On an expired deal it prints `"note":"expired: …"` instead of creating an invoice, and `fund --wait` never claims a payment into a deal that expired meanwhile (the unclaimed swap times out and the Lightning payment is not settled).
 - **Paid too late or only partly?** The deal stays `expired`: it is never revived. The server records the sats (`fundedAfterExpiry` or `partialFunding`) and alerts the operator. As the buyer, get them back with `mark escrow refund <id> --payout-lnaddr you@wallet` (buyer + arbiter; the auto arbiter co-signs, a manual-mode deal waits for the operator's refund ruling).
@@ -337,7 +343,8 @@ Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL` (https; http onl
 | `mark escrow show <id>` | Terms, fee terms, acceptances (verified), evidence (with `deliverableMatch`), `awaiting`, `action_required_for`, `arbiterPolicy`, `counterpartyReputation`, next step |
 | `mark escrow accept <id> [--allow-counterparty-rule]` | Verify `termsHash`, the escrow address and the arbiter attestation locally, then sign (prints `awaiting`, `action_required_for`, `dealCheck`). A buyer needs `--allow-counterparty-rule` for a rule the seller chose (v2) |
 | `mark escrow limits [--sats N]` | Limits, fee schedule, fee preview |
-| `mark escrow fund <id> [--wait] [--timeout sec] [--allow-counterparty-rule]` | Lightning invoice to fund; `--wait` claims into the escrow. Refuses (`UNSAFE_RULE`) a deal whose auto-release rule the seller chose (its own hash lock, or any webhook rule) unless `--allow-counterparty-rule` |
+| `mark escrow fund <id> [--wait] [--timeout sec] [--allow-counterparty-rule]` | Lightning invoice to fund (shown again while unpaid); `--wait` claims into the escrow. Refuses (`UNSAFE_RULE`) a deal whose auto-release rule the seller chose (its own hash lock, or any webhook rule) unless `--allow-counterparty-rule` |
+| `mark escrow fund <id> --resume-claim` | Paid, but the claim into the escrow failed or did not finish (`claimFailed`, or a timeout at `serverfunded` / `clientredeeming`): finish or retry it. Never creates an invoice |
 | `mark escrow status <id>` | Full deal state, proposals, events, local swap status, `awaiting`, `action_required_for`, `arbiterPolicy` |
 | `mark escrow quote <id> [--path release\|refund] [--dest <lnaddr\|bolt11>]` | Payout amounts; exact with `--dest` |
 | `mark escrow pending [<id>]` | Pending payout proposals and payout details. **No id:** across all my deals (local + server listing `needs=sign`), with `awaiting`, `needsMySignature` and the co-sign command |
@@ -366,7 +373,7 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 | `escrow_reputation` (pubkey) | `reputation <pubkey>` |
 | `escrow_pending` (id? — omit for all my deals) | `escrow pending [<id>]` |
 | `escrow_limits` (sats?) | `escrow limits` |
-| `escrow_fund` (id, wait?, allowCounterpartyRule?) | `escrow fund` |
+| `escrow_fund` (id, wait?, allowCounterpartyRule?, resumeClaim?) | `escrow fund` (`resumeClaim` = `--resume-claim`) |
 | `escrow_quote` (id, path?, dest?) | `escrow quote` |
 | `escrow_approve` (id, payoutInvoice? / payoutLnaddr? / payoutArk?, kind?, with?, preimage?) | `escrow approve` |
 | `escrow_refund` (id, payout…, with?) | `escrow refund` |
