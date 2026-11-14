@@ -6,7 +6,7 @@ import * as uc from "../dist/src/core/usecases.js";
 import { openCtx } from "../dist/src/core/context.js";
 import { dealStatus, arbiterPolicy } from "../dist/src/core/status.js";
 import { normalizeTerms, termsDocument, termsHash } from "../dist/src/core/terms.js";
-import { tmpHome, mockFetch, arkAddr, psbtPaying } from "./mockApi.mjs";
+import { tmpHome, mockFetch, arkAddr, psbtPaying, payoutArk } from "./mockApi.mjs";
 
 const URL_ = "https://escrow.test";
 const other = (() => { const s = schnorr.utils.randomSecretKey(); return { s, p: hex.encode(schnorr.getPublicKey(s)) }; })();
@@ -52,7 +52,7 @@ test("evidence --file: hashed locally, signed, matched against terms deliverable
 });
 
 test("hash release: create --hash sets rule; approve --with arbiter --preimage posts preimage with [seller, arbiter]", async () => {
-  let created, posted; const pre = "ab".repeat(32); const H = crypto.createHash("sha256").update(Buffer.from(pre, "hex")).digest("hex"); const dest = arkAddr(7);
+  let created, posted; const pre = "ab".repeat(32); const H = crypto.createHash("sha256").update(Buffer.from(pre, "hex")).digest("hex"); const dest = payoutArk(7);
   let c0; const e = () => deal(c0, { state: "funded", buyerPubkey: other.p, sellerPubkey: c0.pubkey, rule: { type: "hash", sha256: H }, funding: { outpoint: "x:0", amount: 1200 } });
   const { c } = await ctx({
     "POST /escrows": async (b) => { created = b; return [201, { ...deal(c0, { terms: T }), rule: b.rule }]; },

@@ -5,7 +5,7 @@ import { schnorr } from "@noble/curves/secp256k1.js"; import { sha256 } from "@n
 import * as uc from "../dist/src/core/usecases.js";
 import { openCtx } from "../dist/src/core/context.js";
 import { dealStatus } from "../dist/src/core/status.js";
-import { tmpHome, mockFetch, arkAddr, psbtPaying } from "./mockApi.mjs";
+import { tmpHome, mockFetch, arkAddr, psbtPaying, payoutArk } from "./mockApi.mjs";
 
 const OTHER = "11".repeat(32); const URL_ = "https://escrow.test";
 const noSwap = async () => { throw new Error("swap must not be used"); };
@@ -46,7 +46,7 @@ test("fund --wait: never claims into a deal that expired while the invoice was b
 });
 
 test("refund: allowed on an expired deal holding a late/partial payment; release and empty expired deals refused", async () => {
-  let c0, posted; const dest = arkAddr(7); let d;
+  let c0, posted; const dest = payoutArk(7); let d;
   const { c } = await ctx({
     "GET /escrows/e1": async () => [200, d],
     "POST /escrows/e1/proposals": async (b) => { posted = b; return [201, { escrow: d, proposal: { id: "p1" } }]; },

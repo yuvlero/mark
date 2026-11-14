@@ -10,7 +10,7 @@ import { loadConfig, configPath } from "../dist/src/config.js";
 import { errorJson, MarkError } from "../dist/src/errors.js";
 import { EscrowApi } from "../dist/src/api/escrowApi.js";
 import { paysTo } from "../dist/src/crypto/psbt.js";
-import { tmpHome, mockFetch, arkAddr, psbtPaying } from "./mockApi.mjs";
+import { tmpHome, mockFetch, arkAddr, psbtPaying, payoutArk } from "./mockApi.mjs";
 
 const OTHER = "11".repeat(32); const URL_ = "https://escrow.test";
 async function ctx(routes, extra = {}) {
@@ -120,7 +120,7 @@ test("approve with payout-invoice validates against quote before any swap (AMOUN
 });
 
 test("propose with ark payout sends BIP340 auth over the contract message", async () => {
-  let c0; const dest = arkAddr(7); let posted;
+  let c0; const dest = payoutArk(7); let posted;
   const { c } = await ctx({
     "GET /escrows/e1": async () => [200, escrow(c0)],
     "POST /escrows/e1/proposals": async (b) => { posted = b; return [201, { escrow: escrow(c0), proposal: { id: "p1" } }]; },

@@ -15,6 +15,8 @@ export function psbtPaying(addr, sats) {
 export function tmpHome() { const d = fs.mkdtempSync(path.join(os.tmpdir(), "mark-test-")); process.env.MARK_HOME = d; process.env.MARK_PASSWORD = "test-only-" + Math.random(); delete process.env.MARK_ESCROW_URL; return d; }
 
 export const MOCK_SERVER_PK = "5a".repeat(32), MOCK_ARBITER_PK = "6b".repeat(32), MOCK_EXIT_DELAY = 512;
+/** An Ark payout address on the mock Arkade server (what a payee's Arkade wallet would give): right prefix, right server key. */
+export const payoutArk = (b, hrp = "tark") => new ArkAddress(hex.decode(MOCK_SERVER_PK), new Uint8Array(32).fill(b), hrp).encode();
 /** Honest-server contract fields: a deal fixture without serverPubkey gets the mock Arkade server key, an exit delay and the
  *  address those keys really derive to (what Mark checks before signing/funding). Fixtures that set serverPubkey are left as-is
  *  (tests of a lying server). */

@@ -14,5 +14,5 @@ export const RECOMMENDED_WALLET = {
     receivePayout: "bark ln invoice \"<recommendedInvoiceSats> sats\", then mark escrow approve <id> --payout-invoice <bolt11>",
   },
   anyLightningWallet: "Bark is a recommendation, not a requirement: Mark works with any Lightning wallet that can pay a BOLT11 invoice (funding) and create a BOLT11 invoice with an amount or has a Lightning address (payouts).",
-  warning: "Do not use --payout-ark with a Bark Ark address: Bark runs on Second's Ark server and the escrow on Arkade, and Ark addresses only work within the same Ark. Use Lightning (--payout-invoice) instead.",
+  warning: "Do not use --payout-ark (or fund --ark) with a Bark wallet: Bark runs on Second's Ark server and the escrow on the Arkade server (mainnet https://arkade.computer), and Ark addresses only work within the same Ark. Use Lightning (--payout-invoice / --payout-lnaddr, and the funding invoice) instead.",
 } as const;

@@ -53,7 +53,9 @@ export interface Escrow {
   termsVersion?: number | null; webhookUrlSha256?: string | null;
   arbiterAttestation?: { v: string; identityPubkey: string; sig: string } | null;
   /** seenAt: when the server saw the funding (newer servers) */
-  funding?: { outpoint: string; amount: number; seenAt?: string }; proposals: ProposalSummary[];
+  funding?: { outpoint: string; amount: number; seenAt?: string; rail?: string }; proposals: ProposalSummary[];
+  /** newer servers: payment(s) smaller than amountSats seen while created (they never add up to funding) */
+  underpaid?: { vtxos: { outpoint: string; amount: number }[]; totalSats: number; seenAt: string };
   /** newer servers: the server's own auto-refund countdown (Mark recomputes it locally, see core/usecases.ts myCountdown) */
   deadlineCountdown?: unknown;
   /** null on legacy deals */
@@ -69,7 +71,9 @@ export interface Quote { escrowSats: number; lightning: { invoiceSats: number; r
 
 export interface Limits { network: string; termsVersions?: number[]; arbiter?: { identityPubkey: string; attestation: string }; minDealSats: { lightning: number; ark: number; enforced: number }; maxDealSats: number; freeBelowSats: number | null; dustSats: number;
   fees: { enabled: boolean; source: string | null; address: string | null; feeBps: number; disputeFeeBps: number; freeBelowSats: number | null; flatSats?: number; flatUntilSats?: number | null; disputeMinSats?: number; dustBumpMaxBps?: number | null; terms: FeeTerms | null; schedule?: { platform: string; dispute: string } | null; warning?: string };
-  satora: { minSats: number; maxSats: number; fetchedAt: string; stale: boolean }; feePreview?: FeePreview; client?: ClientPolicy; [k: string]: unknown }
+  satora: { minSats: number; maxSats: number; fetchedAt: string; stale: boolean }; feePreview?: FeePreview; client?: ClientPolicy;
+  /** newer servers: the Arkade server this escrow runs on (Ark addresses must be from a wallet on it) and the funding rails */
+  arkServer?: { url: string; pubkey: string; network: string; addressPrefix: string; note?: string }; funding?: { rails: string[]; lightning?: string; ark?: string }; [k: string]: unknown }
 export type FeePreview = ReturnType<typeof import("../core/fees.js").feePreview>;
 
 export interface Message { seq: number; id: string; escrowId: string; author: "buyer" | "seller" | "operator"; pubkey: string; body: string; kind?: string; replyTo?: string; ts: number; createdAt: string; sig: string }
@@ -130,6 +134,8 @@ export class EscrowApi {
   propose(id: string, b: { kind: "release" | "refund"; payout: Payout; signers: Party[]; preimage?: string; auth: Auth }) { return this.call<{ escrow: Escrow; proposal: ProposalSummary }>("POST", `/escrows/${enc(id)}/proposals`, b); }
   sign(id: string, pid: string, b: { party: "buyer" | "seller"; arkTx: string; checkpoints: string[] }) { return this.call<{ escrow: Escrow; proposal: ProposalSummary }>("POST", `/escrows/${enc(id)}/proposals/${enc(pid)}/signatures`, b); }
   /** Report the Satora LN->Arkade funding swap so the server can record funding fees (server verifies it with Satora). */
+  /** Report a direct Ark funding (no swap) so the server records the funding rail (ark, fee 0). Older servers: 404 NOT_FOUND. */
+  reportArkFunding(id: string) { return this.call<{ escrowId: string; recorded: boolean; rail: string; reason?: string }>("POST", `/escrows/${enc(id)}/funding-ark`, {}); }
   reportFundingSwap(id: string, swapId: string) { return this.call<{ escrowId: string; recorded: boolean }>("POST", `/escrows/${enc(id)}/funding-swap`, { swapId }); }
   accept(id: string, b: { party: "buyer" | "seller"; sig: string; termsHash: string }) { return this.call<Escrow>("POST", `/escrows/${enc(id)}/accept`, b); }
   evidence(id: string, b: { party: "buyer" | "seller"; ts: number; sig: string; text: string; sha256?: string; url?: string }) { return this.call<Escrow>("POST", `/escrows/${enc(id)}/evidence`, b); }

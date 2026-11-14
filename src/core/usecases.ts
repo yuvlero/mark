@@ -21,6 +21,8 @@ import { deadlineCountdown, countdownFor } from "./deadline.js";
 import { serverLimits, supportsTermsV2, verifyDeal } from "./dealCheck.js";
 import { rememberPolicy } from "./clientVersion.js";
 import { mk, walletLine } from "../invocation.js";
+import { checkArkadeAddress, arkadeNote, ARK_HRP } from "./arkAddress.js";
+import { plainText, type Limits } from "../api/escrowApi.js";
 import type { Role } from "./localIndex.js";
 
 /** Machine-readable status (shared logic: status.ts, identical to the server's). */
@@ -67,6 +69,29 @@ export const expiredWithFunds = (e: Escrow) => e.state === "expired" && !!(e.fun
 const expiredNote = (e: Escrow) => expiredWithFunds(e)
   ? `expired: not funded by the deadline, but sats reached the escrow address afterwards. The deal is not revived; refund them with: ${mk()} escrow refund ${e.id} --payout-lnaddr <you@wallet>`
   : "expired: not funded by the deadline (+ grace). Do not fund it; create a new deal if you still want one";
+
+/** The Arkade server this escrow runs on. URL: GET /limits arkServer.url (newer servers; plain https URL only), else Mark's network
+ *  preset. Key: the deal's own serverPubkey when a deal is given (it is in the locally derived address and the arbiter attestation),
+ *  else /limits arkServer.pubkey. */
+export function arkadeFrom(c: Ctx, lim: Limits | null, e?: Escrow) {
+  const s: any = (lim as any)?.arkServer;
+  const u = typeof s?.url === "string" ? plainText(s.url).slice(0, 200) : "";
+  const url = /^https?:\/\/[a-z0-9.-]+(:\d+)?\/?$/i.test(u) ? u.replace(/\/$/, "") : c.cfg.arkServerUrl;
+  const spk = typeof s?.pubkey === "string" && /^[0-9a-f]{64}$/i.test(s.pubkey) ? s.pubkey.toLowerCase() : null;
+  const dealKey = e?.serverPubkey ? String(e.serverPubkey).toLowerCase().slice(-64) : null;
+  const warnings: string[] = [];
+  if (url !== c.cfg.arkServerUrl) warnings.push(`the escrow server says it runs on ${url}; Mark's ${c.network} preset is ${c.cfg.arkServerUrl}`);
+  if (dealKey && spk && dealKey !== spk) warnings.push(`this deal's Arkade server key ${dealKey} differs from the server's current key ${spk}; the deal's key is the one that counts for this deal`);
+  return { url, pubkey: dealKey ?? spk, network: c.network, addressPrefix: `${ARK_HRP[c.network] ?? "ark"}1`, source: s ? "escrow server /limits" : "Mark network preset",
+    note: arkadeNote(url), ...(warnings.length ? { warnings } : {}) };
+}
+/** arkadeFrom with this context's /limits (an unreachable or old server falls back to the preset). */
+export async function arkadeServer(c: Ctx, e?: Escrow) { let lim: Limits | null = null; try { lim = await serverLimits(c); } catch { lim = null; } return arkadeFrom(c, lim, e); }
+/** An Ark payout address: this network's prefix AND this deal's Arkade server key, else BAD_DEST naming the server. */
+async function arkDest(c: Ctx, addr: string, what: string, e?: Escrow | null) {
+  const a = await arkadeServer(c, e ?? undefined);
+  return checkArkadeAddress(addr, { network: c.network, serverPubkey: a.pubkey, arkServerUrl: a.url, what });
+}
 
 // ---------- shared validation ----------
 const XONLY = /^[0-9a-f]{64}$/;
@@ -209,7 +234,7 @@ export async function show(c: Ctx, id: string) {
   const dealCheck = await verifyDeal(c, e).then((x) => ({ ok: true, ...x }), (x: any) => ({ ok: false, code: x?.code ?? "ERROR", error: String(x?.message ?? x) }));
   return { id: e.id, state: e.state, myRole: role, counterpartyReputation: rep, ...(ruleWarning ? { ruleWarning } : {}), dealCheck, ...statusOf(e), amountSats: e.amountSats, deadline: e.deadline, deadlineCountdown: myCountdown(e, role), ...v, feeTerms: e.fees ?? null, feeSummary: feeSummary(e.fees ?? null, e.amountSats), evidence,
     dispute: e.dispute ?? null, ruling: e.ruling ?? null,
-    next: e.state === "expired" ? expiredNote(e) : !dealCheck.ok ? `DEAL CHECK FAILED (${(dealCheck as any).code}): do not accept or fund` : v.legacy ? "legacy deal (no terms)" : !v.hashVerified ? "TERMS HASH MISMATCH: do not accept or fund" : !iAccepted ? `review the terms, then: ${mk()} escrow accept ${e.id}` : !v.agreed ? "waiting for the counterparty to accept" : e.state === "created" ? (role === "buyer" ? `both accepted; fund with: ${mk()} escrow fund ${e.id}` : "both accepted; waiting for the buyer to fund") : undefined };
+    next: e.state === "expired" ? expiredNote(e) : !dealCheck.ok ? `DEAL CHECK FAILED (${(dealCheck as any).code}): do not accept or fund` : v.legacy ? "legacy deal (no terms)" : !v.hashVerified ? "TERMS HASH MISMATCH: do not accept or fund" : !iAccepted ? `review the terms, then: ${mk()} escrow accept ${e.id}` : !v.agreed ? "waiting for the counterparty to accept" : e.state === "created" ? (role === "buyer" ? `both accepted; fund with: ${mk()} escrow fund ${e.id} (Lightning invoice), or ${mk()} escrow fund ${e.id} --ark (direct, no swap fee, only from an Arkade wallet on ${c.cfg.arkServerUrl}; not Bark)` : "both accepted; waiting for the buyer to fund") : undefined };
 }
 
 /** Accept the deal terms: verify termsHash locally, then BIP340-sign it with this wallet's escrow key. */
@@ -230,7 +255,7 @@ export async function accept(c: Ctx, id: string, o: { allowCounterpartyRule?: bo
   return { escrowId: id, myRole: role, counterpartyReputation: rep, ...(ruleWarning ? { ruleWarning } : {}), termsVersion: v.termsVersion, ...((v as any).termsWarning ? { termsWarning: (v as any).termsWarning } : {}),
     dealCheck: check, accepted: true, alreadyAccepted: r === e, state: r.state, ...statusOf(r),
     status: !after.agreed ? `you accepted; waiting for the ${missing.join(" and ") || "counterparty"}` : r.state === "created" ? "both parties accepted the terms; not funded yet (state 'created' means waiting for the buyer's funding)" : `both accepted; escrow is ${r.state}`, terms: after.terms, termsHash: after.termsHash, acceptedBy: after.accepted, agreed: after.agreed,
-    next: !after.agreed ? `waiting for the ${missing.join(" and ") || "counterparty"} to accept: ${mk()} escrow accept ${id}` : r.state === "created" ? (role === "buyer" ? `both accepted; fund with: ${mk()} escrow fund ${id}` : "both accepted; waiting for the buyer to fund") : undefined };
+    next: !after.agreed ? `waiting for the ${missing.join(" and ") || "counterparty"} to accept: ${mk()} escrow accept ${id}` : r.state === "created" ? (role === "buyer" ? `both accepted; fund with: ${mk()} escrow fund ${id} (Lightning invoice), or ${mk()} escrow fund ${id} --ark (direct, no swap fee, only from an Arkade wallet on ${c.cfg.arkServerUrl}; not Bark)` : "both accepted; waiting for the buyer to fund") : undefined };
 }
 
 /** Add a signed, timestamped evidence note (either party, any state; especially during a dispute). */
@@ -265,7 +290,7 @@ export async function limits(c: Ctx, sats?: number) {
   const l = await c.api.limits(sats); rememberPolicy(c, l);
   const t = l.fees.terms ?? null; const at = (a: number) => { const p = feePreview(t, a, { minDealSats: l.minDealSats.enforced, maxDealSats: l.maxDealSats }); return { amountSats: a, platformFeeSats: p.platformFeeSats, possibleDisputeFeeSats: p.possibleDisputeFeeSats }; };
   const preview = sats === undefined ? undefined : (l.feePreview ?? feePreview(t, sats, { minDealSats: l.minDealSats.enforced, maxDealSats: l.maxDealSats, swapEstimateSats: null }));
-  return { ...l, feeSummary: { minDealSats: l.minDealSats.enforced, maxDealSats: l.maxDealSats, schedule: t ? feeSchedule(t) : null,
+  return { ...l, arkade: arkadeFrom(c, l), feeSummary: { minDealSats: l.minDealSats.enforced, maxDealSats: l.maxDealSats, schedule: t ? feeSchedule(t) : null,
       examples: [3299, 3300, 33000, 33001, 100000, 1000000].filter((a) => a >= l.minDealSats.enforced && a <= l.maxDealSats).map(at),
       swapCost: "Lightning payouts also pay the Satora swap (protocol + routing fee, a few sats); pass --sats N for an estimate" },
     ...(preview ? { feePreview: preview } : {}) };
@@ -394,7 +419,7 @@ function withFundLock<T>(c: Ctx, id: string, f: () => Promise<T>): Promise<T> {
   return run;
 }
 
-export interface FundOpts { wait?: boolean; timeoutSec?: number; onInvoice?: (x: unknown) => void; allowCounterpartyRule?: boolean; /** retry / finish the Arkade claim of the existing funding swap; never creates a swap */ resumeClaim?: boolean; pollMs?: number }
+export interface FundOpts { /** confirm switching from the other funding rail (nothing was paid there) */ switchRail?: boolean; wait?: boolean; timeoutSec?: number; onInvoice?: (x: unknown) => void; allowCounterpartyRule?: boolean; /** retry / finish the Arkade claim of the existing funding swap; never creates a swap */ resumeClaim?: boolean; pollMs?: number }
 /** Fund via Lightning: Satora LN->Arkade swap targeting the escrow address; THIS Mark holds the claim key and claims into the escrow. */
 export async function fund(c: Ctx, id: string, o: FundOpts = {}) {
   const e = await c.api.get(requireId(id));
@@ -406,6 +431,7 @@ export async function fund(c: Ctx, id: string, o: FundOpts = {}) {
   const l = c.index.get(id);
   if (l.signedTermsHash && e.termsHash !== l.signedTermsHash) throw new MarkError("TERMS_CHANGED", `the server's deal hash ${e.termsHash} is not the termsHash I signed (${l.signedTermsHash}); refusing to fund`, { signed: l.signedTermsHash, server: e.termsHash });
   if (o.resumeClaim && o.wait) throw new MarkError("USAGE", "resumeClaim does not wait: call it without wait");
+  if (!l.fundSwap && l.fundRail === "ark" && !o.switchRail) throw new MarkError("FUNDING_IN_PROGRESS", `you chose direct Ark funding for this deal (${mk()} escrow fund ${id} --ark, ${l.fundArkAt ?? "earlier"}). A Lightning invoice as well could fund it twice. If you already paid the escrow address, run: ${mk()} escrow fund ${id} --ark --wait. If you did NOT pay it and will not, switch to Lightning: ${mk()} escrow fund ${id} --switch-rail`, { rail: "ark", since: l.fundArkAt ?? null });
   if (o.resumeClaim && !l.fundSwap) throw new MarkError("NOT_FOUND", `no funding swap recorded for escrow ${id} in this Mark home; nothing to resume. Run ${mk()} escrow fund ${id} from the Mark home (MARK_HOME) that created the invoice.`);
   // the address must be the 2-of-3 contract of the deal's keys (derived locally) and the arbiter attested by the pinned identity
   const check = await verifyDeal(c, e);
@@ -425,7 +451,7 @@ export async function fund(c: Ctx, id: string, o: FundOpts = {}) {
       if (again) { swapId = again; newSwap = false; return; }
       const r = await s.createReceive(e.amountSats, e.address); swapId = r.id; invoice = r.invoice; swapStatus = r.status;
       // the invoice is public (BOLT11) and kept next to the swap id so a later `fund` can show it again while it is unpaid
-      c.index.set(id, { fundSwap: swapId, role: l.role ?? myRole(c, e), ...(r.invoice ? { fundInvoice: r.invoice } : {}) });
+      c.index.set(id, { fundSwap: swapId, role: l.role ?? myRole(c, e), fundRail: "lightning", ...(r.invoice ? { fundInvoice: r.invoice } : {}) });
     });
   }
   if (!newSwap) {
@@ -484,6 +510,62 @@ export async function fund(c: Ctx, id: string, o: FundOpts = {}) {
   return { ...at(last), timedOut: true, note: fundTimeoutNote(id, last) };
 }
 
+/** Least time before expiresAt for direct Ark funding (an Ark payment settles in seconds; the margin covers a slow wallet). */
+export const ARK_FUND_MIN_SEC = 600;
+export interface FundArkOpts { wait?: boolean; timeoutSec?: number; pollMs?: number; allowCounterpartyRule?: boolean; switchRail?: boolean; onInstructions?: (x: unknown) => void }
+/** Fund by a direct Ark payment (no swap, no swap fee): show the escrow address, the exact sats and the Arkade server; with `wait`,
+ *  poll the deal until the server sees ONE payment >= amountSats there (then report the rail for the ledger). Mark sends nothing:
+ *  the buyer pays from its own Arkade wallet on the escrow's Arkade server. */
+export async function fundArk(c: Ctx, id: string, o: FundArkOpts = {}) {
+  const e = await c.api.get(requireId(id));
+  assertEscrowCap(c.cfg, e.amountSats);
+  if (e.state === "expired") return { escrowId: id, rail: "ark", state: e.state, expiredAt: e.expiredAt ?? null, note: expiredNote(e) };
+  if (e.state !== "created") return { escrowId: id, rail: "ark", state: e.state, funding: e.funding ?? null, note: "already funded" };
+  const v = verifyDealTerms(c, e);
+  if (!v.agreed) throw new MarkError("TERMS_NOT_ACCEPTED", v.hashVerified === false ? "terms hash mismatch; refusing to fund" : `both parties must accept the terms before funding (buyer: ${(v.accepted as any).buyer.accepted}, seller: ${(v.accepted as any).seller.accepted}). Run: ${mk()} escrow accept ${id}`, { accepted: v.accepted });
+  const l = c.index.get(id);
+  if (l.signedTermsHash && e.termsHash !== l.signedTermsHash) throw new MarkError("TERMS_CHANGED", `the server's deal hash ${e.termsHash} is not the termsHash I signed (${l.signedTermsHash}); refusing to fund`, { signed: l.signedTermsHash, server: e.termsHash });
+  const check = await verifyDeal(c, e); // address = the 2-of-3 contract of the deal's keys, arbiter attested: never show an unchecked address
+  const risk = l.fundRail === "ark" || (v.termsVersion === 2 && v.agreed) ? null : counterpartyRule(c, e, l.role ?? myRole(c, e));
+  if (risk && !o.allowCounterpartyRule) throw new MarkError("UNSAFE_RULE", `refusing to fund: ${risk.warning} To fund anyway: ${mk()} escrow fund ${id} --ark --allow-counterparty-rule`, risk);
+  if (l.fundSwap && !o.switchRail) {
+    let st: string | undefined; try { st = (await (await c.swaps()).get(l.fundSwap)).status; } catch { st = undefined; }
+    if (!st || !SWAP_FAILED.has(st)) throw new MarkError("FUNDING_IN_PROGRESS", `a Lightning funding invoice already exists for this deal (swap ${l.fundSwap}, status ${st ?? "unknown"}). Paying the escrow address by Ark as well could fund it twice. Continue with Lightning: ${mk()} escrow fund ${id}. Only if that invoice was NOT paid and will not be: ${mk()} escrow fund ${id} --ark --switch-rail`, { swapId: l.fundSwap, swapStatus: st ?? null });
+  }
+  const left = Math.floor((expiresAtMs(e) - Date.now()) / 1000);
+  if (l.fundRail !== "ark" && left < ARK_FUND_MIN_SEC) throw new MarkError("DEADLINE_TOO_CLOSE", `refusing to fund: the deal expires in ${Math.max(0, left)} s (deadline ${e.deadline} + grace). A payment that lands later does not fund the deal and has to be refunded. Create a new deal with a later deadline.`, { expiresAt: new Date(expiresAtMs(e)).toISOString(), secondsLeft: Math.max(0, left), minSeconds: ARK_FUND_MIN_SEC });
+  const ark = await arkadeServer(c, e);
+  if (l.fundRail !== "ark") c.index.set(id, { fundRail: "ark", fundArkAt: new Date().toISOString(), role: l.role ?? myRole(c, e) });
+  const expiresAt = new Date(expiresAtMs(e)).toISOString();
+  const base = { escrowId: id, rail: "ark", state: e.state, escrowAddress: e.address, amountSats: e.amountSats, expiresAt,
+    payTo: { address: e.address, amountSats: e.amountSats, arkServer: ark },
+    howToPay: [
+      `Send exactly ${e.amountSats} sats to ${e.address} in ONE payment, from an Arkade wallet on ${ark.url} (address prefix ${ark.addressPrefix}). No swap fee.`,
+      "Smaller payments are NOT added up and do not fund the deal: do not send the difference (escrow status shows underpaid).",
+      "A larger payment funds the deal and the whole coin is held: a release pays it all to the seller (minus the platform fee).",
+      `Pay before ${expiresAt}: a payment that lands later does not fund the deal and has to be refunded.`,
+      "Bark / Second (or any other Ark server) cannot pay this address; use Lightning instead: " + `${mk()} escrow fund ${id}` + (l.fundRail === "ark" ? " --switch-rail" : ""),
+    ],
+    dealCheck: check, ...((v as any).termsWarning ? { termsWarning: (v as any).termsWarning } : {}), ...(e.underpaid ? { underpaid: e.underpaid } : {}) };
+  if (!o.wait) return { ...base, note: `pay from your Arkade wallet, then run: ${mk()} escrow fund ${id} --ark --wait (or check ${mk()} escrow status ${id})` };
+  o.onInstructions?.(base);
+  const end = Date.now() + (o.timeoutSec ?? 900) * 1000; let last: Escrow = e;
+  while (Date.now() < end) {
+    await sleep(o.pollMs ?? 5000);
+    try { last = await c.api.get(id); } catch { continue; } // a transient server error does not end the wait
+    if (FUNDED_STATES.has(last.state)) {
+      const f = last.funding; let ledger: unknown = null;
+      try { ledger = await c.api.reportArkFunding(id); } catch (x: any) { ledger = { recorded: false, error: x?.code === "NOT_FOUND" ? "this escrow server does not record the Ark rail (older server)" : String(x?.message ?? x).slice(0, 200) }; }
+      return { ...base, state: last.state, funded: true, funding: f ?? null, ...(f && f.amount > e.amountSats ? { overpaidSats: f.amount - e.amountSats, overpayNote: "the whole coin is held by the escrow" } : {}), ...(last.underpaid ? { underpaid: last.underpaid } : {}), ledger, escrow: last };
+    }
+    if (last.state === "expired") return { ...base, state: "expired", expiredAt: last.expiredAt ?? null, note: expiredNote(last) };
+    if (last.state !== "created") return { ...base, state: last.state, note: `deal is ${last.state}. Check: ${mk()} escrow status ${id}` };
+  }
+  return { ...base, timedOut: true, ...(last.underpaid ? { underpaid: last.underpaid } : {}),
+    note: last.underpaid ? `timeout: ${(last.underpaid as any).totalSats} sats arrived in payment(s) smaller than ${e.amountSats}; the deal is NOT funded. Pay ${e.amountSats} sats in ONE payment, or let it expire and refund. Check: ${mk()} escrow status ${id}`
+      : `timeout: no full payment seen at ${e.address} yet. If you paid, run again: ${mk()} escrow fund ${id} --ark --wait` };
+}
+
 /** Human-checkable payout details of a proposal (shown by a co-signer before/with signing). */
 function payoutDetails(e: Escrow, p: ProposalFull) {
   const po: any = p.payout ?? {};
@@ -513,7 +595,7 @@ async function signProposal(c: Ctx, e: Escrow, p: ProposalFull, role: Role) {
 async function payoutSpec(c: Ctx, e: Escrow, kind: Kind, o: PayoutOpts): Promise<{ payout: Payout; authDest: string; swap?: { id: string; fundAddress: string; fundAmountSats: number } }> {
   const given = [o.payoutInvoice, o.payoutLnaddr, o.payoutArk].filter(Boolean).length;
   if (given !== 1) throw new MarkError("BAD_REQUEST", "exactly one payout required: --payout-invoice <bolt11> | --payout-lnaddr <user@domain> | --payout-ark <ark address>");
-  if (o.payoutArk) { if (!/^t?ark1/.test(o.payoutArk)) throw new MarkError("BAD_DEST", "payout-ark must be an Ark address"); return { payout: { type: "ark", address: o.payoutArk }, authDest: o.payoutArk }; }
+  if (o.payoutArk) { const a = await arkDest(c, o.payoutArk, "payout-ark", e); return { payout: { type: "ark", address: a }, authDest: a }; }
   const amount = dealFee(e).payeeSats; // payee leg: escrow minus the platform fee output
   if (o.payoutInvoice) {
     const q = await c.api.quote(e.id, kind, o.payoutInvoice); // route-specific: same pricing as swap creation
@@ -566,7 +648,9 @@ export const refund = (c: Ctx, id: string, o: PayoutOpts & { with?: "counterpart
 /** Refund a failed Lightning payout swap (Satora Arkade VHTLC) to an Ark address. */
 export async function refundPayout(c: Ctx, id: string, to?: string) {
   const l = c.index.get(requireId(id)); if (!l.payoutSwap) throw new MarkError("NOT_FOUND", "no payout swap recorded for this escrow");
-  const dest = to ?? c.cfg.refundArkAddress; if (!dest || !/^t?ark1/.test(dest)) throw new MarkError("BAD_DEST", "--to <ark address> (or config refundArkAddress) required");
+  const raw = to ?? c.cfg.refundArkAddress; if (!raw) throw new MarkError("BAD_DEST", `--to <ark address> (or config refundArkAddress) required: an address from an Arkade wallet on ${c.cfg.arkServerUrl}`);
+  let e: Escrow | null = null; try { e = await c.api.get(id); } catch { e = null; }
+  const dest = await arkDest(c, raw, to ? "--to" : "config refundArkAddress", e);
   return (await c.swaps()).refund(l.payoutSwap, dest);
 }
 
