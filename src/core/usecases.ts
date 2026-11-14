@@ -546,7 +546,10 @@ export async function fundArk(c: Ctx, id: string, o: FundArkOpts = {}) {
     if (!st || !SWAP_FAILED.has(st)) throw new MarkError("FUNDING_IN_PROGRESS", `a Lightning funding invoice already exists for this deal (swap ${l.fundSwap}, status ${st ?? "unknown"}). Paying the escrow address by Ark as well could fund it twice. Continue with Lightning: ${mk()} escrow fund ${id}. Only if that invoice was NOT paid and will not be: ${mk()} escrow fund ${id} --ark --switch-rail`, { swapId: l.fundSwap, swapStatus: st ?? null });
   }
   const left = Math.floor((expiresAtMs(e) - Date.now()) / 1000);
-  if (l.fundRail !== "ark" && left < ARK_FUND_MIN_SEC) throw new MarkError("DEADLINE_TOO_CLOSE", `refusing to fund: the deal expires in ${Math.max(0, left)} s (deadline ${e.deadline} + grace). A payment that lands later does not fund the deal and has to be refunded. Create a new deal with a later deadline.`, { expiresAt: new Date(expiresAtMs(e)).toISOString(), secondsLeft: Math.max(0, left), minSeconds: ARK_FUND_MIN_SEC });
+  // too close to the deadline: never hand out payment instructions; only `--wait` on a rail already chosen may keep watching for
+  // a payment the buyer already sent (no address/amount shown again)
+  const watchOnly = left < ARK_FUND_MIN_SEC && l.fundRail === "ark" && !!o.wait;
+  if (left < ARK_FUND_MIN_SEC && !watchOnly) throw new MarkError("DEADLINE_TOO_CLOSE", `refusing to fund: the deal expires in ${Math.max(0, left)} s (deadline ${e.deadline} + grace). A payment that lands later does not fund the deal and has to be refunded. Create a new deal with a later deadline.`, { expiresAt: new Date(expiresAtMs(e)).toISOString(), secondsLeft: Math.max(0, left), minSeconds: ARK_FUND_MIN_SEC });
   const ark = await arkadeServer(c, e);
   // choose the rail under the same lock as swap creation, so a concurrent `fund` can't issue an invoice at the same time
   if (l.fundRail !== "ark") await withFundLock(c, id, async () => {
@@ -562,9 +565,12 @@ export async function fundArk(c: Ctx, id: string, o: FundArkOpts = {}) {
       "Smaller payments are NOT added up and do not fund the deal: do not send the difference (escrow status shows underpaid).",
       "A larger payment funds the deal and the whole coin is held: a release pays it all to the seller (minus the platform fee).",
       `Pay before ${expiresAt}: a payment that lands later does not fund the deal and has to be refunded.`,
-      "Bark / Second (or any other Ark server) cannot pay this address; use Lightning instead: " + `${mk()} escrow fund ${id}` + (l.fundRail === "ark" ? " --switch-rail" : ""),
+      "Bark / Second (or any other Ark server) cannot pay this address; use Lightning instead (only if you paid nothing here): " + `${mk()} escrow fund ${id} --switch-rail`,
     ],
     dealCheck: check, ...((v as any).termsWarning ? { termsWarning: (v as any).termsWarning } : {}), ...(e.underpaid ? { underpaid: e.underpaid } : {}) };
+  if (watchOnly) {
+    (base as any).payTo = null; base.howToPay = [`Too close to the deadline (${Math.max(0, left)} s left) to start a payment: do not pay now. Watching only for a payment you already sent.`];
+  }
   if (!o.wait) return { ...base, note: `pay from your Arkade wallet, then run: ${mk()} escrow fund ${id} --ark --wait (or check ${mk()} escrow status ${id})` };
   o.onInstructions?.(base);
   const end = Date.now() + (o.timeoutSec ?? 900) * 1000; let last: Escrow = e;

@@ -112,3 +112,14 @@ test("review: rail transitions are authoritative; already-funded entry reports t
   await assert.rejects(uc.refundPayout(c, "e1", payoutArk(4)), (e) => e.code === "BAD_DEST" && e.details.reason === "arkade_key_unknown" && e.message.includes(ARKD));
   assert.equal(refunded, 0);
 });
+
+test("review 2: near the deadline a chosen Ark rail never gets instructions again; --wait only watches", async () => {
+  const near = (c) => deal(c, { expiresAt: new Date(Date.now() + 120e3).toISOString() });
+  let { c } = await ctx({ dealOf: near }); c.index.set("e1", { fundRail: "ark" });
+  assert.equal(await code(uc.fundArk(c, "e1")), "DEADLINE_TOO_CLOSE", "no instructions, even on the chosen rail");
+  const seen = []; const w = await uc.fundArk(c, "e1", { wait: true, timeoutSec: 0.05, pollMs: 5, onInstructions: (x) => seen.push(x) });
+  assert.equal(w.payTo, null); assert.match(w.howToPay[0], /do not pay now/); assert.equal(seen[0].payTo, null);
+  ({ c } = await ctx({ dealOf: (c) => deal(c, { expiresAt: new Date(Date.now() - 5e3).toISOString() }) })); c.index.set("e1", { fundRail: "ark" });
+  assert.equal(await code(uc.fundArk(c, "e1")), "DEADLINE_TOO_CLOSE", "past expiresAt while still created");
+  ({ c } = await ctx()); const r = await uc.fundArk(c, "e1"); assert.match(r.howToPay.at(-1), /--switch-rail/, "Lightning fallback names the switch on the first call");
+});
