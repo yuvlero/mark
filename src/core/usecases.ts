@@ -70,13 +70,13 @@ const expiredNote = (e: Escrow) => expiredWithFunds(e)
   ? `expired: not funded by the deadline, but sats reached the escrow address afterwards. The deal is not revived; refund them with: ${mk()} escrow refund ${e.id} --payout-lnaddr <you@wallet>`
   : "expired: not funded by the deadline (+ grace). Do not fund it; create a new deal if you still want one";
 
-/** The Arkade server this escrow runs on. URL: GET /limits arkServer.url (newer servers; plain https URL only), else Mark's network
+/** The Arkade server this escrow runs on. URL: GET /limits arkServer.url (newer servers; plain https host URL only, http only for localhost), else Mark's network
  *  preset. Key: the deal's own serverPubkey when a deal is given (it is in the locally derived address and the arbiter attestation),
  *  else /limits arkServer.pubkey. */
 export function arkadeFrom(c: Ctx, lim: Limits | null, e?: Escrow) {
   const s: any = (lim as any)?.arkServer;
   const u = typeof s?.url === "string" ? plainText(s.url).slice(0, 200) : "";
-  const url = /^https?:\/\/[a-z0-9.-]+(:\d+)?\/?$/i.test(u) ? u.replace(/\/$/, "") : c.cfg.arkServerUrl;
+  const url = (/^https:\/\/[a-z0-9.-]+(:\d+)?\/?$/i.test(u) || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/?$/i.test(u)) ? u.replace(/\/$/, "") : c.cfg.arkServerUrl;
   const spk = typeof s?.pubkey === "string" && /^[0-9a-f]{64}$/i.test(s.pubkey) ? s.pubkey.toLowerCase() : null;
   const dealKey = e?.serverPubkey ? String(e.serverPubkey).toLowerCase().slice(-64) : null;
   const warnings: string[] = [];
@@ -569,7 +569,7 @@ export async function fundArk(c: Ctx, id: string, o: FundArkOpts = {}) {
     ],
     dealCheck: check, ...((v as any).termsWarning ? { termsWarning: (v as any).termsWarning } : {}), ...(e.underpaid ? { underpaid: e.underpaid } : {}) };
   if (watchOnly) {
-    (base as any).payTo = null; base.howToPay = [`Too close to the deadline (${Math.max(0, left)} s left) to start a payment: do not pay now. Watching only for a payment you already sent.`];
+    (base as any).payTo = null; (base as any).escrowAddress = null; base.howToPay = [`Too close to the deadline (${Math.max(0, left)} s left) to start a payment: do not pay now. Watching only for a payment you already sent.`];
   }
   if (!o.wait) return { ...base, note: `pay from your Arkade wallet, then run: ${mk()} escrow fund ${id} --ark --wait (or check ${mk()} escrow status ${id})` };
   o.onInstructions?.(base);
@@ -585,8 +585,10 @@ export async function fundArk(c: Ctx, id: string, o: FundArkOpts = {}) {
     if (last.state === "expired") return { ...base, state: "expired", expiredAt: last.expiredAt ?? null, note: expiredNote(last) };
     if (last.state !== "created") return { ...base, state: last.state, note: `deal is ${last.state}. Check: ${mk()} escrow status ${id}` };
   }
+  const lateNow = watchOnly || (expiresAtMs(last) - Date.now()) / 1000 < ARK_FUND_MIN_SEC;
   return { ...base, timedOut: true, ...(last.underpaid ? { underpaid: last.underpaid } : {}),
-    note: last.underpaid ? `timeout: ${(last.underpaid as any).totalSats} sats arrived in payment(s) smaller than ${e.amountSats}; the deal is NOT funded. Pay ${e.amountSats} sats in ONE payment, or let it expire and refund. Check: ${mk()} escrow status ${id}`
+    note: lateNow ? `timeout: no full payment seen${last.underpaid ? ` (${(last.underpaid as any).totalSats} sats arrived in smaller payment(s); NOT funded)` : ""}. It is too close to the deadline to pay now: do not send anything. If you already paid, check ${mk()} escrow status ${id}; after expiry, sats at the address are refunded (${mk()} escrow refund ${id} --payout-lnaddr <you@wallet>)`
+    : last.underpaid ? `timeout: ${(last.underpaid as any).totalSats} sats arrived in payment(s) smaller than ${e.amountSats}; the deal is NOT funded. Pay ${e.amountSats} sats in ONE payment, or let it expire and refund. Check: ${mk()} escrow status ${id}`
       : `timeout: no full payment seen at ${e.address} yet. If you paid, run again: ${mk()} escrow fund ${id} --ark --wait` };
 }
 

@@ -118,7 +118,11 @@ test("review 2: near the deadline a chosen Ark rail never gets instructions agai
   let { c } = await ctx({ dealOf: near }); c.index.set("e1", { fundRail: "ark" });
   assert.equal(await code(uc.fundArk(c, "e1")), "DEADLINE_TOO_CLOSE", "no instructions, even on the chosen rail");
   const seen = []; const w = await uc.fundArk(c, "e1", { wait: true, timeoutSec: 0.05, pollMs: 5, onInstructions: (x) => seen.push(x) });
-  assert.equal(w.payTo, null); assert.match(w.howToPay[0], /do not pay now/); assert.equal(seen[0].payTo, null);
+  assert.equal(w.payTo, null); assert.equal(w.escrowAddress, null); assert.match(w.howToPay[0], /do not pay now/); assert.equal(seen[0].payTo, null);
+  ({ c } = await ctx({ dealOf: (c) => deal(c, { expiresAt: new Date(Date.now() + 120e3).toISOString(), underpaid: { vtxos: [{ outpoint: "cd:0", amount: 3000 }], totalSats: 3000, seenAt: "x" } }) })); c.index.set("e1", { fundRail: "ark" });
+  const u = await uc.fundArk(c, "e1", { wait: true, timeoutSec: 0.05, pollMs: 5 }); assert.equal(u.timedOut, true);
+  assert.match(u.note, /do not send anything/); assert.doesNotMatch(u.note, /Pay \d+ sats/); assert.match(u.note, /NOT funded/);
+  ({ c } = await ctx({ limits: LIM({ arkServer: { url: "http://evil.example", pubkey: MOCK_SERVER_PK } }) })); assert.equal((await uc.limits(c)).arkade.url, ARKD, "http only for localhost");
   ({ c } = await ctx({ dealOf: (c) => deal(c, { expiresAt: new Date(Date.now() - 5e3).toISOString() }) })); c.index.set("e1", { fundRail: "ark" });
   assert.equal(await code(uc.fundArk(c, "e1")), "DEADLINE_TOO_CLOSE", "past expiresAt while still created");
   ({ c } = await ctx()); const r = await uc.fundArk(c, "e1"); assert.match(r.howToPay.at(-1), /--switch-rail/, "Lightning fallback names the switch on the first call");
