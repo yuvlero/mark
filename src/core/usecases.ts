@@ -90,6 +90,8 @@ export async function arkadeServer(c: Ctx, e?: Escrow) { let lim: Limits | null 
 /** An Ark payout address: this network's prefix AND this deal's Arkade server key, else BAD_DEST naming the server. */
 async function arkDest(c: Ctx, addr: string, what: string, e?: Escrow | null) {
   const a = await arkadeServer(c, e ?? undefined);
+  // fail closed: without the deal's (or the server's) Arkade key only the prefix could be checked
+  if (!a.pubkey) throw new MarkError("BAD_DEST", `${what}: can't check the Ark address right now (the deal and the escrow server's /limits were unreachable, so the Arkade server key of ${a.url} is unknown). Try again when the escrow server answers. ${arkadeNote(a.url)}`, { reason: "arkade_key_unknown", arkServerUrl: a.url });
   return checkArkadeAddress(addr, { network: c.network, serverPubkey: a.pubkey, arkServerUrl: a.url, what });
 }
 
@@ -431,7 +433,7 @@ export async function fund(c: Ctx, id: string, o: FundOpts = {}) {
   const l = c.index.get(id);
   if (l.signedTermsHash && e.termsHash !== l.signedTermsHash) throw new MarkError("TERMS_CHANGED", `the server's deal hash ${e.termsHash} is not the termsHash I signed (${l.signedTermsHash}); refusing to fund`, { signed: l.signedTermsHash, server: e.termsHash });
   if (o.resumeClaim && o.wait) throw new MarkError("USAGE", "resumeClaim does not wait: call it without wait");
-  if (!l.fundSwap && l.fundRail === "ark" && !o.switchRail) throw new MarkError("FUNDING_IN_PROGRESS", `you chose direct Ark funding for this deal (${mk()} escrow fund ${id} --ark, ${l.fundArkAt ?? "earlier"}). A Lightning invoice as well could fund it twice. If you already paid the escrow address, run: ${mk()} escrow fund ${id} --ark --wait. If you did NOT pay it and will not, switch to Lightning: ${mk()} escrow fund ${id} --switch-rail`, { rail: "ark", since: l.fundArkAt ?? null });
+  if (l.fundRail === "ark" && !o.switchRail) throw new MarkError("FUNDING_IN_PROGRESS", `you chose direct Ark funding for this deal (${mk()} escrow fund ${id} --ark, ${l.fundArkAt ?? "earlier"}). A Lightning invoice as well could fund it twice. If you already paid the escrow address, run: ${mk()} escrow fund ${id} --ark --wait. If you did NOT pay it and will not, switch to Lightning: ${mk()} escrow fund ${id} --switch-rail`, { rail: "ark", since: l.fundArkAt ?? null });
   if (o.resumeClaim && !l.fundSwap) throw new MarkError("NOT_FOUND", `no funding swap recorded for escrow ${id} in this Mark home; nothing to resume. Run ${mk()} escrow fund ${id} from the Mark home (MARK_HOME) that created the invoice.`);
   // the address must be the 2-of-3 contract of the deal's keys (derived locally) and the arbiter attested by the pinned identity
   const check = await verifyDeal(c, e);
@@ -447,13 +449,17 @@ export async function fund(c: Ctx, id: string, o: FundOpts = {}) {
   if (!swapId) {
     // one funding swap per deal: a concurrent call (MCP, or a second process on this Mark home) waits and reuses it
     await withFundLock(c, id, async () => {
-      const again = c.index.get(id).fundSwap;
+      const cur = c.index.get(id), again = cur.fundSwap;
       if (again) { swapId = again; newSwap = false; return; }
+      // re-check the rail under the lock: a concurrent `fund --ark` may have just chosen direct Ark
+      if (cur.fundRail === "ark" && !o.switchRail) throw new MarkError("FUNDING_IN_PROGRESS", `direct Ark funding was just chosen for this deal (${mk()} escrow fund ${id} --ark). Pay that way, or if you paid nothing there: ${mk()} escrow fund ${id} --switch-rail`);
       const r = await s.createReceive(e.amountSats, e.address); swapId = r.id; invoice = r.invoice; swapStatus = r.status;
       // the invoice is public (BOLT11) and kept next to the swap id so a later `fund` can show it again while it is unpaid
       c.index.set(id, { fundSwap: swapId, role: l.role ?? myRole(c, e), fundRail: "lightning", ...(r.invoice ? { fundInvoice: r.invoice } : {}) });
     });
   }
+  // switching back to Lightning onto an existing swap: Lightning is this home's rail again
+  if (o.switchRail && c.index.get(id).fundRail !== "lightning") c.index.set(id, { fundRail: "lightning" });
   if (!newSwap) {
     // existing swap: its status decides whether the invoice is still payable (never offer an invoice that was already paid)
     let known = true;
@@ -520,7 +526,14 @@ export async function fundArk(c: Ctx, id: string, o: FundArkOpts = {}) {
   const e = await c.api.get(requireId(id));
   assertEscrowCap(c.cfg, e.amountSats);
   if (e.state === "expired") return { escrowId: id, rail: "ark", state: e.state, expiredAt: e.expiredAt ?? null, note: expiredNote(e) };
-  if (e.state !== "created") return { escrowId: id, rail: "ark", state: e.state, funding: e.funding ?? null, note: "already funded" };
+  if (e.state !== "created") {
+    // already funded on entry (e.g. paid, then `fund --ark --wait`): report the Ark rail for the ledger (idempotent server side)
+    let ledger: unknown;
+    if (FUNDED_STATES.has(e.state) && c.index.get(id).fundRail === "ark") {
+      try { ledger = await c.api.reportArkFunding(id); } catch (x: any) { ledger = { recorded: false, error: x?.code === "NOT_FOUND" ? "this escrow server does not record the Ark rail (older server)" : String(x?.message ?? x).slice(0, 200) }; }
+    }
+    return { escrowId: id, rail: "ark", state: e.state, funding: e.funding ?? null, note: "already funded", ...(ledger !== undefined ? { ledger } : {}) };
+  }
   const v = verifyDealTerms(c, e);
   if (!v.agreed) throw new MarkError("TERMS_NOT_ACCEPTED", v.hashVerified === false ? "terms hash mismatch; refusing to fund" : `both parties must accept the terms before funding (buyer: ${(v.accepted as any).buyer.accepted}, seller: ${(v.accepted as any).seller.accepted}). Run: ${mk()} escrow accept ${id}`, { accepted: v.accepted });
   const l = c.index.get(id);
@@ -528,14 +541,19 @@ export async function fundArk(c: Ctx, id: string, o: FundArkOpts = {}) {
   const check = await verifyDeal(c, e); // address = the 2-of-3 contract of the deal's keys, arbiter attested: never show an unchecked address
   const risk = l.fundRail === "ark" || (v.termsVersion === 2 && v.agreed) ? null : counterpartyRule(c, e, l.role ?? myRole(c, e));
   if (risk && !o.allowCounterpartyRule) throw new MarkError("UNSAFE_RULE", `refusing to fund: ${risk.warning} To fund anyway: ${mk()} escrow fund ${id} --ark --allow-counterparty-rule`, risk);
-  if (l.fundSwap && !o.switchRail) {
+  if (l.fundSwap && l.fundRail !== "ark" && !o.switchRail) {
     let st: string | undefined; try { st = (await (await c.swaps()).get(l.fundSwap)).status; } catch { st = undefined; }
     if (!st || !SWAP_FAILED.has(st)) throw new MarkError("FUNDING_IN_PROGRESS", `a Lightning funding invoice already exists for this deal (swap ${l.fundSwap}, status ${st ?? "unknown"}). Paying the escrow address by Ark as well could fund it twice. Continue with Lightning: ${mk()} escrow fund ${id}. Only if that invoice was NOT paid and will not be: ${mk()} escrow fund ${id} --ark --switch-rail`, { swapId: l.fundSwap, swapStatus: st ?? null });
   }
   const left = Math.floor((expiresAtMs(e) - Date.now()) / 1000);
   if (l.fundRail !== "ark" && left < ARK_FUND_MIN_SEC) throw new MarkError("DEADLINE_TOO_CLOSE", `refusing to fund: the deal expires in ${Math.max(0, left)} s (deadline ${e.deadline} + grace). A payment that lands later does not fund the deal and has to be refunded. Create a new deal with a later deadline.`, { expiresAt: new Date(expiresAtMs(e)).toISOString(), secondsLeft: Math.max(0, left), minSeconds: ARK_FUND_MIN_SEC });
   const ark = await arkadeServer(c, e);
-  if (l.fundRail !== "ark") c.index.set(id, { fundRail: "ark", fundArkAt: new Date().toISOString(), role: l.role ?? myRole(c, e) });
+  // choose the rail under the same lock as swap creation, so a concurrent `fund` can't issue an invoice at the same time
+  if (l.fundRail !== "ark") await withFundLock(c, id, async () => {
+    const cur = c.index.get(id);
+    if (cur.fundSwap && cur.fundSwap !== l.fundSwap && cur.fundRail !== "ark" && !o.switchRail) throw new MarkError("FUNDING_IN_PROGRESS", `a Lightning funding invoice was just created for this deal (swap ${cur.fundSwap}). Pay that invoice, or if you paid nothing there: ${mk()} escrow fund ${id} --ark --switch-rail`);
+    c.index.set(id, { fundRail: "ark", fundArkAt: new Date().toISOString(), role: l.role ?? myRole(c, e) });
+  });
   const expiresAt = new Date(expiresAtMs(e)).toISOString();
   const base = { escrowId: id, rail: "ark", state: e.state, escrowAddress: e.address, amountSats: e.amountSats, expiresAt,
     payTo: { address: e.address, amountSats: e.amountSats, arkServer: ark },

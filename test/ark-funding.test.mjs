@@ -89,3 +89,26 @@ test("MCP + help: every Ark field and the fund tool say Arkade server / not Bark
   const src = fs.readFileSync(new URL("../src/mcp.ts", import.meta.url), "utf8");
   assert.match(src, /rail: z\.enum\(\["lightning", "ark"\]\)/); assert.match(src, /Bark \/ Second Ark addresses will NOT work/); assert.match(src, /payoutArk: z\.string\(\)\.optional\(\)\.describe\(ARK_ONLY\)/);
 });
+
+test("review: rail transitions are authoritative; already-funded entry reports the Ark rail; refund-payout fails closed without a key", async () => {
+  // Lightning -> Ark (switch) -> plain fund refused; fund --ark --wait needs no second switch
+  let { c } = await ctx({ swaps: swapsWith("pending") }); c.index.set("e1", { fundSwap: "sw1", fundRail: "lightning" });
+  await uc.fundArk(c, "e1", { switchRail: true }); assert.equal(c.index.get("e1").fundRail, "ark");
+  assert.equal(await code(uc.fund(c, "e1")), "FUNDING_IN_PROGRESS", "old invoice not reopened after switching to Ark");
+  assert.equal((await uc.fundArk(c, "e1")).rail, "ark", "Ark again without --switch-rail");
+  // Ark -> Lightning (switch, reusing the swap) -> Ark refused without a switch
+  await uc.fund(c, "e1", { switchRail: true }).catch(() => {}); assert.equal(c.index.get("e1").fundRail, "lightning");
+  assert.equal(await code(uc.fundArk(c, "e1")), "FUNDING_IN_PROGRESS");
+  // paid, then `fund --ark` again: already funded -> rail reported once
+  let posted = 0;
+  ({ c } = await ctx({ dealOf: (c) => deal(c, { state: "funded", funding: { outpoint: "ab:0", amount: 5000 } }), routes: { "POST /escrows/e1/funding-ark": async () => { posted++; return [200, { escrowId: "e1", recorded: true, rail: "ark" }]; } } }));
+  c.index.set("e1", { fundRail: "ark" }); const r = await uc.fundArk(c, "e1", { wait: true, timeoutSec: 1, pollMs: 5 });
+  assert.equal(r.note, "already funded"); assert.equal(posted, 1); assert.equal(r.ledger.rail, "ark");
+  c.index.set("e1", { fundRail: "lightning" }); await uc.fundArk(c, "e1"); assert.equal(posted, 1, "not reported for a Lightning-funded deal");
+  // refund-payout with deal and /limits unreachable: no key -> refused, swaps.refund never called
+  let refunded = 0;
+  ({ c } = await ctx({ limits: null, routes: { "GET /escrows/e1": async () => [500, { error: "down", code: "ERROR" }] }, swaps: { ...swapsWith("pending"), refund: async () => { refunded++; return {}; } } }));
+  c.index.set("e1", { payoutSwap: "sw9" });
+  await assert.rejects(uc.refundPayout(c, "e1", payoutArk(4)), (e) => e.code === "BAD_DEST" && e.details.reason === "arkade_key_unknown" && e.message.includes(ARKD));
+  assert.equal(refunded, 0);
+});
