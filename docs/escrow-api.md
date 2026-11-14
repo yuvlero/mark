@@ -88,10 +88,11 @@ sig        = hex(schnorr(id_bytes, key))
   "acceptances": {"buyer": {"sig": "1eee…e95a", "at": "…"}}, "termsAccepted": {"buyer": true, "seller": false}, "termsAgreed": false,
   "fees": {"v": 2, "freeBelowSats": 3300, "flatSats": 0, "flatUntilSats": 33000, "feeBps": 100, "disputeFeeBps": 500, "disputeMinSats": 330, "dustSats": 330, "address": "tark1qq…"},
   "evidence": [], "proposals": [], "events": [{"at": "…", "type": "created", "data": {"termsHash": "36210e22…", "acceptedBy": ["buyer"]}}],
-  "funding": {"outpoint": "<txid>:<vout>", "amount": 5000, "seenAt": "…"},
+  "funding": {"outpoint": "<txid>:<vout>", "amount": 5000, "seenAt": "…", "rail": "ark"},
   "dispute": {"by": "buyer", "reason": "…", "at": "…"}, "ruling": {"outcome": "refund", "at": "…", "by": "…"}, "txid": "<ark txid>" }
 ```
-- `funding`, `dispute`, `ruling` and `txid` appear once they happen.
+- `funding`, `dispute`, `ruling` and `txid` appear once they happen. `funding.rail` (newer servers) is `"lightning"` once a funding swap was reported, `"ark"` once a direct Ark payment was reported (`POST /escrows/:id/funding-ark`), absent otherwise.
+- `underpaid` (newer servers, while `created`): `{"vtxos": [{"outpoint", "amount", …}], "totalSats", "seenAt"}`: payment(s) **smaller than `amountSats`** seen at the address. They never add up to funding; each new one adds an `underpaid` event and system message and alerts the operator. At expiry they become `partialFunding` and the buyer refunds them.
 - `expiresAt` = `deadline` + the expiry grace: an unfunded deal becomes `expired` then. Expired deals also carry `expiredAt`, and `partialFunding` / `fundedAfterExpiry` if sats reached the address (see "Expiry of unfunded deals").
 - `terms`, `termsHash` and `acceptances` are `null` on legacy deals.
 - `address` is the Ark address of the 2-of-3 contract.
@@ -187,6 +188,8 @@ expired ──(late or partial payment seen; buyer proposes a refund, buyer + ar
            "disputeFeeBps": 500, "disputeMinSats": 330, "terms": {"v": 2, …, "dustSats": 330, "address": "ark1…"}, "schedule": {…}},
   "satora": {"minSats": 335, "maxSats": 1000000, "fetchedAt": "…", "stale": false}, "note": "…",
   "expiry": {"graceSec": 3600, "expiredWatchSec": 604800, "note": "…"},
+  "arkServer": {"url": "https://arkade.computer", "pubkey": "<64 hex>", "network": "bitcoin", "addressPrefix": "ark1", "note": "This escrow runs on the Arkade server https://arkade.computer. …"},
+  "funding": {"rails": ["lightning", "ark"], "lightning": "…", "ark": "…"},
   "termsVersions": [1, 2], "arbiter": {"identityPubkey": "<64 hex>", "attestation": "mark-escrow-arbiter/1", "note": "…"},
   "client": {"minMarkVersion": null, "latestMarkVersion": "0.3.0", "refuseUnversioned": false,
              "upgrade": {"command": "npx -y @yuvlero/mark@latest", "global": "npm install -g @yuvlero/mark@latest", "mcp": "MCP: in your MCP client config set the mark server's args to [\"-y\", \"@yuvlero/mark@latest\", \"mcp\"] …, then restart the MCP client."}},
@@ -194,7 +197,7 @@ expired ──(late or partial payment seen; buyer proposes a refund, buyer + ar
                   "estimatedSwapCostSats": 38, "swapCostUpperBoundSats": 62, "payeeReceives": {"arkSats": 5000, "lightningSatsEstimate": 4962, "lightningSatsAtLeast": 4938, "ifDisputeRuledArkSats": 4670},
                   "minDealSats": 335, "maxDealSats": 1000000, "withinLimits": true, "schedule": {…} } }
 ```
-`client` is the Mark version policy (§7; `null` = not set; absent on older servers). `feePreview` is only present with `?sats=`. `estimatedSwapCostSats` (Lightning payouts only) = live Satora protocol fee (~0.3 %) + a routing allowance (0.5 %), a realistic figure (a 4,670-sat payout cost 36 in practice). `swapCostUpperBoundSats` = payee leg − the estimate quote's `recommendedInvoiceSats` (includes the safety margin). The exact cost per destination comes from `quote?dest=`. **Always read `minDealSats.enforced` before creating a deal**: it is 335 sats on mainnet (the Satora minimum), and test networks may differ (mutinynet: 1,000). Put `fees.terms` into the termsHash you sign.
+`arkServer` (newer servers) is **the Arkade server this escrow runs on**: its URL, its server key (x-only hex) and the Ark address prefix for this network. Every Ark address in this API (payouts, ruling `dest`, direct Ark funding) must come from an Arkade wallet on that server; an address made for another Ark server (Bark / Second, …) is refused with `BAD_DEST` (`details.reason`: `not_ark_address`, `wrong_network` or `wrong_ark_server`, plus `arkServerUrl`). Use Lightning instead. `funding` lists the funding rails. `client` is the Mark version policy (§7; `null` = not set; absent on older servers). `feePreview` is only present with `?sats=`. `estimatedSwapCostSats` (Lightning payouts only) = live Satora protocol fee (~0.3 %) + a routing allowance (0.5 %), a realistic figure (a 4,670-sat payout cost 36 in practice). `swapCostUpperBoundSats` = payee leg − the estimate quote's `recommendedInvoiceSats` (includes the safety margin). The exact cost per destination comes from `quote?dest=`. **Always read `minDealSats.enforced` before creating a deal**: it is 335 sats on mainnet (the Satora minimum), and test networks may differ (mutinynet: 1,000). Put `fees.terms` into the termsHash you sign.
 
 **Fee math (terms v2):**
 - Platform fee: 0 if `amount < freeBelowSats`; `flatSats` if `amount ≤ flatUntilSats`; otherwise `max(flatSats, ceil(amount × feeBps / 10000))`.
@@ -300,9 +303,10 @@ Reading also refreshes funding: `created → funded` once the address holds `amo
 (There is no separate terms endpoint: the terms are in the Escrow object; recompute `termsHash` yourself before signing.)
 
 ### Funding
-- `POST /escrows/:id/fund` → 200 `{"escrowId","arkAddress","amountSats","deadline","expiresAt","lightning":"<how-to>"}`. Returns `TERMS_NOT_ACCEPTED` (`details.missing`) until both parties accepted, and `EXPIRED` for an expired deal. Pay well before `expiresAt`: a payment that lands later does not fund the deal and has to be refunded.
-- **Ark:** send `amountSats` to `arkAddress`.
+- `POST /escrows/:id/fund` → 200 `{"escrowId","arkAddress","amountSats","deadline","expiresAt","lightning":"<how-to>","ark":"<how-to>","arkServer":{url,pubkey,network,addressPrefix,note}}` (`ark` / `arkServer` on newer servers). Returns `TERMS_NOT_ACCEPTED` (`details.missing`) until both parties accepted, and `EXPIRED` for an expired deal. Pay well before `expiresAt`: a payment that lands later does not fund the deal and has to be refunded.
+- **Ark (direct, no swap fee):** from an **Arkade wallet on this escrow's Arkade server** (`arkServer.url`; Bark / Second wallets cannot pay it), send exactly `amountSats` to `arkAddress` in **ONE payment**. The deal is funded once the address holds one spendable coin of at least `amountSats`: smaller payments are **not added up** (see `underpaid`), a larger one funds the deal and is held whole (a release pays all of it to the seller, minus the platform fee), and a payment after `expiresAt` does not fund the deal (`fundedAfterExpiry` / `partialFunding`, refunded to the buyer). Mark: `mark escrow fund <id> --ark [--wait]`.
 - **Lightning (non-custodial):** the funder creates a Satora Lightning→Arkade swap whose claim target is `arkAddress`, pays its invoice, and claims the swap into the address. The funder keeps the claim key. Mark's `escrow fund` does exactly this.
+- `POST /escrows/:id/funding-ark` `{}` → 200 `{"escrowId","recorded":true|false,"rail","entry"?,"reason"?}` (newer servers; older ones answer 404). Optional, after a direct Ark payment funded the deal: records the deal's funding ledger row as rail `ark` with fee 0, from the funding coin the server itself saw. `NOT_FUNDED` while the deal is unfunded. Never replaces a recorded Lightning funding swap (`recorded: false`, `rail: "lightning"`); idempotent. Rate limited like `funding-swap`.
 - `POST /escrows/:id/funding-swap` `{"swapId"}` → 200 `{"escrowId","recorded":true|false}`. Optional: records the funding swap's fees for the deal's ledger. The swap must target this escrow's address (`BAD_SWAP`).
 
 ### GET /escrows/:id/quote?path=release|refund[&dest=<lnaddr|bolt11>] → 200
@@ -330,6 +334,7 @@ Reading also refreshes funding: `created → funded` once the address holds `amo
 ```
 - **The payee proposes:** the seller for `release`, the buyer for `refund` (`FORBIDDEN` otherwise).
 - `signers`: exactly 2. Either `["buyer","seller"]`, or `[payee,"arbiter"]` (`BAD_SIGNERS`).
+- **Ark payouts:** `payout.address` must be an Ark address for this network (`ark1…` mainnet, `tark1…` mutinynet) **whose encoded server key is the deal's `serverPubkey`**, i.e. from an Arkade wallet on this escrow's Arkade server (`GET /limits` → `arkServer`). Others (Bark / Second, other Ark servers) are refused with `BAD_DEST` before anything is built; the same check applies to a ruling `dest`. Use a Lightning payout instead.
 - **Lightning payouts:** the payee first creates a Satora **Arkade→Lightning** swap and keeps its refund key.
   - For an invoice, the swap pays that BOLT11, whose amount is within the quote range.
   - For an lnaddr, use `source_amount = payeeLegSats`.
@@ -337,7 +342,7 @@ Reading also refreshes funding: `created → funded` once the address holds `amo
   - The invoice must have more than 10 minutes left (`INVOICE_EXPIRED`).
   - The proposal pays the swap's VHTLC address.
 - The tx outputs are exactly **payee leg → `dest`** plus **fee → `fees.address`** (when fee > 0). Verify this before signing.
-- Other errors: `BAD_STATE`, `BAD_DEST`, `BAD_INVOICE`, `AMOUNTLESS_INVOICE_UNSUPPORTED` (`details.setInvoiceAmountSats`), `BAD_SWAP`, `SWAP_LOOKUP_FAILED`, `UNAUTHORIZED`.
+- Other errors: `BAD_STATE`, `BAD_DEST` (an Ark address also when it is not on this escrow's Arkade server, see `GET /limits` → `arkServer`), `NOT_FUNDED`, `BAD_INVOICE`, `AMOUNTLESS_INVOICE_UNSUPPORTED` (`details.setInvoiceAmountSats`), `BAD_SWAP`, `SWAP_LOOKUP_FAILED`, `UNAUTHORIZED`.
 
 ### GET /escrows/:id/proposals/:pid → 200 Proposal
 Includes `arkTx` and `checkpoints` to sign.
@@ -377,7 +382,7 @@ Includes `arkTx` and `checkpoints` to sign.
 - Poll with `since=<cursor>` to get only newer messages.
 - **Verify every message:** recompute `messageId` from `(escrowId, author, ts, body, kind?, replyTo?)` and check `sig` against the `arbiterPubkey` (operator) or party key **from `GET /escrows/:id`**, not from this response. Drop failures.
 - `flag` marks a message the operator flagged as a duplicate or hidden. The message itself stays.
-- **System messages** (author `operator`, kind `system`, `extra.event`): `funded`, `expired`, `funded_after_expiry`, `partial_funding` (after expiry), `disputed`, `ruled` (outcome, who, fee breakdown, next step), `released`/`refunded` (amount, fee, txid), and evidence notes (`kind: "evidence"`).
+- **System messages** (author `operator`, kind `system`, `extra.event`): `funded`, `expired`, `funded_after_expiry`, `partial_funding` (after expiry), `underpaid` (a payment smaller than `amountSats` while `created`), `disputed`, `ruled` (outcome, who, fee breakdown, next step), `released`/`refunded` (amount, fee, txid), and evidence notes (`kind: "evidence"`).
 
 There is no inbox endpoint: keep your own cursor per deal (Mark's `escrow inbox` does this locally).
 
@@ -405,6 +410,7 @@ If `webhookUrl` was set at create, the server POSTs best-effort (no retries) JSO
 | `warning` | `{code: "FUNDED_BEFORE_TERMS_ACCEPTED", missing}` |
 | `expired` | `{deadline, graceSec, partialFundingSats?}` |
 | `partial_funding` | `{totalSats, amountSats, vtxos:[{outpoint, amount}], afterExpiry?}` |
+| `underpaid` | `{totalSats, amountSats, vtxos:[{outpoint, amount}]}` (newer servers; the deal stays `created`) |
 | `funded_after_expiry` | `{outpoint, amount, expiredAt}` |
 | `proposed` | `{proposalId, kind, signers, dest, payout:{type,sats,swapId}, feeOutputSats?, feeReason?}` |
 | `signed` | `{proposalId, party, note?}` |

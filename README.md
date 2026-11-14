@@ -41,7 +41,9 @@ Add `--network mutinynet` to test without real money. The whole flow is in the [
 
 ## How it works
 
-Mark is a command-line tool and MCP server. It lets an AI agent buy or sell something from another agent through a **non-custodial 2-of-3 escrow** on [Arkade](https://arkadeos.com/) (Bitcoin), with **Lightning in and Lightning out** through [Satora](https://satora.io) swaps.
+Mark is a command-line tool and MCP server. It lets an AI agent buy or sell something from another agent through a **non-custodial 2-of-3 escrow** on [Arkade](https://arkadeos.com/) (Bitcoin), with **Lightning in and Lightning out** through [Satora](https://satora.io) swaps, or **directly on Ark** from an Arkade wallet.
+
+> **This escrow runs on the Arkade server** `https://arkade.computer` (mainnet; `mark escrow limits` → `arkade` shows the URL and server key for your escrow server). Every Ark address you give Mark (`--payout-ark`, `refund-payout --to`) or pay to (`fund --ark`) must belong to **an Arkade wallet on that server**. **Bark / Second Ark addresses will NOT work** (different Ark server; Ark payments only work within one Ark): use Lightning instead. Mark checks the prefix and the server key inside every Ark address and refuses others with `BAD_DEST` naming the server.
 
 - **Three keys:** buyer, seller, and the escrow service's **arbiter**. Any payout needs 2 of the 3 signatures. The service holds only the arbiter key, so it can never move funds alone.
 - **Happy path:** buyer and seller sign the payout together. The arbiter only signs to settle a timeout refund, an automatic rule, or a ruled dispute.
@@ -80,7 +82,7 @@ Below, `mark` means any of these.
 
 **It works out of the box:** on mainnet (`bitcoin`, the default network) Mark uses the production server **https://agentescrow.to**. Sanity check (read-only):
 ```bash
-mark escrow limits          # GET https://agentescrow.to/limits → minDealSats, fees, Satora limits
+mark escrow limits          # GET https://agentescrow.to/limits → minDealSats, fees, Satora limits, arkade (the Arkade server URL + key)
 curl -s https://agentescrow.to/health    # {"ok":true,"network":"bitcoin",…}
 ```
 Override (e.g. a self-hosted or test server), highest precedence first:
@@ -249,6 +251,25 @@ mark escrow fund <id>
 - **Fund in time.** `fund` refuses with `DEADLINE_TOO_CLOSE` when less than an invoice lifetime (1 hour) is left before the deal expires (deadline + 1 h grace). On an expired deal it prints `"note":"expired: …"` instead of creating an invoice, and `fund --wait` never claims a payment into a deal that expired meanwhile (the unclaimed swap times out and the Lightning payment is not settled).
 - **Paid too late or only partly?** The deal stays `expired`: it is never revived. The server records the sats (`fundedAfterExpiry` or `partialFunding`) and alerts the operator. As the buyer, get them back with `mark escrow refund <id> --payout-lnaddr you@wallet` (buyer + arbiter; the auto arbiter co-signs, a manual-mode deal waits for the operator's refund ruling).
 
+### 4.4b Buyer funds straight from an Arkade wallet (`--ark`, no swap fee)
+**This escrow runs on the Arkade server** (mainnet: `https://arkade.computer`; `mark escrow limits` shows `arkade.url` and `arkade.pubkey`). If your agent has an **Arkade wallet on that server**, it can pay the escrow address directly: no Lightning swap, no swap fee.
+```bash
+mark escrow fund <id> --ark          # prints escrowAddress, the exact amountSats and the Arkade server (url + key)
+mark escrow fund <id> --ark --wait   # after you paid: waits until the server sees the payment (default 900 s, --timeout)
+```
+```json
+{"escrowId":"0129…","rail":"ark","escrowAddress":"ark1…","amountSats":5000,"expiresAt":"…",
+ "payTo":{"address":"ark1…","amountSats":5000,"arkServer":{"url":"https://arkade.computer","pubkey":"…","addressPrefix":"ark1"}},
+ "howToPay":["Send exactly 5000 sats to ark1… in ONE payment, from an Arkade wallet on https://arkade.computer …", "…"]}
+```
+- **Only an Arkade wallet on this escrow's Arkade server can pay it.** Bark / Second Ark wallets (Second's Ark server) and any other Ark server **cannot**: Ark payments only work inside one Ark. With Bark, fund over Lightning (`mark escrow fund <id>`, then `bark send <bolt11>`).
+- **Pay `amountSats` in ONE payment.** The deal is funded by one coin of at least `amountSats` at the escrow address. Smaller payments are **not added up**: the deal stays `created`, `escrow status` shows `underpaid` (the buyer and the operator are told), and the sats are refunded after the deal expires (`mark escrow refund <id> …`). Do not "top up" with the difference.
+- **Overpaid?** One larger payment funds the deal and the whole coin is held; a release pays all of it to the seller (minus the platform fee). Pay the exact amount.
+- **Late?** Same as Lightning: a payment after `expiresAt` does not fund the deal; it is recorded (`fundedAfterExpiry` / `partialFunding`) and refunded to the buyer.
+- Mark runs the same local deal check as for Lightning (terms hash, arbiter attestation, the address derived from the deal's keys) before it shows the address, and refuses with `DEADLINE_TOO_CLOSE` when less than 10 minutes are left. Mark never sends anything itself.
+- **One rail per deal.** After `fund --ark`, a plain `fund` refuses (`FUNDING_IN_PROGRESS`) so you do not pay twice; and `fund --ark` refuses while a Lightning invoice for the deal may still be paid. Switch only if nothing was paid on the other rail: add `--switch-rail`.
+- With `--wait`, once the deal is funded Mark tells the server it was a direct Ark payment, so the deal's funding ledger records rail `ark` with fee 0 (older servers: `ledger.recorded: false`, nothing else changes).
+
 ### 4.5 Seller delivers
 **Do NOT deliver before `state` is `funded`** (`awaiting: delivery`). `created` means agreed but unfunded; `expired` means it was never funded and never will be.
 
@@ -278,7 +299,7 @@ mark escrow quote <id> --dest seller@walletofsatoshi.com   # or --dest <any bolt
 mark escrow approve <id> --payout-invoice lnbc49800n1…
 ```
 - Without `--dest` the quote is an **estimate** (`quoteType: "estimate"`, routing fees vary by destination), and `recommendedInvoiceSats` already subtracts a safety margin.
-- **Option C: Ark address:** `--payout-ark ark1…`. You receive `payeeLegSats` (escrow minus platform fee), with no swap fee.
+- **Option C: Ark address:** `--payout-ark ark1…`. You receive `payeeLegSats` (escrow minus platform fee), with no swap fee. **Only an address from an Arkade wallet on this escrow's Arkade server** (mainnet `https://arkade.computer`; see `mark escrow limits` → `arkade`). Mark checks the address prefix (`ark1` mainnet, `tark1` mutinynet) and the Arkade server key inside the address before anything is signed, and refuses others with `BAD_DEST` naming the server. A Bark / Second Ark address will NOT work: use Option A or B instead.
 
 The seller's approve **proposes and signs**. Then the buyer co-signs:
 ```bash
@@ -345,6 +366,7 @@ Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL` (https; http onl
 | `mark escrow accept <id> [--allow-counterparty-rule]` | Verify `termsHash`, the escrow address and the arbiter attestation locally, then sign (prints `awaiting`, `action_required_for`, `dealCheck`). A buyer needs `--allow-counterparty-rule` for a rule the seller chose (v2) |
 | `mark escrow limits [--sats N]` | Limits, fee schedule, fee preview |
 | `mark escrow fund <id> [--wait] [--timeout sec] [--allow-counterparty-rule]` | Lightning invoice to fund (shown again while unpaid); `--wait` claims into the escrow. Refuses (`UNSAFE_RULE`) a deal whose auto-release rule the seller chose (its own hash lock, or any webhook rule) unless `--allow-counterparty-rule` |
+| `mark escrow fund <id> --ark [--wait] [--timeout sec] [--switch-rail]` | Direct Ark payment, no swap fee: prints `escrowAddress`, the exact `amountSats` and the Arkade server (`payTo.arkServer`). Pay it in ONE payment from an Arkade wallet on that server (not Bark / Second). `--wait` polls until funded and records rail `ark`. `--switch-rail`: only if nothing was paid on the other rail (also on plain `fund`) |
 | `mark escrow fund <id> --resume-claim` | Paid, but the claim into the escrow failed or did not finish (`claimFailed`, or a timeout at `serverfunded` / `clientredeeming`): finish or retry it. Never creates an invoice |
 | `mark escrow status <id>` | Full deal state, proposals, events, local swap status, `awaiting`, `action_required_for`, `arbiterPolicy` |
 | `mark escrow quote <id> [--path release\|refund] [--dest <lnaddr\|bolt11>]` | Payout amounts; exact with `--dest` |
@@ -374,7 +396,7 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 | `escrow_reputation` (pubkey) | `reputation <pubkey>` |
 | `escrow_pending` (id? — omit for all my deals) | `escrow pending [<id>]` |
 | `escrow_limits` (sats?) | `escrow limits` |
-| `escrow_fund` (id, wait?, allowCounterpartyRule?, resumeClaim?) | `escrow fund` (`resumeClaim` = `--resume-claim`) |
+| `escrow_fund` (id, rail?, wait?, allowCounterpartyRule?, switchRail?, resumeClaim?) | `escrow fund` (`rail: "ark"` = `--ark`, `switchRail` = `--switch-rail`, `resumeClaim` = `--resume-claim`) |
 | `escrow_quote` (id, path?, dest?) | `escrow quote` |
 | `escrow_approve` (id, payoutInvoice? / payoutLnaddr? / payoutArk?, kind?, with?, preimage?) | `escrow approve` |
 | `escrow_refund` (id, payout…, with?) | `escrow refund` |

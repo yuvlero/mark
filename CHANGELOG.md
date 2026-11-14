@@ -2,6 +2,24 @@
 
 All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-escrow. Dates are UTC+4 (Dubai). Versions follow semver; 0.x releases may change behaviour between minor versions.
 
+## [0.4.0] - 2026-11-14
+
+**New: fund a deal straight from an Arkade wallet** (no Lightning swap, no swap fee), and Mark now says everywhere that the escrow runs on **the Arkade server** (mainnet `https://arkade.computer`): only Ark addresses from an Arkade wallet on that server work. Bark / Second Ark addresses do not: use Lightning.
+
+### Added
+- `mark escrow fund <id> --ark [--wait] [--timeout sec]` (MCP: `escrow_fund` with `rail: "ark"`). Runs the same local deal check as Lightning funding (terms hash, arbiter attestation, the address derived from the deal's keys), then prints `escrowAddress`, the exact `amountSats`, `expiresAt` and the Arkade server (`payTo.arkServer`: URL, server key, address prefix) with `howToPay`. Mark sends nothing: the buyer pays from its own Arkade wallet, in ONE payment. `--wait` polls the deal until it is funded, reports `overpaidSats` for a larger coin, and tells the server the rail (`POST /escrows/:id/funding-ark`, so the funding ledger says rail `ark`, fee 0; older servers: `ledger.recorded: false`). A timeout with a smaller payment at the address says so (`underpaid`): smaller payments are not added up. Refuses with `DEADLINE_TOO_CLOSE` under 10 minutes before expiry.
+- One rail per deal: after `fund --ark`, a plain `fund` refuses with `FUNDING_IN_PROGRESS`, and `fund --ark` refuses while a Lightning funding invoice for the deal may still be paid (an unknown swap status counts as payable). `--switch-rail` (MCP `switchRail`) switches, only if nothing was paid on the other rail.
+- `mark escrow limits` → `arkade`: the Arkade server URL and key (from the server's `GET /limits` → `arkServer` on servers with it, else Mark's network preset; a junk URL from the server is ignored), the address prefix and a note.
+- Deal fields from newer servers: `underpaid` (payments smaller than `amountSats` while `created`) and `funding.rail`.
+
+### Changed
+- Every Ark address is checked before anything is signed or sent: `--payout-ark` (approve / refund), `refund-payout --to` and config `refundArkAddress` must have this network's prefix (`ark1` mainnet, `tark1` mutinynet) **and** the deal's Arkade server key encoded in the address. Others fail with `BAD_DEST`; the message names the Arkade server, says Bark / Second addresses will not work and to use Lightning (`details.reason`: `not_ark_address`, `wrong_network`, `wrong_ark_server`). Before, only the `ark1` / `tark1` prefix was checked and the server refused the payout later (or, with an address from another Ark server, could not pay it).
+- Help, `show` / `accept` next steps, MCP tool and field descriptions, README, the agent skill, the quickstart and AGENTS.md say plainly that the escrow runs on the Arkade server and that Bark / Second addresses will not work.
+- `src/core/arkAddress.ts` is shared byte-for-byte (apart from the error class) with the escrow server (parity-tested there).
+
+### Compatibility
+- Works with older escrow servers: `fund --ark` needs nothing new from the server (it pays the escrow address the server already published); only the ledger rail report and `underpaid` need a newer server. Without `arkServer` in `/limits`, Mark uses its network preset URL and the deal's server key.
+
 ## [0.3.1] - 2026-11-09
 
 **Urgent fix for funding.** With Mark 0.3.0 a buyer's claim of the paid Lightning swap into the escrow could fail with `Failed to execute offchain Arkade claim: INVALID_CHECKPOINT_PSBT (2): malformed checkpoint psbt`, and every retry then said only `All VTXOs have already been spent.` The sats were not lost (they sat in the swap or in an unfinished claim), but the deal stayed unfunded. Update Mark itself (see README, "Upgrading to 0.3.1"): `npm update @satora/swap` does not replace the copy Mark's shrinkwrap pins.
