@@ -127,3 +127,12 @@ test("review 2: near the deadline a chosen Ark rail never gets instructions agai
   assert.equal(await code(uc.fundArk(c, "e1")), "DEADLINE_TOO_CLOSE", "past expiresAt while still created");
   ({ c } = await ctx()); const r = await uc.fundArk(c, "e1"); assert.match(r.howToPay.at(-1), /--switch-rail/, "Lightning fallback names the switch on the first call");
 });
+
+test("server classifies the rail: an old Lightning swap in this home is reported first, then the funding-ark nudge", async () => {
+  const order = [];
+  const { c } = await ctx({ dealOf: (c) => deal(c, { state: "funded", funding: { outpoint: "ab:0", amount: 5000 } }), routes: {
+    "POST /escrows/e1/funding-swap": async () => { order.push("swap"); return [200, { escrowId: "e1" }]; },
+    "POST /escrows/e1/funding-ark": async () => { order.push("ark"); return [200, { escrowId: "e1", recorded: true, rail: "ark" }]; } } });
+  c.index.set("e1", { fundRail: "ark", fundSwap: "11111111-2222-3333-4444-555555555555" });
+  const r = await uc.fundArk(c, "e1"); assert.deepEqual(order, ["swap", "ark"]); assert.equal(r.ledger.rail, "ark");
+});

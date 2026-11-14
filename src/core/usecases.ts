@@ -518,6 +518,14 @@ export async function fund(c: Ctx, id: string, o: FundOpts = {}) {
 
 /** Least time before expiresAt for direct Ark funding (an Ark payment settles in seconds; the margin covers a slow wallet). */
 export const ARK_FUND_MIN_SEC = 600;
+/** After an Ark-rail funding: let the server classify the funding coin. If this home also has a Lightning funding swap (an
+ *  invoice from before --switch-rail), report it first so the server can check it at Satora: the server records Lightning only if
+ *  that swap's claim created the funding coin, else Ark (fee 0). Mark never decides the rail; best effort, never throws. */
+async function reportArkRail(c: Ctx, id: string): Promise<unknown> {
+  const sw = c.index.get(id).fundSwap;
+  if (sw) { try { await c.api.reportFundingSwap(id, sw); } catch { /* the server re-checks it on the next call anyway */ } }
+  try { return await c.api.reportArkFunding(id); } catch (x: any) { return { recorded: false, error: x?.code === "NOT_FOUND" ? "this escrow server does not record the Ark rail (older server)" : String(x?.message ?? x).slice(0, 200) }; }
+}
 export interface FundArkOpts { wait?: boolean; timeoutSec?: number; pollMs?: number; allowCounterpartyRule?: boolean; switchRail?: boolean; onInstructions?: (x: unknown) => void }
 /** Fund by a direct Ark payment (no swap, no swap fee): show the escrow address, the exact sats and the Arkade server; with `wait`,
  *  poll the deal until the server sees ONE payment >= amountSats there (then report the rail for the ledger). Mark sends nothing:
@@ -530,7 +538,7 @@ export async function fundArk(c: Ctx, id: string, o: FundArkOpts = {}) {
     // already funded on entry (e.g. paid, then `fund --ark --wait`): report the Ark rail for the ledger (idempotent server side)
     let ledger: unknown;
     if (FUNDED_STATES.has(e.state) && c.index.get(id).fundRail === "ark") {
-      try { ledger = await c.api.reportArkFunding(id); } catch (x: any) { ledger = { recorded: false, error: x?.code === "NOT_FOUND" ? "this escrow server does not record the Ark rail (older server)" : String(x?.message ?? x).slice(0, 200) }; }
+      ledger = await reportArkRail(c, id);
     }
     return { escrowId: id, rail: "ark", state: e.state, funding: e.funding ?? null, note: "already funded", ...(ledger !== undefined ? { ledger } : {}) };
   }
@@ -579,7 +587,7 @@ export async function fundArk(c: Ctx, id: string, o: FundArkOpts = {}) {
     try { last = await c.api.get(id); } catch { continue; } // a transient server error does not end the wait
     if (FUNDED_STATES.has(last.state)) {
       const f = last.funding; let ledger: unknown = null;
-      try { ledger = await c.api.reportArkFunding(id); } catch (x: any) { ledger = { recorded: false, error: x?.code === "NOT_FOUND" ? "this escrow server does not record the Ark rail (older server)" : String(x?.message ?? x).slice(0, 200) }; }
+      ledger = await reportArkRail(c, id);
       return { ...base, state: last.state, funded: true, funding: f ?? null, ...(f && f.amount > e.amountSats ? { overpaidSats: f.amount - e.amountSats, overpayNote: "the whole coin is held by the escrow" } : {}), ...(last.underpaid ? { underpaid: last.underpaid } : {}), ledger, escrow: last };
     }
     if (last.state === "expired") return { ...base, state: "expired", expiredAt: last.expiredAt ?? null, note: expiredNote(last) };
