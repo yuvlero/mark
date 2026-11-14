@@ -134,5 +134,10 @@ test("server classifies the rail: an old Lightning swap in this home is reported
     "POST /escrows/e1/funding-swap": async () => { order.push("swap"); return [200, { escrowId: "e1" }]; },
     "POST /escrows/e1/funding-ark": async () => { order.push("ark"); return [200, { escrowId: "e1", recorded: true, rail: "ark" }]; } } });
   c.index.set("e1", { fundRail: "ark", fundSwap: "11111111-2222-3333-4444-555555555555" });
-  const r = await uc.fundArk(c, "e1"); assert.deepEqual(order, ["swap", "ark"]); assert.equal(r.ledger.rail, "ark");
+  const r = await uc.fundArk(c, "e1"); assert.deepEqual(order, ["ark"], "pending (unclaimed) old swap: not reported"); assert.equal(r.ledger.rail, "ark");
+  const { c: c2 } = await ctx({ swaps: swapsWith("clientredeemed"), dealOf: (c) => deal(c, { state: "funded", funding: { outpoint: "ab:0", amount: 5000 } }), routes: {
+    "POST /escrows/e1/funding-swap": async () => { order.push("swap"); return [200, { escrowId: "e1" }]; },
+    "POST /escrows/e1/funding-ark": async () => { order.push("ark"); return [200, { escrowId: "e1", recorded: false, rail: "lightning" }]; } } });
+  order.length = 0; c2.index.set("e1", { fundRail: "ark", fundSwap: "11111111-2222-3333-4444-555555555555" });
+  await uc.fundArk(c2, "e1"); assert.deepEqual(order, ["swap", "ark"], "claimed old swap: reported first, the server decides");
 });

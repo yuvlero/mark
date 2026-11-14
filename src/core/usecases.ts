@@ -519,11 +519,12 @@ export async function fund(c: Ctx, id: string, o: FundOpts = {}) {
 /** Least time before expiresAt for direct Ark funding (an Ark payment settles in seconds; the margin covers a slow wallet). */
 export const ARK_FUND_MIN_SEC = 600;
 /** After an Ark-rail funding: let the server classify the funding coin. If this home also has a Lightning funding swap (an
- *  invoice from before --switch-rail), report it first so the server can check it at Satora: the server records Lightning only if
+ *  invoice from before --switch-rail) that was claimed into the escrow, report it first so the server can check it at Satora: the server records Lightning only if
  *  that swap's claim created the funding coin, else Ark (fee 0). Mark never decides the rail; best effort, never throws. */
 async function reportArkRail(c: Ctx, id: string): Promise<unknown> {
+  // only a swap that was claimed into the escrow can have made the funding coin; an unpaid, unclaimed or failed one is not reported
   const sw = c.index.get(id).fundSwap;
-  if (sw) { try { await c.api.reportFundingSwap(id, sw); } catch { /* the server re-checks it on the next call anyway */ } }
+  if (sw) { try { const st = (await (await c.swaps()).get(sw)).status; if (SWAP_DONE.has(st)) await c.api.reportFundingSwap(id, sw); } catch { /* best effort */ } }
   try { return await c.api.reportArkFunding(id); } catch (x: any) { return { recorded: false, error: x?.code === "NOT_FOUND" ? "this escrow server does not record the Ark rail (older server)" : String(x?.message ?? x).slice(0, 200) }; }
 }
 export interface FundArkOpts { wait?: boolean; timeoutSec?: number; pollMs?: number; allowCounterpartyRule?: boolean; switchRail?: boolean; onInstructions?: (x: unknown) => void }
