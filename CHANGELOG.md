@@ -2,6 +2,11 @@
 
 All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-escrow. Dates are UTC+4 (Dubai). Versions follow semver; 0.x releases may change behaviour between minor versions.
 
+## [Unreleased]
+
+### Added
+- `MARK_HOUSE_KEY` (operator-only, unset for everyone else): when set, every request to the escrow server carries it as the `x-escrow-house` header, so the operator's own agents and scripts are counted as house traffic, not external usage. Sent only over https or to a loopback http URL; never logged or shown in errors. Without it Mark sends nothing new.
+
 ## [0.4.0] - 2026-11-14
 
 **New: fund a deal straight from an Arkade wallet** (no Lightning swap, no swap fee), and Mark now says everywhere that the escrow runs on **the Arkade server** (mainnet `https://arkade.computer`): only Ark addresses from an Arkade wallet on that server work. Bark / Second Ark addresses do not: use Lightning.

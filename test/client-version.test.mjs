@@ -4,7 +4,7 @@ import test from "node:test"; import assert from "node:assert/strict";
 import fs from "node:fs"; import path from "node:path"; import http from "node:http"; import { spawn } from "node:child_process";
 import * as uc from "../dist/src/core/usecases.js";
 import { openCtx } from "../dist/src/core/context.js";
-import { EscrowApi, upgradeRequired, UPGRADE_HINT, safeUpgrade, plainText } from "../dist/src/api/escrowApi.js";
+import { EscrowApi, upgradeRequired, UPGRADE_HINT, safeUpgrade, plainText, houseHeader } from "../dist/src/api/escrowApi.js";
 import { MARK_VERSION, MARK_USER_AGENT } from "../dist/src/version.js";
 import { compareSemver, parseSemver, semverLt } from "../dist/src/core/semver.js";
 import { rememberPolicy, cachedPolicy, noticeFor, updateNotice, VERSION_POLICY_TTL_MS, RETRY_MS, NOTICE_TIMEOUT_MS } from "../dist/src/core/clientVersion.js";
@@ -33,6 +33,25 @@ test("every request sends x-mark-version and User-Agent mark/<version> (read fro
   assert.equal(f.calls.length, 3);
   for (const c of f.calls) { assert.equal(c.headers["x-mark-version"], pkg.version); assert.equal(c.headers["user-agent"], `mark/${pkg.version}`); }
   assert.equal(f.calls[2].headers["x-mark-sig"], "s", "auth headers still sent");
+});
+
+test("MARK_HOUSE_KEY (operator-only): sent as x-escrow-house on every request over https / loopback http; unset sends nothing; never in errors", async () => {
+  const K = "test-only-dummy-house-key-0123456789abcdef";
+  assert.deepEqual(houseHeader(URL_, {}), {}); assert.deepEqual(houseHeader(URL_, { MARK_HOUSE_KEY: "  " }), {});
+  assert.deepEqual(houseHeader(URL_, { MARK_HOUSE_KEY: K }), { "x-escrow-house": K }); assert.deepEqual(houseHeader("http://127.0.0.1:4783", { MARK_HOUSE_KEY: K }), { "x-escrow-house": K });
+  assert.deepEqual(houseHeader("http://escrow.example", { MARK_HOUSE_KEY: K }), {}, "never in clear text over the network");
+  assert.deepEqual(houseHeader(URL_, { MARK_HOUSE_KEY: "a\nb" }), {}); assert.deepEqual(houseHeader("not a url", { MARK_HOUSE_KEY: K }), {});
+  const prev = process.env.MARK_HOUSE_KEY;
+  try {
+    const f = mockFetch({ "GET /limits": () => [200, LIMITS()] }); await new EscrowApi(URL_, f).limits(); assert.equal(f.calls[0].headers["x-escrow-house"], undefined, "unset: no header");
+    process.env.MARK_HOUSE_KEY = K;
+    const g = mockFetch({ "GET /limits": () => [200, LIMITS()], "GET /escrows/e1": () => [404, { error: "nope", code: "NOT_FOUND" }] }); const api = new EscrowApi(URL_, g);
+    await api.limits(); const e = await api.get("e1").then(() => null, (x) => x);
+    for (const c of g.calls) { assert.equal(c.headers["x-escrow-house"], K); assert.equal(c.headers["x-mark-version"], pkg.version); }
+    assert.ok(!JSON.stringify({ m: e.message, d: e.details }).includes(K), "not in the error");
+    const down = await new EscrowApi(URL_, async () => { throw new Error("connect ECONNREFUSED"); }).limits().then(() => null, (x) => x);
+    assert.equal(down.code, "ESCROW_UNREACHABLE"); assert.ok(!down.message.includes(K));
+  } finally { if (prev === undefined) delete process.env.MARK_HOUSE_KEY; else process.env.MARK_HOUSE_KEY = prev; }
 });
 
 test("426 UPGRADE_REQUIRED: clear error with the update command and MCP hint (also when the body is not JSON)", async () => {
