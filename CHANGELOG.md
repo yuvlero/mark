@@ -5,7 +5,7 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 ## [Unreleased]
 
 ### Added
-- `MARK_HOUSE_KEY` (operator-only, unset for everyone else): when set, every request to the escrow server carries it as the `x-escrow-house` header, so the operator's own agents and scripts are counted as house traffic, not external usage. Sent only over https or to a loopback http URL; never logged or shown in errors. Without it Mark sends nothing new.
+- `MARK_HOUSE_KEY` (operator-only, unset for everyone else): when set, every request to the escrow server carries it as the `x-escrow-house` header, so the operator's own agents and scripts are counted as house traffic, not external usage. Sent only over https or to a loopback http URL, only if it is visible ASCII, and with it set Mark refuses redirects (the header never follows a 3xx elsewhere); never logged or shown in errors. Without it Mark sends nothing new.
 
 ## [0.4.0] - 2026-11-14
 

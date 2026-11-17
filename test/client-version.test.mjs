@@ -40,7 +40,7 @@ test("MARK_HOUSE_KEY (operator-only): sent as x-escrow-house on every request ov
   assert.deepEqual(houseHeader(URL_, {}), {}); assert.deepEqual(houseHeader(URL_, { MARK_HOUSE_KEY: "  " }), {});
   assert.deepEqual(houseHeader(URL_, { MARK_HOUSE_KEY: K }), { "x-escrow-house": K }); assert.deepEqual(houseHeader("http://127.0.0.1:4783", { MARK_HOUSE_KEY: K }), { "x-escrow-house": K });
   assert.deepEqual(houseHeader("http://escrow.example", { MARK_HOUSE_KEY: K }), {}, "never in clear text over the network");
-  assert.deepEqual(houseHeader(URL_, { MARK_HOUSE_KEY: "a\nb" }), {}); assert.deepEqual(houseHeader("not a url", { MARK_HOUSE_KEY: K }), {});
+  for (const bad of ["a\nb", "a b", "a\u0001b", "ä-key", "x".repeat(1025)]) assert.deepEqual(houseHeader(URL_, { MARK_HOUSE_KEY: bad }), {}, JSON.stringify(bad).slice(0, 12)); assert.deepEqual(houseHeader("not a url", { MARK_HOUSE_KEY: K }), {});
   const prev = process.env.MARK_HOUSE_KEY;
   try {
     const f = mockFetch({ "GET /limits": () => [200, LIMITS()] }); await new EscrowApi(URL_, f).limits(); assert.equal(f.calls[0].headers["x-escrow-house"], undefined, "unset: no header");
@@ -51,6 +51,14 @@ test("MARK_HOUSE_KEY (operator-only): sent as x-escrow-house on every request ov
     assert.ok(!JSON.stringify({ m: e.message, d: e.details }).includes(K), "not in the error");
     const down = await new EscrowApi(URL_, async () => { throw new Error("connect ECONNREFUSED"); }).limits().then(() => null, (x) => x);
     assert.equal(down.code, "ESCROW_UNREACHABLE"); assert.ok(!down.message.includes(K));
+    // real fetch: a 302 from the escrow URL to another origin is refused with the key set, so the header never reaches it
+    const seen = []; const b = http.createServer((q, s) => { seen.push(q.headers["x-escrow-house"] ?? null); s.end("{}"); }); await new Promise((r) => b.listen(0, "127.0.0.1", r));
+    const a = http.createServer((q, s) => { s.writeHead(302, { location: `http://127.0.0.1:${b.address().port}/limits` }); s.end(); }); await new Promise((r) => a.listen(0, "127.0.0.1", r));
+    try {
+      const red = await new EscrowApi(`http://127.0.0.1:${a.address().port}`).limits().then(() => null, (x) => x);
+      assert.equal(red?.code, "ESCROW_UNREACHABLE"); assert.ok(!red.message.includes(K)); assert.deepEqual(seen, [], "redirect target never contacted");
+      delete process.env.MARK_HOUSE_KEY; await new EscrowApi(`http://127.0.0.1:${a.address().port}`).limits().catch(() => {}); assert.deepEqual(seen, [null], "without the key redirects behave as before");
+    } finally { a.close(); b.close(); }
   } finally { if (prev === undefined) delete process.env.MARK_HOUSE_KEY; else process.env.MARK_HOUSE_KEY = prev; }
 });
 

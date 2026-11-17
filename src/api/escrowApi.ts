@@ -98,9 +98,10 @@ export interface DemoOffer { enabled: boolean; network?: string; code?: string; 
 
 /** Operator-only: MARK_HOUSE_KEY (our own box / house-seller runs) is sent as `x-escrow-house` so the escrow server counts the request as
  *  house traffic instead of external usage. Unset for everyone else (nothing is sent). Never logged, never part of an error. Sent only over
- *  https or to a loopback http URL, never in clear text over the network. */
+ *  https or to a loopback http URL, never in clear text over the network; with it set, redirects are refused (redirect: "error") so the
+ *  header can never follow a 3xx to another origin. */
 export function houseHeader(baseUrl: string, env: NodeJS.ProcessEnv = process.env): Record<string, string> {
-  const k = (env.MARK_HOUSE_KEY ?? "").trim(); if (!k || k.length > 1024 || /[\r\n]/.test(k)) return {};
+  const k = (env.MARK_HOUSE_KEY ?? "").trim(); if (!/^[\x21-\x7e]{1,1024}$/.test(k)) return {}; // visible ASCII only: never a header-construction error that could echo it
   let u: URL; try { u = new URL(baseUrl); } catch { return {}; }
   const local = u.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname);
   return u.protocol === "https:" || local ? { "x-escrow-house": k } : {};
@@ -114,7 +115,8 @@ export class EscrowApi {
     let r: Response;
     try {
       // every request says which Mark this is, so the server can refuse a too-old client with a clear UPGRADE_REQUIRED
-      r = await this.fetchImpl(this.baseUrl + path, { method, headers: { "content-type": "application/json", "x-mark-version": MARK_VERSION, "user-agent": MARK_USER_AGENT, ...houseHeader(this.baseUrl), ...headers }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
+      const hh = houseHeader(this.baseUrl);
+      r = await this.fetchImpl(this.baseUrl + path, { method, ...(hh["x-escrow-house"] ? { redirect: "error" as const } : {}), headers: { "content-type": "application/json", "x-mark-version": MARK_VERSION, "user-agent": MARK_USER_AGENT, ...hh, ...headers }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
     } catch (e: any) { throw new MarkError("ESCROW_UNREACHABLE", `escrow service ${this.baseUrl}: ${e.message}`); }
     let j: any;
     try { j = await r.json(); } catch { if (r.status === 426) throw upgradeRequired(this.baseUrl, null); throw new MarkError("ESCROW_BAD_RESPONSE", `non-JSON response (HTTP ${r.status})`); }
