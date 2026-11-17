@@ -37,11 +37,16 @@ test("every request sends x-mark-version and User-Agent mark/<version> (read fro
 
 test("MARK_HOUSE_KEY (operator-only): sent as x-escrow-house on every request over https / loopback http; unset sends nothing; never in errors", async () => {
   const K = "test-only-dummy-house-key-0123456789abcdef";
-  assert.deepEqual(houseHeader(URL_, {}), {}); assert.deepEqual(houseHeader(URL_, { MARK_HOUSE_KEY: "  " }), {});
-  assert.deepEqual(houseHeader(URL_, { MARK_HOUSE_KEY: K }), { "x-escrow-house": K }); assert.deepEqual(houseHeader("http://127.0.0.1:4783", { MARK_HOUSE_KEY: K }), { "x-escrow-house": K });
+  const O = { MARK_HOUSE_ORIGIN: "https://other.example, " + URL_ + "/ignored-path" };
+  assert.deepEqual(houseHeader(URL_, {}), {}); assert.deepEqual(houseHeader(URL_, { ...O, MARK_HOUSE_KEY: "  " }), {});
+  assert.deepEqual(houseHeader("https://agentescrow.to", { MARK_HOUSE_KEY: K }), { "x-escrow-house": K }, "production origin built in");
+  assert.deepEqual(houseHeader(URL_, { MARK_HOUSE_KEY: K }), {}, "any other https --escrow-url gets nothing");
+  assert.deepEqual(houseHeader("https://agentescrow.to.evil.example", { MARK_HOUSE_KEY: K }), {}); assert.deepEqual(houseHeader("https://agentescrow.to:8443", { MARK_HOUSE_KEY: K }), {});
+  assert.deepEqual(houseHeader(URL_, { ...O, MARK_HOUSE_KEY: K }), { "x-escrow-house": K }, "MARK_HOUSE_ORIGIN (exact origin)");
+  assert.deepEqual(houseHeader("http://escrow.test", { MARK_HOUSE_ORIGIN: "http://escrow.test", MARK_HOUSE_KEY: K }), {}, "http origins never added"); assert.deepEqual(houseHeader(undefined, { MARK_HOUSE_KEY: K }), {}); assert.deepEqual(houseHeader("http://127.0.0.1:4783", { MARK_HOUSE_KEY: K }), { "x-escrow-house": K });
   assert.deepEqual(houseHeader("http://escrow.example", { MARK_HOUSE_KEY: K }), {}, "never in clear text over the network");
-  for (const bad of ["a\nb", "a b", "a\u0001b", "ä-key", "x".repeat(1025)]) assert.deepEqual(houseHeader(URL_, { MARK_HOUSE_KEY: bad }), {}, JSON.stringify(bad).slice(0, 12)); assert.deepEqual(houseHeader("not a url", { MARK_HOUSE_KEY: K }), {});
-  const prev = process.env.MARK_HOUSE_KEY;
+  for (const bad of ["a\nb", "a b", "a\u0001b", "ä-key", "x".repeat(1025)]) assert.deepEqual(houseHeader(URL_, { ...O, MARK_HOUSE_KEY: bad }), {}, JSON.stringify(bad).slice(0, 12)); assert.deepEqual(houseHeader("not a url", { MARK_HOUSE_KEY: K }), {});
+  const prev = process.env.MARK_HOUSE_KEY, prevO = process.env.MARK_HOUSE_ORIGIN; process.env.MARK_HOUSE_ORIGIN = URL_;
   try {
     const f = mockFetch({ "GET /limits": () => [200, LIMITS()] }); await new EscrowApi(URL_, f).limits(); assert.equal(f.calls[0].headers["x-escrow-house"], undefined, "unset: no header");
     process.env.MARK_HOUSE_KEY = K;
@@ -59,7 +64,7 @@ test("MARK_HOUSE_KEY (operator-only): sent as x-escrow-house on every request ov
       assert.equal(red?.code, "ESCROW_UNREACHABLE"); assert.ok(!red.message.includes(K)); assert.deepEqual(seen, [], "redirect target never contacted");
       delete process.env.MARK_HOUSE_KEY; await new EscrowApi(`http://127.0.0.1:${a.address().port}`).limits().catch(() => {}); assert.deepEqual(seen, [null], "without the key redirects behave as before");
     } finally { a.close(); b.close(); }
-  } finally { if (prev === undefined) delete process.env.MARK_HOUSE_KEY; else process.env.MARK_HOUSE_KEY = prev; }
+  } finally { if (prev === undefined) delete process.env.MARK_HOUSE_KEY; else process.env.MARK_HOUSE_KEY = prev; if (prevO === undefined) delete process.env.MARK_HOUSE_ORIGIN; else process.env.MARK_HOUSE_ORIGIN = prevO; }
 });
 
 test("426 UPGRADE_REQUIRED: clear error with the update command and MCP hint (also when the body is not JSON)", async () => {

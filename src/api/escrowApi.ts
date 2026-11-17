@@ -97,14 +97,18 @@ export interface DemoOffer { enabled: boolean; network?: string; code?: string; 
   sellerPubkey?: string; title?: string; sats?: number; deadlineSeconds?: number; deadlineMinutes?: number; summary?: string; feeFree?: boolean }
 
 /** Operator-only: MARK_HOUSE_KEY (our own box / house-seller runs) is sent as `x-escrow-house` so the escrow server counts the request as
- *  house traffic instead of external usage. Unset for everyone else (nothing is sent). Never logged, never part of an error. Sent only over
- *  https or to a loopback http URL, never in clear text over the network; with it set, redirects are refused (redirect: "error") so the
- *  header can never follow a 3xx to another origin. */
-export function houseHeader(baseUrl: string, env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+ *  house traffic instead of external usage. Unset for everyone else (nothing is sent). Never logged, never part of an error. Sent ONLY to
+ *  the production escrow origin (https://agentescrow.to), to an https origin listed in MARK_HOUSE_ORIGIN (comma-separated, exact origin
+ *  match), or to a loopback http URL: never to any other --escrow-url and never in clear text over the network. With it set, redirects
+ *  are refused (redirect: "error") so the header can never follow a 3xx to another origin. */
+export const HOUSE_ORIGINS = ["https://agentescrow.to"];
+export function houseHeader(baseUrl: string | undefined, env: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const k = (env.MARK_HOUSE_KEY ?? "").trim(); if (!/^[\x21-\x7e]{1,1024}$/.test(k)) return {}; // visible ASCII only: never a header-construction error that could echo it
-  let u: URL; try { u = new URL(baseUrl); } catch { return {}; }
+  let u: URL; try { u = new URL(String(baseUrl ?? "")); } catch { return {}; }
   const local = u.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname);
-  return u.protocol === "https:" || local ? { "x-escrow-house": k } : {};
+  const extra = (env.MARK_HOUSE_ORIGIN ?? "").split(",").map((x) => { try { const o = new URL(x.trim()); return o.protocol === "https:" ? o.origin : null; } catch { return null; } }).filter(Boolean);
+  const trusted = u.protocol === "https:" && (HOUSE_ORIGINS.includes(u.origin) || extra.includes(u.origin));
+  return trusted || local ? { "x-escrow-house": k } : {};
 }
 
 export class EscrowApi {

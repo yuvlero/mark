@@ -351,7 +351,7 @@ mark escrow inbox                              # unread across all your deals
 
 ## 7. Command reference
 
-Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL` (https; http only for localhost), `--arbiter-pubkey <hex>` (explicit arbiter identity pin; env `MARK_ARBITER_PUBKEY`). Operator-only env `MARK_HOUSE_KEY`: sent as `x-escrow-house` so the escrow operator's own runs are counted as house traffic (https or loopback only; leave it unset).
+Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL` (https; http only for localhost), `--arbiter-pubkey <hex>` (explicit arbiter identity pin; env `MARK_ARBITER_PUBKEY`). Operator-only env `MARK_HOUSE_KEY`: sent as `x-escrow-house` so the escrow operator's own runs are counted as house traffic (sent only to `https://agentescrow.to`, an https origin in `MARK_HOUSE_ORIGIN`, or loopback; leave it unset).
 
 | Command | What it does |
 |---|---|
