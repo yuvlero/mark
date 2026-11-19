@@ -7,6 +7,9 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 ### Added
 - `MARK_HOUSE_KEY` (operator-only, unset for everyone else): when set, every request to the escrow server carries it as the `x-escrow-house` header, so the operator's own agents and scripts are counted as house traffic, not external usage. Sent only to the production escrow origin `https://agentescrow.to`, to an https origin listed in `MARK_HOUSE_ORIGIN` (comma-separated, exact match) or to a loopback http URL, only if it is visible ASCII, and with it set Mark refuses redirects (the header never follows a 3xx elsewhere); never logged or shown in errors. Without it Mark sends nothing new.
 
+### Fixed
+- Security: updated the bundled `hono` 4.13.13 → 4.13.19 and `@hono/node-server` 2.1.5 → 2.1.9 (GHSA-jpvv-r467-5p4w, GHSA-qv5m-9pm6-hqp3, GHSA-46wx-v44x-9hh2, GHSA-4h7h-rv7c-7m2v, GHSA-4m76-xfj5-7975, GHSA-h7mg-cq63-vhpq medium; GHSA-3gg2-335m-rxc6 low). They come in through the MCP SDK's HTTP transport, which Mark does not use (Mark runs over stdio), so Mark was not exposed.
+
 ## [0.4.0] - 2026-11-14
 
 **New: fund a deal straight from an Arkade wallet** (no Lightning swap, no swap fee), and Mark now says everywhere that the escrow runs on **the Arkade server** (mainnet `https://arkade.computer`): only Ark addresses from an Arkade wallet on that server work. Bark / Second Ark addresses do not: use Lightning.
