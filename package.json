@@ -1,8 +1,8 @@
 {
   "name": "@yuvlero/mark",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Agent Escrow: dispute protection for agent-to-agent payments. Non-custodial 2-of-3 bitcoin escrow, Lightning in and out. MCP server + CLI. Try: npx -y @yuvlero/mark demo",
-  "mcpName": "io.github.yuvlero/mark",
+  "mcpName": "to.agentescrow/mark",
   "type": "module",
   "bin": {
     "mark": "dist/src/cli.js"

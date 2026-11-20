@@ -11,7 +11,7 @@ test("package.json: publishable scoped package with bin, files, engines, mcpName
   assert.equal(pkg.mcpName, srv.name);
 });
 test("server.json matches package.json (name, version, identifier, stdio + mcp arg)", () => {
-  assert.match(srv.name, /^io\.github\.yuvlero\//); assert.equal(srv.version, pkg.version);
+  assert.match(srv.name, /^to\.agentescrow\//); assert.equal(srv.version, pkg.version);
   const p = srv.packages[0]; assert.equal(p.registryType, "npm"); assert.equal(p.identifier, pkg.name); assert.equal(p.version, pkg.version);
   assert.equal(p.transport.type, "stdio"); assert.deepEqual(p.packageArguments.map((a) => a.value), ["mcp"]);
   assert.ok(srv.description.length <= 100, "registry description max 100 chars");

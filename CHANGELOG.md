@@ -4,6 +4,11 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-11-20
+
+### Changed
+- MCP Registry name moved from `io.github.yuvlero/mark` to `to.agentescrow/mark` (DNS namespace for agentescrow.to). `mcpName` in package.json and `name` in server.json changed together; the old name is deprecated in the registry. The npm package (`@yuvlero/mark`) and the CLI are unchanged.
+
 ## [0.4.1] - 2026-11-19
 
 ### Added
