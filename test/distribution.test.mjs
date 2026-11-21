@@ -45,5 +45,26 @@ test("agent skill: frontmatter, ships in the package, uses only real CLI command
   for (const [, c] of sk.matchAll(/`mark ([a-z]+)[ `]/g)) assert.ok(["escrow", "pubkey", "reputation", "backup", "init", "mcp", "demo"].includes(c), `unknown command ${c}`);
   const tools = [...rd("../src/mcp.ts").matchAll(/s\.tool\("([a-z_]+)"/g)].map((m) => m[1]);
   for (const [, t] of sk.matchAll(/`(escrow_[a-z_]+)`/g)) assert.ok(tools.includes(t), `unknown MCP tool ${t}`);
-  for (const s of ["npx -y @yuvlero/mark mcp", "3,300", "335 to 1,000,000", "max(5%, 330 sats)", "no timeout auto-release", "not a guarantee", "~/.mark"]) assert.ok(sk.includes(s), s);
+  for (const s of ["npx -y @yuvlero/mark@latest mcp", "3,300", "335 to 1,000,000", "max(5%, 330 sats)", "no timeout auto-release", "not a guarantee", "~/.mark"]) assert.ok(sk.includes(s), s);
+});
+
+test("install snippets use @latest; package.identifier stays bare", () => {
+  const files = [
+    "README.md", "docs/AGENT_QUICKSTART.md", "docs/distribution/glama.md", "docs/distribution/awesome-mcp-servers.md",
+    "docs/distribution/mcp-so.md", "docs/distribution/README.md", "examples/README.md", "skills/agent-escrow/SKILL.md",
+    "package.json", "src/invocation.ts",
+  ];
+  const bareArgs = /\["-y",\s*"@yuvlero\/mark",\s*"mcp"\]|\["-y","@yuvlero\/mark","mcp"\]/;
+  const bareRun = /npx -y @yuvlero\/mark(?![@\[A-Za-z0-9._-])/;
+  const allowed = [/plain `npx -y @yuvlero\/mark`/g, /a bare `@yuvlero\/mark`/g, /npx -y @yuvlero\/mark\[@tag\]/g];
+  for (const rel of files) {
+    let text = rd("../" + rel);
+    assert.ok(!bareArgs.test(text), rel + " has bare MCP args");
+    for (const re of allowed) text = text.replace(re, "");
+    const hits = [];
+    for (const [i, line] of text.split(/\n/).entries()) if (bareRun.test(line)) hits.push(rel + ":" + (i + 1) + ": " + line.trim());
+    assert.deepEqual(hits, [], rel + " still has bare npx run commands:\n" + hits.join("\n"));
+  }
+  const sj = JSON.parse(rd("../server.json"));
+  assert.equal(sj.packages[0].identifier, pkg.name);
 });

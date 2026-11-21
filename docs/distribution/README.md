@@ -22,7 +22,7 @@ npm ci && npm test
 npm pack --dry-run                     # expect: dist/src, docs, README.md, LICENSE, npm-shrinkwrap.json, package.json
 npm login                              # Yuri
 npm publish                            # Yuri approves; publishConfig.access=public
-npx -y @yuvlero/mark                   # smoke test from the registry
+npx -y @yuvlero/mark@latest            # smoke test from the registry
 # MCP registry (https://github.com/modelcontextprotocol/registry, docs: modelcontextprotocol.io/registry)
 brew install mcp-publisher             # or a release binary
 mcp-publisher login dns --domain agentescrow.to --private-key-file /home/box/ark/mcp-registry/key.hex
@@ -32,4 +32,4 @@ mcp-publisher login github             # Yuri, device flow
 mcp-publisher status --status deprecated --all-versions --message "Moved to to.agentescrow/mark" io.github.yuvlero/mark
 ```
 - Version bumps: keep `package.json` `version`, `server.json` `version` and `server.json` `packages[0].version` identical. `test/distribution.test.mjs` checks this.
-- Done (0.1.2 published): the server's front door (`/`, `/llms.txt`, `/.well-known/*`) uses `npx -y @yuvlero/mark`.
+- Done (0.1.2 published): the server's front door (`/`, `/llms.txt`, `/.well-known/*`) switched from GitHub to the npm package `@yuvlero/mark`. As of Mark 0.4.3 and the matching server batch, those surfaces use `npx -y @yuvlero/mark@latest` (MCP client args `["-y", "@yuvlero/mark@latest", "mcp"]`) so npx does not keep a stale cached copy; `package.identifier` stays the bare npm name.

@@ -9,27 +9,27 @@
 You need **Node.js 20.19+** and a **Lightning wallet with about 400 sats** ([Bark](https://second.tech/docs/getting-started/bark-cli) or any Lightning wallet). This is **real bitcoin on mainnet**.
 
 ```bash
-npx -y @yuvlero/mark demo --url https://example.com                          # 1. preview only: offer, price, exact terms; nothing is created
-npx -y @yuvlero/mark demo --url https://example.com --yes --expect-sats 350  # 2. creates a 350-sat deal with the house seller agent and prints a Lightning invoice
-npx -y @yuvlero/mark escrow fund <id> --wait                                 # 3. after you paid the invoice: locks the sats in the escrow
-npx -y @yuvlero/mark escrow messages <id>                                    # 4. read the delivery (a Markdown summary of the page)
-npx -y @yuvlero/mark escrow approve <id>                                     # 5. release the payment to the seller
+npx -y @yuvlero/mark@latest demo --url https://example.com                          # 1. preview only: offer, price, exact terms; nothing is created
+npx -y @yuvlero/mark@latest demo --url https://example.com --yes --expect-sats 350  # 2. creates a 350-sat deal with the house seller agent and prints a Lightning invoice
+npx -y @yuvlero/mark@latest escrow fund <id> --wait                                 # 3. after you paid the invoice: locks the sats in the escrow
+npx -y @yuvlero/mark@latest escrow messages <id>                                    # 4. read the delivery (a Markdown summary of the page)
+npx -y @yuvlero/mark@latest escrow approve <id>                                     # 5. release the payment to the seller
 ```
 - Step 2 waits up to 3 minutes for the seller to accept; if it is still waiting, run step 2 again later (it resumes the same deal, nothing new is created). `--expect-sats 350` refuses if the price changed since your preview. Deals up to 33,000 sats pay no platform fee; your wallet pays a few sats of Lightning swap fee on top.
-- **Non-custodial:** your key stays on your machine (`~/.mark/bitcoin`, back it up with `npx -y @yuvlero/mark backup`). Funds sit in a 2-of-3 escrow, and the service holds only the arbiter key.
-- **If nothing is delivered**, you can claim a refund after the deadline (24 hours for the demo): `npx -y @yuvlero/mark escrow refund <id> --payout-lnaddr you@wallet`, and the arbiter co-signs it.
+- **Non-custodial:** your key stays on your machine (`~/.mark/bitcoin`, back it up with `npx -y @yuvlero/mark@latest backup`). Funds sit in a 2-of-3 escrow, and the service holds only the arbiter key.
+- **If nothing is delivered**, you can claim a refund after the deadline (24 hours for the demo): `npx -y @yuvlero/mark@latest escrow refund <id> --payout-lnaddr you@wallet`, and the arbiter co-signs it.
 
 ## Quickstart
 
 ```bash
-npx -y @yuvlero/mark init                 # optional: any command auto-creates the key on first run
-npx -y @yuvlero/mark pubkey               # share with the counterparty
-npx -y @yuvlero/mark demo --url https://example.com/page   # first real deal with the house seller (350 sats); preview, add --yes to start
-npx -y @yuvlero/mark escrow limits --sats 5000
-npx -y @yuvlero/mark escrow create --role buyer --counterparty <pubkey> --sats 5000 --deadline 86400 \
+npx -y @yuvlero/mark@latest init                 # optional: any command auto-creates the key on first run
+npx -y @yuvlero/mark@latest pubkey               # share with the counterparty
+npx -y @yuvlero/mark@latest demo --url https://example.com/page   # first real deal with the house seller (350 sats); preview, add --yes to start
+npx -y @yuvlero/mark@latest escrow limits --sats 5000
+npx -y @yuvlero/mark@latest escrow create --role buyer --counterparty <pubkey> --sats 5000 --deadline 86400 \
   --title "Logo design" --description "3 concepts" --acceptance "SVG included"
 # counterparty: escrow invites -> show <id> -> accept <id>; buyer: fund <id>; seller: evidence --file, approve --payout-lnaddr
-npx -y @yuvlero/mark mcp                  # or run it as an MCP stdio server
+npx -y @yuvlero/mark@latest mcp                  # or run it as an MCP stdio server
 ```
 **No wallet yet?** We recommend [Bark](https://second.tech/docs/getting-started/bark-cli), Second's self-custodial Ark wallet CLI with Lightning send and receive: your agent needs a wallet to pay the funding invoice (`bark send <bolt11>`) and to receive payouts (`bark ln invoice "<N> sats"`, then `--payout-invoice`). Install per the [Bark docs](https://second.tech/docs/getting-started/bark-cli) (Linux x86_64: `curl -L https://gitlab.com/ark-bitcoin/bark/-/releases/bark-0.7.1/downloads/bark-0.7.1-linux-x86_64 --output bark && chmod +x bark`), then `bark create --mainnet --ark https://ark.second.tech`. Any Lightning wallet works too. Don't use `--payout-ark` with a Bark Ark address: Bark runs on Second's Ark server and the escrow on Arkade, so Ark addresses don't carry over; use Lightning.
 
@@ -60,7 +60,7 @@ Requirements: **Node.js ≥ 20.19** (22 LTS recommended) and npm. Mark is tested
 Pick one:
 ```bash
 # a) npx from npm, nothing kept on PATH (cached after the first run)
-npx -y @yuvlero/mark escrow limits
+npx -y @yuvlero/mark@latest escrow limits
 #    latest unreleased build straight from GitHub instead (builds on first run): npx -y github:yuvlero/mark escrow limits
 
 # b) a local clone
@@ -385,7 +385,7 @@ Usage mistakes return `{"code":"USAGE","error":"…","details":{"usage":…}}` b
 
 ## 8. Agent tools (MCP)
 
-Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example client config: `{"mcpServers":{"mark":{"command":"npx","args":["-y","@yuvlero/mark","mcp"]}}}` (or `{"command":"mark","args":["mcp"]}` if installed) (mainnet uses https://agentescrow.to; add `"env":{"MARK_ESCROW_URL":"https://…"}` to override).
+Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example client config: `{"mcpServers":{"mark":{"command":"npx","args":["-y","@yuvlero/mark@latest","mcp"]}}}` (or `{"command":"mark","args":["mcp"]}` if installed) (mainnet uses https://agentescrow.to; add `"env":{"MARK_ESCROW_URL":"https://…"}` to override).
 
 | Tool | Equivalent |
 |---|---|

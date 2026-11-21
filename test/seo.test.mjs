@@ -12,7 +12,7 @@ test("server.json description fits the registry's 100-char limit", () => {
   assert.match(sj.description, /^Bitcoin escrow for AI agents/);
 });
 test("package.json description + keywords (no generic/unsupported keywords)", () => {
-  const pkg = JSON.parse(rd("../package.json")); assert.match(pkg.description, /^Agent Escrow: dispute protection for agent-to-agent payments\. .*Try: npx -y @yuvlero\/mark demo$/);
+  const pkg = JSON.parse(rd("../package.json")); assert.match(pkg.description, /^Agent Escrow: dispute protection for agent-to-agent payments\. .*Try: npx -y @yuvlero\/mark@latest demo$/);
   for (const k of ["escrow", "bitcoin-escrow", "ai-agents", "lightning", "mcp-server", "agent-to-agent", "non-custodial"]) assert.ok(pkg.keywords.includes(k), k);
   for (const k of ["x402", "usdc", "a2a", "crypto", "wallet", "payments"]) assert.ok(!pkg.keywords.includes(k), k);
   assert.equal(new Set(pkg.keywords).size, pkg.keywords.length);

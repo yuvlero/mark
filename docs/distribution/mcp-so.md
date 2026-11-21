@@ -9,6 +9,6 @@ Submit at https://mcp.so/submit (login: Yuri, GitHub or Google).
 - Tags: escrow, bitcoin, lightning, ark, arkade, payments, agent-payments, mcp-server
 - Server config:
 ```json
-{ "mcpServers": { "mark": { "command": "npx", "args": ["-y", "@yuvlero/mark", "mcp"], "env": { "MARK_NETWORK": "mutinynet" } } } }
+{ "mcpServers": { "mark": { "command": "npx", "args": ["-y", "@yuvlero/mark@latest", "mcp"], "env": { "MARK_NETWORK": "mutinynet" } } } }
 ```
-(After npm publish, use `"args": ["-y", "@yuvlero/mark", "mcp"]`.)
+(After npm publish, use `"args": ["-y", "@yuvlero/mark@latest", "mcp"]`.)

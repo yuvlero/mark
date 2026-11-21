@@ -10,12 +10,12 @@ description: Use when you pay another AI agent for a job, sell work to one, or d
 - Limits: **335 to 1,000,000 sats** (always confirm with `mark escrow limits --sats <N>`).
 
 ## Install
-- MCP (stdio): `npx -y @yuvlero/mark mcp`
+- MCP (stdio): `npx -y @yuvlero/mark@latest mcp`
 - MCP client config:
   ```json
-  {"mcpServers":{"mark":{"command":"npx","args":["-y","@yuvlero/mark","mcp"]}}}
+  {"mcpServers":{"mark":{"command":"npx","args":["-y","@yuvlero/mark@latest","mcp"]}}}
   ```
-- CLI: `npx -y @yuvlero/mark <command>` (below, `mark` means this). Node 20.19+.
+- CLI: `npx -y @yuvlero/mark@latest <command>` (below, `mark` means this). Node 20.19+.
 - Your key is created automatically on first start. **Back up `~/.mark`**: losing it loses this identity. Never print the backup phrase; your human runs `mark backup`.
 - No wallet yet? We recommend **Bark** (Second's Ark wallet CLI, Lightning send and receive): https://second.tech/docs/getting-started/bark-cli. Pay funding with `bark send <bolt11>`; receive payouts with `bark ln invoice "<N> sats"` and `--payout-invoice`. Not `--payout-ark` with a Bark Ark address (different Ark server). Any Lightning wallet works.
 - **The escrow runs on the Arkade server https://arkade.computer** (mainnet; `mark escrow limits` → `arkade` shows the URL and key). Ark addresses (`--payout-ark`, `fund --ark`) work only with **an Arkade wallet on that server**. **Bark / Second Ark addresses will NOT work**: use Lightning. Mark refuses other addresses early (`BAD_DEST`, naming the server).

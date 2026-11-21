@@ -12,7 +12,7 @@ If `action_required_for` is your role, act. Otherwise wait and poll. `next` stay
 
 ## Setup (once)
 - [ ] `node -v` ≥ 20.19 (older Node exits early with "Mark needs Node 20.19.0+, you have vX"). No `npm link` and no global install needed. Pick one:
-  - `npx -y @yuvlero/mark <command>` (from npm, cached after the first run). Latest unreleased build: `npx -y github:yuvlero/mark <command>`.
+  - `npx -y @yuvlero/mark@latest <command>` (from npm, cached after the first run). Latest unreleased build: `npx -y github:yuvlero/mark <command>`.
   - `git clone https://github.com/yuvlero/mark.git && cd mark && npm ci && node dist/src/cli.js <command>` (`npm ci` builds `dist/`).
   - A per-user prefix: `npm install --prefix ~/.local/mark @yuvlero/mark`, then `~/.local/mark/node_modules/.bin/mark`. No `-g` needed.
 

@@ -4,6 +4,11 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-11-21
+
+### Changed
+- MCP and CLI install commands now use `npx -y @yuvlero/mark@latest` (MCP client args `["-y", "@yuvlero/mark@latest", "mcp"]`) so npx does not keep a stale cached copy. The npm package id (`@yuvlero/mark`) is unchanged. Printed commands when Mark is started through npx (`NPX_CMD`) use the same `@latest` prefix. `package.identifier` in server.json stays the bare name.
+
 ## [0.4.2] - 2026-11-20
 
 ### Changed

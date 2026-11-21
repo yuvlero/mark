@@ -1,10 +1,10 @@
-/** How the user started Mark, so printed commands can be copied as they are: `npx -y @yuvlero/mark ...` when Mark runs through npx
+/** How the user started Mark, so printed commands can be copied as they are: `npx -y @yuvlero/mark@latest ...` when Mark runs through npx
  *  and no `mark` is on PATH, else `mark ...`. Reads only the process's own argv/env and checks PATH entries for a `mark` file; no I/O
  *  beyond that, never throws. */
 import fs from "node:fs";
 import path from "node:path";
 
-export const NPX_CMD = "npx -y @yuvlero/mark";
+export const NPX_CMD = "npx -y @yuvlero/mark@latest";
 const NPX_DIR = /[\\/]_npx[\\/]/;
 /** Started through npx / `npm exec`: the bin lives in npm's _npx cache, or npm says the command is exec. */
 export function startedViaNpx(env: NodeJS.ProcessEnv = process.env, argv1: string = process.argv[1] ?? ""): boolean {
@@ -18,7 +18,7 @@ export function markOnPath(env: NodeJS.ProcessEnv = process.env): boolean {
   }
   return false;
 }
-/** The command prefix to print: `npx -y @yuvlero/mark` or `mark`. */
+/** The command prefix to print: `npx -y @yuvlero/mark@latest` or `mark`. */
 export function commandPrefix(env: NodeJS.ProcessEnv = process.env, argv1: string = process.argv[1] ?? ""): string {
   try { return startedViaNpx(env, argv1) && !markOnPath(env) ? NPX_CMD : "mark"; } catch { return "mark"; }
 }
