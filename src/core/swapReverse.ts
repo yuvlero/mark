@@ -306,8 +306,10 @@ export async function reverseRecover(c: Ctx, id: string, to: string | undefined)
     if (at !== undefined && Date.now() - at < RECOVER_AFTER_FUND_MS && !SWAP_FAILED.has(x.status) && !isDone(x)) throw new MarkError("SWAP_FUNDING", "a funding of this swap was submitted less than 30 minutes ago and may still land: wait for it (mark swap status) before recovering");
     // any other swap of this home funded in the last 30 minutes may still need the shared address's balance: unless its deposit
     // is already pulled (funding tx known) or it ended, do not sweep; a failed read refuses too
-    for (const o of s.fundAttemptsSince(Date.now() - RECOVER_AFTER_FUND_MS).filter((o) => o !== id)) {
-      let y: ReverseSwapInfo | undefined; try { y = await s.getReverse(o); } catch { y = undefined; }
+    const recent = s.fundAttemptsSince(Date.now() - RECOVER_AFTER_FUND_MS).filter((o) => o !== id);
+    const reads = await Promise.all(recent.map((o) => s.getReverse(o).catch(() => undefined)));
+    for (const [k, o] of recent.entries()) {
+      const y = reads[k];
       if (!y || (sameHex(y.tokenContract, t.tokenId) && !y.fundTx && !SWAP_FAILED.has(y.status) && !isDone(y)))
         throw new MarkError("SWAP_FUNDING", `swap ${o} was funded from the same deposit address less than 30 minutes ago and may still need it: wait for it (${mk()} swap status ${o}) before recovering`);
     }
