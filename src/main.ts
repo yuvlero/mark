@@ -13,6 +13,10 @@ import * as sw from "./core/swap.js";
 import { mk, firstDealNext } from "./invocation.js";
 import { walletFile } from "./crypto/keystore.js";
 import { RECOMMENDED_WALLET } from "./wallet.js";
+/** Optional numeric flag: undefined when absent. */
+const optNum = (v: unknown) => (v !== undefined ? Number(v) : undefined);
+/** --allow-counterparty-rule, bare or =true. */
+const allowRule = (f: Record<string, unknown>) => f["allow-counterparty-rule"] === true || f["allow-counterparty-rule"] === "true";
 export { parseArgs };
 
 /** The context the command opened (if any): after the command, its escrow server's version policy decides the update notice. */
@@ -60,7 +64,7 @@ async function main(): Promise<"keep" | void> {
       const bad = checkDemoArgs(f); if (bad) throw bad;
       const fields = Object.fromEntries(Object.entries(uc.DEMO_INPUT_KEYS).map(([flag, key]) => [key, s(f[flag])]));
       return void out(await uc.demo(await openCtx(network, { escrowUrl, arbiterPubkey }), { offer: s(f.offer), topic: s(f.topic), fields, confirm: f.yes === true, expectSats: f["expect-sats"] !== undefined ? Number(f["expect-sats"]) : undefined,
-        wait: f.wait === true, fresh: f.new === true, timeoutSec: f.timeout !== undefined ? Number(f.timeout) : undefined, onProgress: out }));
+        wait: f.wait === true, fresh: f.new === true, timeoutSec: optNum(f.timeout), onProgress: out }));
     }
     case "swap": {
       // standalone: no escrow server call (openCtx_ skips the version-policy check), only Satora
@@ -69,11 +73,11 @@ async function main(): Promise<"keep" | void> {
       switch (pos[1]) {
         case "quote": return void out(await sw.swapQuote(c, { from: s(f.from), to: s(f.to), sats: s(f.sats) }));
         case "status": return void out(await sw.swapStatus(c, id));
-        case "claim": return void out(await sw.swapClaim(c, id, { wait: f.wait === true, timeoutSec: f.timeout !== undefined ? Number(f.timeout) : undefined }));
+        case "claim": return void out(await sw.swapClaim(c, id, { wait: f.wait === true, timeoutSec: optNum(f.timeout) }));
         case "refund": return void out(await sw.swapRefund(c, id, s(f.to)));
       } // plain `mark swap` or `mark swap create`
       return void out(await sw.swapRun(c, { from: s(f.from), to: s(f.to), sats: s(f.sats), address: s(f.address), confirm: f.yes === true, wait: f.wait === true,
-        timeoutSec: f.timeout !== undefined ? Number(f.timeout) : undefined, onProgress: out }));
+        timeoutSec: optNum(f.timeout), onProgress: out }));
     }
     case "mcp": { const { runMcp } = await import("./mcp.js"); await runMcp(network, { escrowUrl, arbiterPubkey }); return "keep"; }
     case "escrow": {
@@ -84,18 +88,18 @@ async function main(): Promise<"keep" | void> {
           return void out(await uc.create(c, { role: uc.requireRole(s(f.role)), counterparty: s(f.counterparty)!, sats: Number(f.sats), deadline: s(f.deadline)!, hash: s(f.hash), arbiterMode: s(f.arbiter) as any, webhookUrl: s(f.webhook), terms: termsFrom(f) }));
         }
         case "show": return void out(await uc.show(c, id));
-        case "accept": return void out(await uc.accept(c, id, { allowCounterpartyRule: f["allow-counterparty-rule"] === true || f["allow-counterparty-rule"] === "true" }));
+        case "accept": return void out(await uc.accept(c, id, { allowCounterpartyRule: allowRule(f) }));
         case "evidence": return void out(await uc.addEvidence(c, id, { text: s(f.text) ?? s(f.note), sha256: s(f.sha256), url: s(f.url), file: s(f.file) }));
-        case "fund": if (f.ark === true) return void out(await uc.fundArk(c, id, { wait: !!f.wait, timeoutSec: Number(f.timeout || 900), onInstructions: out, switchRail: f["switch-rail"] === true, allowCounterpartyRule: f["allow-counterparty-rule"] === true || f["allow-counterparty-rule"] === "true" }));
-          return void out(await uc.fund(c, id, { switchRail: f["switch-rail"] === true, wait: !!f.wait, resumeClaim: f["resume-claim"] === true, timeoutSec: Number(f.timeout || 900), onInvoice: out, allowCounterpartyRule: f["allow-counterparty-rule"] === true || f["allow-counterparty-rule"] === "true" }));
+        case "fund": if (f.ark === true) return void out(await uc.fundArk(c, id, { wait: !!f.wait, timeoutSec: Number(f.timeout || 900), onInstructions: out, switchRail: f["switch-rail"] === true, allowCounterpartyRule: allowRule(f) }));
+          return void out(await uc.fund(c, id, { switchRail: f["switch-rail"] === true, wait: !!f.wait, resumeClaim: f["resume-claim"] === true, timeoutSec: Number(f.timeout || 900), onInvoice: out, allowCounterpartyRule: allowRule(f) }));
         case "status": return void out(await uc.status(c, id));
-        case "limits": return void out(await uc.limits(c, f.sats !== undefined ? Number(f.sats) : undefined));
+        case "limits": return void out(await uc.limits(c, optNum(f.sats)));
         case "quote": return void out(await uc.quote(c, id, uc.requireKind(s(f.path), "release"), s(f.dest)));
         case "pending": return void out(id ? await uc.pending(c, id) : await uc.pendingAll(c));
         case "approve": return void out(await uc.approve(c, id, { kind: s(f.kind) as any, with: s(f.with) as any, preimage: s(f.preimage), ...payout(f) }));
         case "dispute": return void out(await uc.dispute(c, id, s(f.reason)));
         case "refund": return void out(await uc.refund(c, id, { with: s(f.with) as any, ...payout(f) }));
-        case "messages": return void out(await uc.messages(c, id, f.since !== undefined ? Number(f.since) : undefined));
+        case "messages": return void out(await uc.messages(c, id, optNum(f.since)));
         case "message": return void out(await uc.postMessage(c, id, { text: s(f.text) ?? s(f.note), kind: s(f.kind), replyTo: s(f["reply-to"]) }));
         case "inbox": return void out(await uc.inbox(c));
         case "invites": return void out(await uc.invites(c, { all: !!f.all, needs: s(f.needs), state: s(f.state) }));
