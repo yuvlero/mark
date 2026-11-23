@@ -156,8 +156,11 @@ export class SatoraProvider implements SwapProvider {
     const r: any = await stdoutToStderr(() => this.c.createSwap({ source: SWAP_SOURCES[p.from] as any, target: SWAP_TARGETS[p.to] as any, sourceAmount: p.sats, targetAddress: p.address,
       referralCode: SWAP_REFERRAL_ID, extraFees }));
     const res = r?.response ?? {};
+    // Satora's answer only: never default these to the request, so a missing or different value is caught before payment
     return { id: res.id, status: res.status, invoice: res.bolt11_invoice ?? undefined, arkAddress: res.btc_vhtlc_address ?? undefined,
-      payAmountSats: Number(res.source_amount ?? p.sats), targetAddress: res.target_evm_address ?? p.address, receiveUnits: res.target_amount != null ? String(res.target_amount) : undefined, raw: res };
+      payAmountSats: res.source_amount != null ? Number(res.source_amount) : NaN, targetAddress: res.target_evm_address ?? undefined,
+      receiveUnits: res.target_amount != null ? String(res.target_amount) : undefined, sourceChain: res.source_token?.chain ?? undefined, targetChain: res.target_token?.chain ?? undefined,
+      tokenContract: res.target_token?.token_id ?? undefined, evmChainId: res.evm_chain_id != null ? Number(res.evm_chain_id) : undefined, raw: res };
   }
   async getStable(id: string): Promise<StableSwapInfo> {
     const r: any = await this.c.getSwap(id, { updateStorage: true } as any);
@@ -166,7 +169,14 @@ export class SatoraProvider implements SwapProvider {
       targetAddress: r.target_evm_address ?? r.client_evm_address ?? undefined, tokenContract: r.target_token?.token_id ?? undefined, tokenSymbol: r.target_token?.symbol ?? undefined, evmChainId: r.evm_chain_id ?? undefined,
       payoutTx: r.evm_claim_txid ?? undefined, feeSats: r.fee_sats ?? undefined, createdAt: r.created_at ?? undefined, local, raw: r };
   }
-  async claimStable(id: string) {
+  /** One claim per swap at a time: concurrent calls (MCP) share the in-flight claim instead of submitting a second one. */
+  private claiming = new Map<string, Promise<{ success: boolean; txHash?: string; message?: string }>>();
+  claimStable(id: string) {
+    const running = this.claiming.get(id); if (running) return running;
+    const run = this.claimStableOnce(id).finally(() => this.claiming.delete(id));
+    this.claiming.set(id, run); return run;
+  }
+  private async claimStableOnce(id: string) {
     try {
       const r: any = await stdoutToStderr(() => this.c.claim(id));
       return { success: !!r?.success, txHash: r?.txHash ?? undefined, message: typeof r?.message === "string" ? r.message.slice(0, 500) : undefined };

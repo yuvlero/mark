@@ -24,6 +24,7 @@ function mockClient(o = {}) {
   const client = {
     getQuote: async (p) => { calls.getQuote.push(p); return o.quote ?? Q; },
     createSwap: async (p) => { calls.createSwap.push(p); return { response: { id: "sw-1", status: "pending", source_amount: String(p.sourceAmount), target_amount: "60675562", target_evm_address: p.targetAddress,
+      source_token: { chain: p.source.chain, token_id: "btc", symbol: "BTC", decimals: 8, name: "Bitcoin" }, target_token: { chain: p.target.chain, token_id: p.target.tokenId, symbol: "X", decimals: 6, name: "X" }, evm_chain_id: Number(p.target.chain),
       ...(p.source.chain === "Lightning" ? { bolt11_invoice: makeInvoice({ sats: p.sourceAmount }) } : { btc_vhtlc_address: VHTLC }), ...(o.tamper ?? {}) } }; },
     getSwap: async (id) => { calls.getSwap.push(id); const s = statuses.length > 1 ? statuses.shift() : statuses[0]; return { id, status: s, direction: o.direction ?? "lightning_to_evm", arkade_server_pk: "5a".repeat(32), source_amount: "100000", target_amount: "60675562",
       target_evm_address: ADDR, target_token: { token_id: SWAP_TARGETS.usdc.tokenId, symbol: "USDC" }, evm_chain_id: 42161, ...(s === "serverredeemed" ? { evm_claim_txid: "0xpayout" } : {}) }; },
@@ -197,7 +198,10 @@ test("create: a swap that does not match what was confirmed is refused before an
   const other = "0x" + "1".repeat(40);
   for (const [tamper, why, from] of [[{ target_evm_address: other }, /payout address/], [{ source_amount: "100001" }, /amount 100001/], [{ bolt11_invoice: undefined }, /no Lightning invoice/],
     [{ bolt11_invoice: makeInvoice({ sats: 200000 }) }, /invoice asks for 200000/], [{ bolt11_invoice: makeInvoice({ sats: 100000, network: "mutinynet" }) }, /no Lightning invoice for this network/],
-    [{ id: undefined }, /no swap id/], [{ btc_vhtlc_address: payoutArk(3, "tark") }, /tark1/, "arkade"], [{ btc_vhtlc_address: undefined }, /no Ark address/, "arkade"]]) {
+    [{ id: undefined }, /no swap id/], [{ source_amount: undefined }, /amount NaN/], [{ target_evm_address: undefined }, /payout address undefined/],
+    [{ status: "serverfunded" }, /status serverfunded/], [{ target_token: { chain: "42161", token_id: SWAP_TARGETS.usdt0.tokenId } }, /not USDC/],
+    [{ evm_chain_id: 137 }, /chain 137/], [{ target_token: { chain: "137", token_id: SWAP_TARGETS.usdc.tokenId }, evm_chain_id: 42161 }, /token chain 137/],
+    [{ source_token: { chain: "Arkade", token_id: "btc" } }, /source Arkade is not Lightning/], [{ source_token: undefined }, /source undefined/], [{ btc_vhtlc_address: payoutArk(3, "tark") }, /tark1/, "arkade"], [{ btc_vhtlc_address: undefined }, /no Ark address/, "arkade"]]) {
     const { client } = mockClient({ tamper }); const seen = [];
     await assert.rejects(sw.swapRun(ctxWith(provider(client)), { from: from ?? "lightning", sats: 100000, address: ADDR, confirm: true, wait: true, onProgress: (x) => seen.push(x) }),
       (e) => e.code === "SWAP_FAILED" && why.test(e.message) && /Do NOT pay/.test(e.message), JSON.stringify(tamper));
@@ -218,4 +222,11 @@ test("swap refund: Arkade swaps only, address checked against the swap's Arkade 
   const fail = await sw.swapRefund(mk({ refund: { success: false, message: "timelock not reached" } }).c, "sw-1", payoutArk(4, "ark"));
   assert.equal(fail.refunded, false); assert.equal(fail.message, "timelock not reached");
   await assert.rejects(sw.swapRefund(mk().c, "sw-1", undefined), (e) => e.code === "USAGE");
+});
+test("concurrent claims of one swap share a single SDK claim", async () => {
+  let release; const gate = new Promise((r) => (release = r)); let n = 0;
+  const { client } = mockClient({ statuses: ["serverfunded"] }); client.claim = async () => { n++; await gate; return { success: true, txHash: "0xone" }; };
+  const p = provider(client); const a = p.claimStable("sw-1"), b = p.claimStable("sw-1"); release();
+  const [x, y] = await Promise.all([a, b]); assert.equal(n, 1); assert.equal(x.txHash, "0xone"); assert.equal(y.txHash, "0xone");
+  await p.claimStable("sw-1"); assert.equal(n, 2); // a later, separate call claims again (safe to repeat)
 });

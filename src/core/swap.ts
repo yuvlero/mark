@@ -8,7 +8,7 @@ import { mk } from "../invocation.js";
 import { checkArkadeAddress } from "./arkAddress.js";
 import { decodeInvoice, networkOk } from "../lightning/invoice.js";
 import type { StableSwapCreated } from "../swap/provider.js";
-import { ARBISCAN_TX, SWAP_MARKUP_BPS, SWAP_TARGETS, checkEvmAddress, checkMarkupBps, formatSwapQuote, swapSats, swapSource, swapTarget, units, type SwapSource } from "../swap/stable.js";
+import { ARBISCAN_TX, SWAP_MARKUP_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkMarkupBps, formatSwapQuote, swapSats, swapSource, swapTarget, units, type SwapSource, type SwapTarget } from "../swap/stable.js";
 
 export interface SwapQuoteInput { from?: string; to?: string; sats?: number | string }
 export interface SwapRunInput extends SwapQuoteInput { address?: string; confirm?: boolean; wait?: boolean; timeoutSec?: number; pollMs?: number; onProgress?: (x: unknown) => void }
@@ -69,9 +69,14 @@ export async function swapRun(c: Ctx, i: SwapRunInput) {
 /** Before showing anything payable: the swap must pay out to the confirmed address, ask for exactly the requested sats, and carry a
  *  payable invoice (this network, that amount) or an Ark address for this network. Else SWAP_FAILED: do not pay (an unpaid swap
  *  simply expires). */
-function checkCreated(c: Ctx, p: { from: SwapSource; sats: number }, address: string, x: StableSwapCreated) {
+function checkCreated(c: Ctx, p: { from: SwapSource; to: SwapTarget; sats: number }, address: string, x: StableSwapCreated) {
   const bad = (why: string) => { throw new MarkError("SWAP_FAILED", `Satora's swap does not match what you confirmed (${why}). Do NOT pay it; nothing is lost while it is unpaid.`, { id: x?.id }); };
+  const src = SWAP_SOURCES[p.from], tgt = SWAP_TARGETS[p.to];
   if (!x?.id) bad("no swap id");
+  if (x.status !== "pending") bad(`status ${x.status}, not a new unpaid swap`);
+  if (x.sourceChain !== src.chain) bad(`source ${x.sourceChain} is not ${src.chain}`);
+  if (String(x.tokenContract ?? "").toLowerCase() !== tgt.tokenId.toLowerCase()) bad(`token ${x.tokenContract} is not ${tgt.symbol} (${tgt.tokenId})`);
+  if (x.evmChainId !== Number(tgt.chain) || (x.targetChain !== undefined && x.targetChain !== tgt.chain)) bad(`chain ${x.evmChainId} (token chain ${x.targetChain}) is not ${tgt.network} (${tgt.chain})`);
   if (String(x.targetAddress ?? "").toLowerCase() !== address.toLowerCase()) bad(`payout address ${x.targetAddress} is not ${address}`);
   if (!Number.isSafeInteger(x.payAmountSats) || x.payAmountSats !== p.sats) bad(`amount ${x.payAmountSats} sats is not ${p.sats}`);
   if (p.from === "lightning") {

@@ -9,7 +9,9 @@ export interface ClaimResult { success: boolean; txid?: string; message?: string
   /** set when Mark's workaround for the upstream resume bug was used (see swap/satoraWorkaround.ts) */ workaround?: string; workaroundApplied?: number }
 
 /** `mark swap` (BTC to a stablecoin on Arbitrum). */
-export interface StableSwapCreated { id: string; status: string; invoice?: string; arkAddress?: string; payAmountSats: number; targetAddress: string; receiveUnits?: string; raw?: unknown }
+/** Fields are Satora's own answer (no fallback to what was requested), so Mark can check them before showing anything to pay. */
+export interface StableSwapCreated { id: string; status: string; invoice?: string; arkAddress?: string; payAmountSats: number; targetAddress?: string; receiveUnits?: string;
+  sourceChain?: string; targetChain?: string; tokenContract?: string; evmChainId?: number; raw?: unknown }
 export interface StableSwapInfo { id: string; status: string; direction?: string; sourceAmountSats?: number; targetUnits?: string; targetAddress?: string; tokenContract?: string; tokenSymbol?: string; evmChainId?: number; payoutTx?: string; feeSats?: number; createdAt?: string; local: boolean; raw?: unknown }
 
 export interface SwapProvider {
