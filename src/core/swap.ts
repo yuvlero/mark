@@ -49,10 +49,10 @@ export async function swapRoutes(c: Ctx) {
   const live = await Promise.allSettled(pairs.map((p) => quote ? quote(p) : Promise.reject(new Error(why))));
   const routes = pairs.map((p, i) => {
     const t = SWAP_TARGETS[p.to]; const r = live[i]; const q: any = r.status === "fulfilled" ? r.value : null;
-    const ok = q && Number.isSafeInteger(q.min_amount) && Number.isSafeInteger(q.max_amount);
+    const ok = q && Number.isSafeInteger(q.min_amount) && Number.isSafeInteger(q.max_amount) && q.min_amount > 0 && q.max_amount >= q.min_amount;
     return { from: p.from, to: p.to, source: SWAP_SOURCES[p.from].chain, token: t.symbol, chain: t.network, chainId: Number(t.chain), contract: t.tokenId,
       limits: ok ? { minSats: q.min_amount, maxSats: q.max_amount } : "unavailable",
-      ...(ok ? {} : { limitsNote: `live limits unavailable: ${r.status === "rejected" ? String((r.reason as any)?.message ?? r.reason).slice(0, 200) : "Satora's quote had no min/max"}` }) };
+      ...(ok ? {} : { limitsNote: `live limits unavailable: ${r.status === "rejected" ? String((r.reason as any)?.message ?? r.reason).slice(0, 200) : "Satora's quote had no valid min/max"}` }) };
   });
   return { routes, markup: { bps, percent: pct(bps), note: `Every swap includes a ${pct(bps)} Agent Escrow fee, on top of Satora's fee. Paid inside the swap; nothing extra to send.` },
     referral: SWAP_REFERRAL_ID, limitsSource: mainnet ? "Satora live quote (nothing is created)" : "none on this network",

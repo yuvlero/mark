@@ -304,7 +304,12 @@ test("swap routes: a failed or incomplete limits lookup still lists every route,
   const by = Object.fromEntries(r.routes.map((x) => [`${x.from}->${x.to}`, x]));
   assert.deepEqual(by["lightning->usdc"].limits, { minSats: 356, maxSats: 20000000 });
   assert.equal(by["arkade->usdt0"].limits, "unavailable"); assert.match(by["arkade->usdt0"].limitsNote, /satora down/);
-  assert.equal(by["lightning->usdt0"].limits, "unavailable"); assert.match(by["lightning->usdt0"].limitsNote, /no min\/max/);
+  assert.equal(by["lightning->usdt0"].limits, "unavailable"); assert.match(by["lightning->usdt0"].limitsNote, /no valid min\/max/);
+  // zero, negative or inverted limits are not shown as live
+  for (const bad of [{ min_amount: 0 }, { min_amount: -5 }, { min_amount: 500, max_amount: 400 }]) {
+    const m = mockClient(); const g = m.client.getQuote; m.client.getQuote = async (p) => ({ ...(await g(p)), ...bad });
+    const x = await sw.swapRoutes(ctxWith(provider(m.client))); assert.ok(x.routes.every((y) => y.limits === "unavailable"), JSON.stringify(bad));
+  }
   assert.equal(calls.createSwap.length, 0);
   // the provider cannot even be opened: all four listed, all unavailable
   r = await sw.swapRoutes({ network: "bitcoin", cfg: {}, swaps: async () => { throw new Error("no provider"); } });
