@@ -150,7 +150,7 @@ async function depositInfo(s: Rev, x: ReverseSwapCreated) {
 
 const tokenOf = (x: ReverseSwapCreated) => Object.values(SWAP_TARGETS).find((v) => v.tokenId.toLowerCase() === String(x.tokenContract ?? "").toLowerCase());
 const isDone = (x: ReverseSwapInfo) => SWAP_DONE.has(x.status) || (x.targetChain === "Lightning" && x.lightningSettled === true);
-const doneOut = (x: ReverseSwapInfo) => ({ id: x.id, status: x.status, swap: "done", sats: x.targetSats, ...(x.payoutTx ? { payoutTx: x.payoutTx } : {}),
+const doneOut = (x: ReverseSwapInfo) => ({ id: x.id, status: x.status, swap: "done", sats: x.targetSats, ...(x.fundTx ? { fundTx: x.fundTx, fundExplorer: ARBISCAN_TX + x.fundTx } : {}), ...(x.payoutTx ? { payoutTx: x.payoutTx } : {}),
   note: x.targetChain === "Lightning" ? "Paid out over Lightning." : "Paid out to your Ark address." });
 
 /** What the swap needs next. Never asks for a deposit again once the deposit address holds it, or once a funding was submitted. */
