@@ -415,6 +415,15 @@ function withFundLock<T>(c: Ctx, id: string, f: () => Promise<T>): Promise<T> {
   return run;
 }
 
+/** Funding precondition (Lightning and Ark): both parties accepted these exact terms, and the server's hash is the one I signed.
+ *  Legacy deals (terms null) fund as before. */
+function checkFundTerms(c: Ctx, e: Escrow, id: string) {
+  const v = verifyDealTerms(c, e);
+  if (!v.agreed) throw new MarkError("TERMS_NOT_ACCEPTED", v.hashVerified === false ? "terms hash mismatch; refusing to fund" : `both parties must accept the terms before funding (buyer: ${(v.accepted as any).buyer.accepted}, seller: ${(v.accepted as any).seller.accepted}). Run: ${mk()} escrow accept ${id}`, { accepted: v.accepted });
+  const l = c.index.get(id);
+  if (l.signedTermsHash && e.termsHash !== l.signedTermsHash) throw new MarkError("TERMS_CHANGED", `the server's deal hash ${e.termsHash} is not the termsHash I signed (${l.signedTermsHash}); refusing to fund`, { signed: l.signedTermsHash, server: e.termsHash });
+  return { v, l };
+}
 export interface FundOpts { /** confirm switching from the other funding rail (nothing was paid there) */ switchRail?: boolean; wait?: boolean; timeoutSec?: number; onInvoice?: (x: unknown) => void; allowCounterpartyRule?: boolean; /** retry / finish the Arkade claim of the existing funding swap; never creates a swap */ resumeClaim?: boolean; pollMs?: number }
 /** Fund via Lightning: Satora LN->Arkade swap targeting the escrow address; THIS Mark holds the claim key and claims into the escrow. */
 export async function fund(c: Ctx, id: string, o: FundOpts = {}) {
@@ -422,10 +431,7 @@ export async function fund(c: Ctx, id: string, o: FundOpts = {}) {
   assertEscrowCap(c.cfg, e.amountSats);
   if (e.state === "expired") return { escrowId: id, state: e.state, expiredAt: e.expiredAt ?? null, note: expiredNote(e) };
   if (e.state !== "created") return { escrowId: id, state: e.state, note: "already funded" };
-  const v = verifyDealTerms(c, e); // legacy deals (terms null) fund as before
-  if (!v.agreed) throw new MarkError("TERMS_NOT_ACCEPTED", v.hashVerified === false ? "terms hash mismatch; refusing to fund" : `both parties must accept the terms before funding (buyer: ${(v.accepted as any).buyer.accepted}, seller: ${(v.accepted as any).seller.accepted}). Run: ${mk()} escrow accept ${id}`, { accepted: v.accepted });
-  const l = c.index.get(id);
-  if (l.signedTermsHash && e.termsHash !== l.signedTermsHash) throw new MarkError("TERMS_CHANGED", `the server's deal hash ${e.termsHash} is not the termsHash I signed (${l.signedTermsHash}); refusing to fund`, { signed: l.signedTermsHash, server: e.termsHash });
+  const { v, l } = checkFundTerms(c, e, id);
   if (o.resumeClaim && o.wait) throw new MarkError("USAGE", "resumeClaim does not wait: call it without wait");
   if (l.fundRail === "ark" && !o.switchRail) throw new MarkError("FUNDING_IN_PROGRESS", `you chose direct Ark funding for this deal (${mk()} escrow fund ${id} --ark, ${l.fundArkAt ?? "earlier"}). A Lightning invoice as well could fund it twice. If you already paid the escrow address, run: ${mk()} escrow fund ${id} --ark --wait. If you did NOT pay it and will not, switch to Lightning: ${mk()} escrow fund ${id} --switch-rail`, { rail: "ark", since: l.fundArkAt ?? null });
   if (o.resumeClaim && !l.fundSwap) throw new MarkError("NOT_FOUND", `no funding swap recorded for escrow ${id} in this Mark home; nothing to resume. Run ${mk()} escrow fund ${id} from the Mark home (MARK_HOME) that created the invoice.`);
@@ -537,10 +543,7 @@ export async function fundArk(c: Ctx, id: string, o: FundArkOpts = {}) {
     }
     return { escrowId: id, rail: "ark", state: e.state, funding: e.funding ?? null, note: "already funded", ...(ledger !== undefined ? { ledger } : {}) };
   }
-  const v = verifyDealTerms(c, e);
-  if (!v.agreed) throw new MarkError("TERMS_NOT_ACCEPTED", v.hashVerified === false ? "terms hash mismatch; refusing to fund" : `both parties must accept the terms before funding (buyer: ${(v.accepted as any).buyer.accepted}, seller: ${(v.accepted as any).seller.accepted}). Run: ${mk()} escrow accept ${id}`, { accepted: v.accepted });
-  const l = c.index.get(id);
-  if (l.signedTermsHash && e.termsHash !== l.signedTermsHash) throw new MarkError("TERMS_CHANGED", `the server's deal hash ${e.termsHash} is not the termsHash I signed (${l.signedTermsHash}); refusing to fund`, { signed: l.signedTermsHash, server: e.termsHash });
+  const { v, l } = checkFundTerms(c, e, id);
   const check = await verifyDeal(c, e); // address = the 2-of-3 contract of the deal's keys, arbiter attested: never show an unchecked address
   const risk = l.fundRail === "ark" || (v.termsVersion === 2 && v.agreed) ? null : counterpartyRule(c, e, l.role ?? myRole(c, e));
   if (risk && !o.allowCounterpartyRule) throw new MarkError("UNSAFE_RULE", `refusing to fund: ${risk.warning} To fund anyway: ${mk()} escrow fund ${id} --ark --allow-counterparty-rule`, risk);

@@ -60,7 +60,13 @@ test("fund refuses until both parties accepted", async () => {
   let d; const { c } = await ctx({ "GET /escrows/e1": async () => [200, d] });
   d = deal(c, { terms: T }); d.acceptances = { buyer: { sig: hex.encode(schnorr.sign(hex.decode(d.termsHash), c.secret)), at: "t" } };
   assert.equal(await code(uc.fund(c, "e1")), "TERMS_NOT_ACCEPTED");
+  assert.equal(await code(uc.fundArk(c, "e1")), "TERMS_NOT_ACCEPTED", "the Ark rail has the same gate");
   d.acceptances.seller = { sig: hex.encode(schnorr.sign(hex.decode(d.termsHash), other.s)), at: "t" };
+  // both accepted, but the server's hash is not the one I signed: both rails refuse
+  c.index.set("e1", { signedTermsHash: "ef".repeat(32) });
+  assert.equal(await code(uc.fund(c, "e1")), "TERMS_CHANGED");
+  assert.equal(await code(uc.fundArk(c, "e1")), "TERMS_CHANGED");
+  c.index.set("e1", { signedTermsHash: d.termsHash });
   assert.equal((await uc.fund(c, "e1")).swapId, "sw1");
 });
 
