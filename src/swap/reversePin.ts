@@ -2,6 +2,7 @@
  *  swap goes through: status, fund (including the provider's own read under the deposit lock), claim, refund and recover. */
 import type { ReversePin, ReverseSwapInfo } from "./provider.js";
 import { SWAP_SOURCES, sameHex } from "./stable.js";
+import { reverseDir } from "./states.js";
 
 /** A well-formed record (read from disk): one payout target, the deposit terms, optional numeric fields. */
 export function validPin(v: unknown): boolean {
@@ -16,7 +17,7 @@ export function validPin(v: unknown): boolean {
  *  pinned that field, is not held against the swap. */
 export function pinMismatch(pin: ReversePin, x: ReverseSwapInfo, myDeposit: string, strict: boolean): string | undefined {
   const ln = typeof pin.invoice === "string", rail = ln ? SWAP_SOURCES.lightning.chain : SWAP_SOURCES.arkade.chain;
-  const dir = ln ? "evm_to_lightning" : "evm_to_arkade";
+  const dir = reverseDir(ln ? "lightning" : "arkade");
   if (!sameHex(x.depositAddress, myDeposit)) return `deposit address ${x.depositAddress} is not this Mark home's ${myDeposit}`;
   if (!sameHex(pin.depositAddress, myDeposit)) return `confirmed deposit address ${pin.depositAddress} is not this Mark home's`;
   if (ln === (typeof pin.arkAddress === "string")) return "the record has no single payout target";

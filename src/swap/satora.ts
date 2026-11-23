@@ -4,6 +4,7 @@ import path from "node:path";
 import { Client } from "@satora/swap";
 import type { SwapProvider, SwapInfo, ClaimResult, StableSwapCreated, StableSwapInfo, ReverseQuoteInput, ReverseCreateInput, ReverseSwapCreated, ReverseSwapInfo, FundResult, ReversePin } from "./provider.js";
 import { validPin, pinMismatch } from "./reversePin.js";
+import { isReverseDir } from "./states.js";
 import { arbitrumReader, viemSigner, type EvmReader } from "./evm.js";
 import { SWAP_REFERRAL_ID, SWAP_SOURCES, SWAP_TARGETS, checkMarkupBps, sameHex, type SatoraQuote, type SwapSource, type SwapTarget } from "./stable.js";
 import { encryptWith, decryptWith } from "../crypto/keystore.js";
@@ -226,7 +227,7 @@ export class SatoraProvider implements SwapProvider {
   depositAddress(): string { return (this.c as any).getEvmAddress(); }
   async openReverse(): Promise<ReverseSwapInfo[]> {
     const all: any[] = (await (this.c as any).swapStorage?.getAll?.()) ?? [];
-    const mine = all.map((x) => x?.response).filter((r) => r?.id && r.gasless && r.client_evm_address && r.status === "pending" && /^evm_to_/.test(r.direction ?? ""));
+    const mine = all.map((x) => x?.response).filter((r) => r?.id && r.gasless && r.client_evm_address && r.status === "pending" && isReverseDir(r.direction));
     const out: ReverseSwapInfo[] = [];
     for (const r of mine) { try { const x = await this.getReverse(r.id); if (x.status === "pending") out.push(x); } catch { out.push({ ...reverseFields(r), local: true }); } }
     return out;

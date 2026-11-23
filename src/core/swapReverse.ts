@@ -7,7 +7,7 @@ import type { ReverseSwapCreated, ReverseSwapInfo, SwapProvider } from "../swap/
 import { mk } from "../invocation.js";
 import { checkArkadeAddress } from "./arkAddress.js";
 import { decodeInvoice, networkOk } from "../lightning/invoice.js";
-import { SWAP_DONE, SWAP_FAILED } from "../swap/states.js";
+import { SWAP_CLAIMABLE, SWAP_DONE, SWAP_FAILED, SWAP_PAID, isReverseDir, reverseDir } from "../swap/states.js";
 import { pinMismatch } from "../swap/reversePin.js";
 import { sleep } from "../util.js";
 import { ARBISCAN_TX, SWAP_MARKUP_BPS, sameHex, targetByContract, txLink, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkMarkupBps,
@@ -24,6 +24,9 @@ export async function reverse(c: Ctx): Promise<Rev> {
   for (const k of REV_KEYS) if (!(s as any)[k]) throw new MarkError("BAD_CONFIG", `swap provider ${s.name} does not support mark swap from a stablecoin`);
   return s as Rev;
 }
+
+/** The provider and a fresh read of swap `id`. */
+export async function loadReverse(c: Ctx, id: string) { const r = await reverse(c); return [r, await r.getReverse(id)] as const; }
 
 const RECOVER_AFTER_FUND_MS = 30 * 60 * 1000;
 const DO_NOT_RESEND = "Do NOT send the stablecoins again.";
@@ -131,7 +134,7 @@ function checkReverseCreated(c: Ctx, p: Parsed, x: ReverseSwapCreated, q: any, m
   if (p.sourceUnits !== undefined) { if (amt !== p.sourceUnits) bad(`deposit amount ${units(amt, t.decimals)} ${t.symbol} is not ${units(p.sourceUnits, t.decimals)}`); }
   else if (amt * 10000n > BigInt(q.source_amount) * BigInt(10000 + SWAP_MAX_SLIPPAGE_BPS)) bad(`deposit amount ${units(amt, t.decimals)} ${t.symbol} is more than ${pct(SWAP_MAX_SLIPPAGE_BPS)} above the quote (${units(q.source_amount, t.decimals)})`);
   if (!Number.isSafeInteger(x.targetSats) || x.targetSats! <= 0) bad(`payout ${x.targetSats} sats is not a positive amount`);
-  if (x.direction !== (p.to === "lightning" ? "evm_to_lightning" : "evm_to_arkade")) bad(`direction ${x.direction}`);
+  if (x.direction !== reverseDir(p.to)) bad(`direction ${x.direction}`);
   if (p.invoice) {
     if (!sameHex(x.invoice, p.invoice)) bad("the invoice Satora will pay is not the one you gave");
     if (x.targetSats! < p.invoiceSats!) bad(`payout ${x.targetSats} sats does not cover the invoice's ${p.invoiceSats}`);
@@ -203,7 +206,7 @@ function pinned(s: Rev, x: ReverseSwapInfo, mode: "show" | "act" | "return"): Re
   // "return" (refund, recover) works without the record: it only moves funds back through this home's own key to an address you give
   return { ...x, depositAddress: mine, ...(pin?.arkAddress ? { arkAddress: pin.arkAddress } : {}) };
 }
-function notReverse(x: ReverseSwapInfo) { if (!/^evm_to_/.test(x.direction ?? "")) throw new MarkError("USAGE", `swap ${x.id} is not a swap from a stablecoin (${x.direction})`); }
+function notReverse(x: ReverseSwapInfo) { if (!isReverseDir(x.direction)) throw new MarkError("USAGE", `swap ${x.id} is not a swap from a stablecoin (${x.direction})`); }
 
 /** After the swap stops: what to do. Funded and failed: refund it to the deposit address, then recover it; unfunded: recover any deposit. */
 function nextNote(x: ReverseSwapInfo) {
@@ -213,7 +216,7 @@ function nextNote(x: ReverseSwapInfo) {
     : x.fundTx || x.status === "clientfundedserverrefunded" || x.status === "clientfundedtoolate" || x.status === "serverwontfund"
       ? `Ended without a payout after your deposit was locked: run ${mk()} swap refund ${x.id} (gasless), then ${mk()} swap recover ${x.id} --to <your 0x address>.`
       : `Ended without a payout (${x.status}). If you deposited, get it back with ${mk()} swap recover ${x.id} --to <your 0x address>.`;
-  if ((x.status === "serverfunded" || x.status === "clientredeeming") && x.targetChain === "Arkade") return `Satora funded the Ark payout: claim it with ${mk()} swap claim ${x.id}.`;
+  if (SWAP_CLAIMABLE.has(x.status) && x.targetChain === "Arkade") return `Satora funded the Ark payout: claim it with ${mk()} swap claim ${x.id}.`;
   return `In progress (${x.status}). ${DO_NOT_RESEND}`;
 }
 
@@ -233,7 +236,7 @@ export async function waitReverse(s: Rev, id: string, o: { timeoutSec?: number; 
         const r = await s.fundReverse(id); fund = r;
         if (!r.success && !r.skipped && !r.uncertain) return fundOut(x, r);
       }
-    } else if ((x.status === "serverfunded" || x.status === "clientredeeming") && x.targetChain === "Arkade" && !claimed) {
+    } else if (SWAP_CLAIMABLE.has(x.status) && x.targetChain === "Arkade" && !claimed) {
       const r = await s.claim(id, x.arkAddress!); claimed = r.success;
       if (!r.success) return { id, status: x.status, claimFailed: true, claim: r, note: `Satora funded the Ark payout but the claim failed: retry with ${mk()} swap claim ${id} (same Mark home). ${DO_NOT_RESEND}` };
     } else if (SWAP_FAILED.has(x.status)) return { id, status: x.status, ended: true, note: nextNote(x) };
@@ -267,20 +270,19 @@ export async function reverseClaim(s: Rev, x0: ReverseSwapInfo) {
   const x = pinned(s, x0, "act");
   if (isDone(x)) return doneOut(x);
   if (x.targetChain !== "Arkade") return { id: x.id, status: x.status, claimed: false, note: `A Lightning payout needs no claim: Satora pays the invoice. ${nextNote(x)}` };
-  if (x.status !== "serverfunded" && x.status !== "clientredeeming") return { id: x.id, status: x.status, claimed: false, note: nextNote(x) };
+  if (!SWAP_CLAIMABLE.has(x.status)) return { id: x.id, status: x.status, claimed: false, note: nextNote(x) };
   const r = await s.claim(x.id, x.arkAddress!);
   return r.success ? { id: x.id, status: x.status, claimed: true, ...(r.txid ? { txid: r.txid } : {}), note: "Claimed to your Ark address." }
     : { id: x.id, status: x.status, claimFailed: true, claim: r, note: `Claim failed; retry later. ${DO_NOT_RESEND}` };
 }
 
-const REFUNDABLE = new Set(["clientfundingseen", "clientfunded"]);
 /** Refund a locked deposit that did not pay out, back to the deposit address (gasless), for recover to send on. */
 export async function reverseRefund(s: Rev, x0: ReverseSwapInfo) {
   const x = pinned(s, x0, "return");
   if (isDone(x)) throw new MarkError("SWAP_DONE", "this swap paid out: nothing to refund");
   if (x.status === "pending" && !x.fundTx) return { id: x.id, status: x.status, refunded: false, note: `Nothing is locked yet: an unfunded deposit is recovered with ${mk()} swap recover ${x.id} --to <your 0x address>.` };
   // only while the deposit is locked and Satora is not paying out: funded-but-stuck, or ended without a payout
-  if (!REFUNDABLE.has(x.status) && !SWAP_FAILED.has(x.status)) return { id: x.id, status: x.status, refunded: false, note: `Not refundable while the payout is under way (${x.status}). ${nextNote(x)}` };
+  if (!SWAP_PAID.has(x.status) && !SWAP_FAILED.has(x.status)) return { id: x.id, status: x.status, refunded: false, note: `Not refundable while the payout is under way (${x.status}). ${nextNote(x)}` };
   if (/refunded/.test(x.status) && x.status !== "clientfundedserverrefunded") return { id: x.id, status: x.status, refunded: false, note: nextNote(x) };
   const r = await s.refundReverse(x.id);
   return r.success ? { id: x.id, refunded: true, how: r.how, ...txLink(r.txHash), note: `Refunded to the deposit address ${x.depositAddress}. Send it to your wallet with ${mk()} swap recover ${x.id} --to <your 0x address>.` }

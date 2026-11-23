@@ -8,5 +8,9 @@ export const SWAP_WAITING = new Set([...SWAP_UNPAID, ...SWAP_PAID]);
 /** The provider's side holds the funds: claimable. clientredeeming = a claim was started but not finished (resume it). */
 export const SWAP_CLAIMABLE = new Set(["serverfunded", "clientredeeming"]);
 export const SWAP_DONE = new Set(["clientredeemed", "serverredeemed"]);
+/** A swap from a stablecoin (an EVM-sourced Satora swap), by its direction. */
+export const isReverseDir = (d: unknown) => typeof d === "string" && d.startsWith("evm_to_");
+/** The direction Satora reports for a swap from a stablecoin paid out over this rail. */
+export const reverseDir = (rail: "lightning" | "arkade") => rail === "lightning" ? "evm_to_lightning" : "evm_to_arkade";
 /** Final states in which nothing was (or will be) paid out to the target. */
 export const SWAP_FAILED = new Set(["expired", "clientrefunded", "clientfundedserverrefunded", "clientrefundedserverfunded", "clientrefundedserverrefunded", "serverwontfund", "clientinvalidfunded", "clientfundedtoolate"]);

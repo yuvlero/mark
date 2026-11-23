@@ -8,9 +8,9 @@ import { mk } from "../invocation.js";
 import { checkArkadeAddress } from "./arkAddress.js";
 import { decodeInvoice, networkOk } from "../lightning/invoice.js";
 import type { StableSwapCreated, StableSwapInfo } from "../swap/provider.js";
-import { SWAP_UNPAID, SWAP_PAID, SWAP_WAITING, SWAP_CLAIMABLE, SWAP_DONE } from "../swap/states.js";
+import { SWAP_UNPAID, SWAP_PAID, SWAP_WAITING, SWAP_CLAIMABLE, SWAP_DONE, isReverseDir } from "../swap/states.js";
 import { sleep } from "../util.js";
-import { reverse, waitReverse, reverseQuote, reverseRun, reverseStatus, reverseClaim, reverseRefund, reverseFund, reverseRecover } from "./swapReverse.js";
+import { reverse, loadReverse, waitReverse, reverseQuote, reverseRun, reverseStatus, reverseClaim, reverseRefund, reverseFund, reverseRecover } from "./swapReverse.js";
 import { ARBISCAN_TX, sameHex, targetByContract, txLink, SWAP_MARKUP_BPS, SWAP_REFERRAL_ID, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkMarkupBps, formatSwapQuote, pct, swapSats, swapSource, swapTarget, units, swapRoute, allSwapRoutes, type SwapSource, type SwapTarget } from "../swap/stable.js";
 
 /** sats: BTC -> stablecoin. amount (token units like 1.5) / invoice: stablecoin -> BTC (address is the payout target there). */
@@ -201,7 +201,7 @@ function endedNote(status: string, id: string, direction?: string) {
 export async function swapStatus(c: Ctx, id: string) {
   if (!id) throw new MarkError("USAGE", "mark swap status <id>");
   const s = await stable(c); const x = await s.getStable(id);
-  if (/^evm_to_/.test(x.direction ?? "")) { const r = await reverse(c); return reverseStatus(r, await r.getReverse(id)); }
+  if (isReverseDir(x.direction)) { const [r, y] = await loadReverse(c, id); return reverseStatus(r, y); }
   const t = targetByContract(x.tokenContract);
   const { raw: _raw, ...info } = x;
   const got = x.payoutTx && t && x.targetAddress ? await arrived(s, x.payoutTx, t.tokenId, x.targetAddress, t.decimals) : {};
@@ -219,7 +219,10 @@ export async function swapClaim(c: Ctx, id: string, o: { wait?: boolean; timeout
   let x: StableSwapInfo | undefined; let err: unknown;
   for (let i = 0; i < 3 && !x; i++) { if (i) await sleep(Math.min(o.pollMs ?? 2000, 2000)); try { x = await s.getStable(id); } catch (e) { err = e; } }
   if (!x) throw err;
-  if (/^evm_to_/.test(x.direction ?? "")) { const r = await reverse(c); return o.wait ? waitReverse(r, id, { timeoutSec: o.timeoutSec ?? 900, pollMs: o.pollMs, noFund: true }) : reverseClaim(r, await r.getReverse(id)); }
+  if (isReverseDir(x.direction)) {
+    if (o.wait) return waitReverse(await reverse(c), id, { timeoutSec: o.timeoutSec ?? 900, pollMs: o.pollMs, noFund: true });
+    const [r, y] = await loadReverse(c, id); return reverseClaim(r, y);
+  }
   if (o.wait) return waitAndClaim(s, id, o);
   if (SWAP_DONE.has(x.status)) return done(s, id, x.status, x.payoutTx, x);
   if (!SWAP_CLAIMABLE.has(x.status)) return { id, status: x.status, claimed: false, note: SWAP_PAID.has(x.status) ? `Nothing to claim yet. ${PAID_NOTE} (${mk()} swap claim ${id} --wait claims as soon as it is funded)`
@@ -233,9 +236,9 @@ export async function swapClaim(c: Ctx, id: string, o: { wait?: boolean; timeout
 export async function swapRefund(c: Ctx, id: string, to?: string) {
   if (!id) throw new MarkError("USAGE", "mark swap refund <id> --to <ark address from an Arkade wallet on https://arkade.computer>   (a swap from a stablecoin: mark swap refund <id>)");
   const s = await stable(c); const x = await s.getStable(id);
-  if (/^evm_to_/.test(x.direction ?? "")) {
+  if (isReverseDir(x.direction)) {
     if (to !== undefined) throw new MarkError("USAGE", `a swap from a stablecoin refunds to its deposit address: run ${mk()} swap refund ${id} (no --to), then ${mk()} swap recover ${id} --to <your 0x address>`);
-    const r = await reverse(c); return reverseRefund(r, await r.getReverse(id));
+    const [r, y] = await loadReverse(c, id); return reverseRefund(r, y);
   }
   if (!to) throw new MarkError("USAGE", "mark swap refund <id> --to <ark address from an Arkade wallet on https://arkade.computer>");
   if (x.direction && x.direction !== "arkade_to_evm") throw new MarkError("USAGE", "only an Arkade-funded swap is refunded with mark swap refund; a Lightning hold invoice simply expires and your wallet gets the sats back");
