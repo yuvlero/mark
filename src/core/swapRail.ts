@@ -56,7 +56,8 @@ export function parseRail(c: Ctx, i: RailInput, mode: "quote" | "create" = "crea
 type Parsed = ReturnType<typeof parseRail>;
 
 function flags(p: Parsed) {
-  if (p.to === "lightning") return `--from ${p.from} --to lightning ${"invoice" in p && p.invoice ? `--invoice ${p.invoice}` : "--invoice <bolt11 for the sats you want>"}`;
+  // never interpolate a bolt11: preview/quote "next" text is logged
+  if (p.to === "lightning") return `--from ${p.from} --to lightning --invoice ${"invoice" in p && p.invoice ? "<the same bolt11>" : "<bolt11 for the sats you want>"}`;
   return `--from ${p.from} --to arkade --sats ${p.sats} --address ${"address" in p && p.address ? p.address : "<ark address on https://arkade.computer>"}`;
 }
 
@@ -83,7 +84,7 @@ export async function railQuote(c: Ctx, i: RailInput) {
 function payInstructions(p: Parsed, x: RailSwapCreated) {
   return p.from === "lightning"
     ? { invoice: x.invoice, howToPay: "Pay this Lightning invoice from any Lightning wallet, once. It is a hold invoice: it settles only when the Arkade payout is claimed, else it expires and your wallet gets the sats back." }
-    : { arkAddress: x.fundArkAddress, amountSats: x.payAmountSats, howToPay: `Send exactly amountSats to arkAddress in ONE payment from an Arkade wallet on https://arkade.computer (not Bark / Second). Satora then pays the Lightning invoice. If the swap fails, refund it with ${mk()} swap refund ${x.id} --to <your ark address> after its timelock.` };
+    : { arkAddress: x.fundArkAddress, amountSats: x.payAmountSats, howToPay: `Send exactly amountSats to arkAddress in ONE payment from an Arkade wallet on https://arkade.computer (not Bark / Second). Satora then pays the Lightning invoice. If your wallet's change would be below the Arkade vtxo minimum (330 sats on arkade.computer), that leftover may be taken as a fee, not returned as change. If the swap fails, refund it with ${mk()} swap refund ${x.id} --to <your ark address> after its timelock.` };
 }
 
 export async function railRun(c: Ctx, i: RailRunInput) {
@@ -100,7 +101,7 @@ export async function railRun(c: Ctx, i: RailRunInput) {
   }
   const created = await s.createRail({ from: p.from, to: p.to, bps: p.bps, sats: p.sats, address: "address" in p ? p.address : undefined, invoice: "invoice" in p ? p.invoice : undefined });
   checkRailCreated(c, p, created, q);
-  const first = { swap: "created", id: created.id, status: created.status, from: p.from, to: p.to, expectedReceiveSats: created.receiveSats, quote, ...payInstructions(p, created),
+  const first = { swap: "created", id: created.id, status: created.status, from: p.from, to: p.to, expectedReceiveSats: created.receiveSats, quote, ...(created.payoutArkAddress ? { payoutArkAddress: created.payoutArkAddress } : {}), ...payInstructions(p, created),
     next: i.wait && i.onProgress
       ? (p.from === "lightning" ? "Waiting for your payment, then Mark claims the sats to your Ark address." : "Waiting for your Arkade payment, then for Satora to pay the Lightning invoice.")
       : (p.from === "lightning" ? `After paying, run: ${mk()} swap claim ${created.id} --wait  (claims as soon as Satora funds its side)` : `After sending the sats, run: ${mk()} swap status ${created.id}  (or ${mk()} swap claim ${created.id} --wait to wait for the invoice to be paid)`) };
@@ -109,7 +110,7 @@ export async function railRun(c: Ctx, i: RailRunInput) {
   return { ...(await waitRail(s, created.id, { timeoutSec: i.timeoutSec, pollMs: i.pollMs })), from: p.from, to: p.to };
 }
 
-function checkRailCreated(c: Ctx, p: Parsed, x: RailSwapCreated, q: { net_target_amount: string; source_amount: string }) {
+function checkRailCreated(c: Ctx, p: Parsed, x: RailSwapCreated, q: { net_target_amount: string; source_amount: string; net_source_amount?: string }) {
   const bad = (why: string) => { throw new MarkError("SWAP_FAILED", `Satora's swap does not match what you confirmed (${why}). Do NOT pay it; nothing is lost while it is unpaid.`, { id: x?.id }); };
   const src = SWAP_SOURCES[p.from], tgt = SWAP_SOURCES[p.to];
   if (!x?.id) bad("no swap id");
@@ -133,7 +134,9 @@ function checkRailCreated(c: Ctx, p: Parsed, x: RailSwapCreated, q: { net_target
     if ("invoice" in p && p.invoice && x.invoice !== p.invoice) bad("the invoice Satora pays is not the one you confirmed");
     let got: number | undefined; try { got = decodeInvoice(x.invoice!).sats; } catch { bad("undecodable payout invoice"); }
     if ("invoiceSats" in p && got !== p.invoiceSats) bad(`payout invoice is ${got} sats, not ${p.invoiceSats}`);
-    if (x.payAmountSats !== Number(q.source_amount)) bad(`lock amount ${x.payAmountSats} sats is not the quoted ${q.source_amount}`);
+    const quotedPay = Number(q.net_source_amount ?? q.source_amount);
+    if (!Number.isSafeInteger(quotedPay) || quotedPay <= 0) bad(`quoted source amount ${q.net_source_amount ?? q.source_amount} is not a positive whole number`);
+    if (x.payAmountSats !== quotedPay) bad(`lock amount ${x.payAmountSats} sats is not the quoted ${quotedPay}`);
   }
   if (!Number.isSafeInteger(x.receiveSats) || (x.receiveSats ?? 0) <= 0) bad(`payout ${x.receiveSats} is not a positive sats amount`);
   const quoted = Number(q.net_target_amount);
@@ -199,10 +202,15 @@ async function railSettled(s: Prov, id: string, status: string, tx: string, poll
   }
   return railDone(last ?? { id, status, payAmountSats: NaN, local: true }, tx);
 }
-function railDone(x: RailSwapInfo | { id: string; status: string; payAmountSats: number; local: boolean; receiveSats?: number; payoutTx?: string; fundTx?: string }, tx?: string) {
+function railDone(x: RailSwapInfo | { id: string; status: string; payAmountSats: number; local: boolean; receiveSats?: number; payoutTx?: string; fundTx?: string; direction?: RailSwapInfo["direction"]; payoutArkAddress?: string }, tx?: string) {
   const payoutTx = tx ?? ("payoutTx" in x ? x.payoutTx : undefined);
-  return { id: x.id, status: x.status, swap: "done" as const, ...(payoutTx ? { payoutTx } : {}), ...(x.receiveSats != null ? { receiveSats: x.receiveSats } : {}),
-    note: payoutTx ? "Sats sent to your Ark address." : (SWAP_DONE.has(x.status) && !payoutTx && !("payoutArkAddress" in x && (x as RailSwapInfo).payoutArkAddress) ? "Lightning invoice paid." : "Done.") };
+  const dir = "direction" in x ? x.direction : undefined;
+  const toArk = dir === "lightning_to_arkade" || !!(x as RailSwapInfo).payoutArkAddress;
+  const note = dir === "arkade_to_lightning" ? "Lightning invoice paid."
+    : toArk ? "Sats sent to your Ark address."
+    : SWAP_DONE.has(x.status) ? "Lightning invoice paid."
+    : "Done.";
+  return { id: x.id, status: x.status, swap: "done" as const, ...(payoutTx ? { payoutTx } : {}), ...(x.receiveSats != null ? { receiveSats: x.receiveSats } : {}), note };
 }
 
 export async function railClaim(s: Prov, x0: RailSwapInfo, o: { wait?: boolean; timeoutSec?: number; pollMs?: number } = {}) {

@@ -30,7 +30,7 @@ function mockClient(o = {}) {
       const pay = p.sourceAmount ?? (quote.source_amount);
       const invoice = src === "Lightning" ? makeInvoice({ sats: Number(pay) }) : (p.targetAddress ?? makeInvoice({ sats: Number(quote.net_target_amount) }));
       const res = { id: "rail-1", status: "pending", direction: src === "Lightning" ? "lightning_to_arkade" : "arkade_to_lightning",
-        source_amount: String(src === "Lightning" ? pay : quote.source_amount), target_amount: String(quote.net_target_amount),
+        source_amount: String(src === "Lightning" ? pay : (quote.net_source_amount ?? quote.source_amount)), target_amount: String(quote.net_target_amount),
         source_token: { chain: src, token_id: "btc" }, target_token: { chain: tgt, token_id: "btc" },
         arkade_server_pk: "5a".repeat(32),
         ...(src === "Lightning" ? { bolt11_invoice: invoice, target_arkade_address: p.targetAddress } : { client_lightning_invoice: invoice, arkade_vhtlc_address: ARK }),
@@ -125,6 +125,7 @@ test("mark swap: Lightning → Arkade preview and create (confirm) pay a hold in
   assert.match(prev.notice, /REAL MONEY/); assert.equal(prev.quote.receiveSats, 992);
   const r = await sw.swapRun(c, { from: "lightning", to: "arkade", sats: 1000, address: ARK, confirm: true });
   assert.equal(r.swap, "created"); assert.equal(r.id, "rail-1"); assert.match(r.invoice, /^lnbc10000n|^lnbc10u|^lnbc1000/);
+  assert.equal(r.payoutArkAddress, ARK);
   assert.equal(r.expectedReceiveSats, 992); assert.match(r.howToPay, /hold invoice/i);
   assert.equal(calls.getQuote.length, 2); assert.equal(calls.createSwap.length, 1);
   assert.equal(calls.createSwap[0].referralCode, SWAP_REFERRAL_ID); assert.equal(calls.createSwap[0].extraFees, 50);
@@ -141,6 +142,7 @@ test("mark swap: Arkade → Lightning preview and create print the VHTLC address
   const r = await sw.swapRun(ctxWith(provider(client)), { from: "arkade", to: "lightning", invoice: inv, confirm: true });
   assert.equal(r.swap, "created"); assert.equal(r.arkAddress, ARK); assert.equal(r.amountSats, 900);
   assert.match(r.howToPay, /not Bark/); assert.match(r.howToPay, /ONE payment/);
+  assert.match(r.howToPay, /vtxo minimum \(330 sats/);
   assert.equal(calls.createSwap[0].targetAddress, inv); assert.equal(calls.createSwap[0].sourceAmount, undefined);
   assert.equal(calls.createSwap[0].referralCode, SWAP_REFERRAL_ID); assert.equal(calls.createSwap[0].extraFees, 50);
 });
@@ -149,6 +151,7 @@ test("claim: Lightning → Arkade claims to the payout Ark address; Arkade → L
   const { client, calls } = mockClient({ statuses: ["serverfunded"], direction: "lightning_to_arkade" });
   const r = await sw.swapClaim(ctxWith(provider(client)), "rail-1");
   assert.equal(r.swap, "done"); assert.equal(r.payoutTx, "arkclaim1");
+  assert.equal(r.note, "Sats sent to your Ark address.");
   assert.equal(calls.claimArkade[0].id, "rail-1");
   assert.equal(calls.claimArkade[0].destinationAddress, ARK);
   const back = mockClient({ statuses: ["clientfunded"], direction: "arkade_to_lightning", get: { direction: "arkade_to_lightning", arkade_vhtlc_address: ARK, client_lightning_invoice: makeInvoice({ sats: 863 }) } });
@@ -202,6 +205,48 @@ test("mark swap: Arkade → Lightning create is refused if the invoice, lock amo
     const { client } = mockClient({ quote: Q_ARK_LN, tamper });
     await assert.rejects(sw.swapRun(ctxWith(provider(client)), { from: "arkade", to: "lightning", invoice: inv, confirm: true }), (e) => e.code === "SWAP_FAILED" && /Do NOT pay/.test(e.message));
   }
+});
+
+test("mark swap: Arkade → Lightning create accepts a lock that matches net_source_amount when it differs from source_amount", async () => {
+  const inv = makeInvoice({ sats: 863 });
+  // invoice-pinned quotes: source_amount is the invoice, net_source_amount is what the user must send
+  const quote = { ...Q_ARK_LN, source_amount: "863", net_source_amount: "876", target_amount: "863", net_target_amount: "863", network_fee: 6 };
+  const { client, calls } = mockClient({ quote });
+  const prev = await sw.swapRun(ctxWith(provider(client)), { from: "arkade", to: "lightning", invoice: inv });
+  assert.equal(prev.swap, "preview");
+  assert.equal(prev.quote.payAmountSats, 876);
+  assert.equal(prev.quote.receiveSats, 863);
+  assert.doesNotMatch(prev.next, /lnbc/i);
+  assert.ok(!String(prev.next).includes(inv), "preview next must not leak the bolt11");
+  assert.match(prev.next, /--invoice <the same bolt11>/);
+  const quoted = await sw.swapQuote(ctxWith(provider(client)), { from: "arkade", to: "lightning", sats: 900 });
+  assert.match(quoted.next, /--invoice <bolt11 for the sats you want>/);
+  assert.doesNotMatch(quoted.next, /the same bolt11/);
+  assert.doesNotMatch(quoted.next, /lnbc/i);
+  const r = await sw.swapRun(ctxWith(provider(client)), { from: "arkade", to: "lightning", invoice: inv, confirm: true });
+  assert.equal(r.swap, "created");
+  assert.equal(r.amountSats, 876);
+  assert.equal(calls.createSwap.length, 1);
+});
+
+test("mark swap: Arkade → Lightning create is refused if the lock matches source_amount but not net_source_amount", async () => {
+  const inv = makeInvoice({ sats: 863 });
+  const quote = { ...Q_ARK_LN, source_amount: "863", net_source_amount: "876", target_amount: "863", net_target_amount: "863", network_fee: 6 };
+  const { client } = mockClient({ quote, tamper: { source_amount: "863" } });
+  await assert.rejects(sw.swapRun(ctxWith(provider(client)), { from: "arkade", to: "lightning", invoice: inv, confirm: true }), (e) => e.code === "SWAP_FAILED" && /Do NOT pay/.test(e.message) && /876/.test(e.message));
+});
+
+test("claim --wait: Arkade → Lightning done note says the Lightning invoice was paid, not that sats went to an Ark address", async () => {
+  const inv = makeInvoice({ sats: 863 });
+  const { client, calls } = mockClient({ statuses: ["serverredeemed"], direction: "arkade_to_lightning" });
+  client.getSwap = async (id) => ({ id, status: "serverredeemed", direction: "arkade_to_lightning", arkade_vhtlc_address: ARK,
+    source_amount: "876", target_amount: "863", client_lightning_invoice: inv, arkade_claim_txid: "lnpay1",
+    source_token: { chain: "Arkade", token_id: "btc" }, target_token: { chain: "Lightning", token_id: "btc" } });
+  const r = await sw.swapClaim(ctxWith(provider(client)), "rail-1", { wait: true, pollMs: 1, timeoutSec: 2 });
+  assert.equal(r.swap, "done");
+  assert.equal(r.payoutTx, "lnpay1");
+  assert.equal(r.note, "Lightning invoice paid.");
+  assert.equal(calls.claimArkade.length, 0);
 });
 
 test("claim --wait from a Mark home without the claim key does not claim; it says to run it from the creating home", async () => {
