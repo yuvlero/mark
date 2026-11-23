@@ -20,7 +20,7 @@ export interface ReverseSwapCreated { id: string; status: string; direction?: st
   sourceChain?: string; evmChainId?: number; targetChain?: string; targetSats?: number; invoice?: string; arkAddress?: string; raw?: unknown }
 /** fundTx: the gasless funding (relay) tx once Satora saw it. local: this Mark home holds the swap's keys. */
 export interface ReverseSwapInfo extends ReverseSwapCreated { direction?: string; fundTx?: string; payoutTx?: string; lightningSettled?: boolean; createdAt?: string; local: boolean }
-export interface ReversePin { invoice?: string; arkAddress?: string; depositAddress: string; tokenContract: string; sourceUnits: string }
+export interface ReversePin { invoice?: string; arkAddress?: string; depositAddress: string; tokenContract: string; sourceUnits: string; targetSats?: number; evmChainId?: number }
 export interface ReverseQuoteInput { from: SwapStable; to: SwapRail; bps: number; sourceUnits?: bigint; targetSats?: number; destination?: string }
 export interface ReverseCreateInput { from: SwapStable; to: SwapRail; bps: number; sourceUnits?: bigint; invoice?: string; arkAddress?: string }
 /** A gasless funding attempt: at most one per swap. uncertain: the relay may have submitted it (no clear refusal), so Mark does not

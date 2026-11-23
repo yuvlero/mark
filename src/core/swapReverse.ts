@@ -98,7 +98,7 @@ export async function reverseRun(c: Ctx, i: ReverseRunInput) {
     const x = await s.createReverse({ from: p.from, to: p.to, bps: p.bps, ...(p.invoice ? { invoice: p.invoice } : { sourceUnits: p.sourceUnits }), ...(p.arkAddress ? { arkAddress: p.arkAddress } : {}) });
     // checked and recorded before the lock is released: the next create (any process) sees this swap as open and its invoice as used
     checkReverseCreated(c, p, x, q, s.depositAddress());
-    s.pinReverse(x.id, { ...(p.invoice ? { invoice: p.invoice } : { arkAddress: p.arkAddress }), depositAddress: s.depositAddress(), tokenContract: x.tokenContract!, sourceUnits: x.sourceUnits! });
+    s.pinReverse(x.id, { ...(p.invoice ? { invoice: p.invoice } : { arkAddress: p.arkAddress }), depositAddress: s.depositAddress(), tokenContract: x.tokenContract!, sourceUnits: x.sourceUnits!, targetSats: x.targetSats!, evmChainId: x.evmChainId! });
     return x;
   });
   const deposit = await depositInfo(s, created);
@@ -200,6 +200,9 @@ function pinned(s: Rev, x: ReverseSwapInfo, mode: "show" | "act" | "return"): Re
     if (pin.depositAddress.toLowerCase() !== mine.toLowerCase()) bad(`confirmed deposit address ${pin.depositAddress} is not this Mark home's`);
     if (pin.tokenContract.toLowerCase() !== String(x.tokenContract ?? "").toLowerCase()) bad(`token ${x.tokenContract}`);
     if (pin.sourceUnits !== x.sourceUnits) bad(`deposit amount ${x.sourceUnits} units, confirmed ${pin.sourceUnits}`);
+    if (x.gasless !== true) bad("no longer a gasless swap");
+    if (pin.evmChainId !== undefined ? x.evmChainId !== pin.evmChainId : mode === "act") bad(`chain ${x.evmChainId}`);
+    if (pin.targetSats !== undefined ? x.targetSats !== pin.targetSats : mode === "act") bad(`payout ${x.targetSats} sats, confirmed ${pin.targetSats ?? "unknown"}`);
     const ln = !!pin.invoice, want = ln ? SWAP_SOURCES.lightning.chain : SWAP_SOURCES.arkade.chain;
     if (x.targetChain !== want) bad(`payout chain ${x.targetChain}, confirmed ${want}`);
     if (x.direction !== undefined && x.direction !== (ln ? "evm_to_lightning" : "evm_to_arkade")) bad(`direction ${x.direction}`);

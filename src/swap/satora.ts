@@ -286,7 +286,7 @@ export class SatoraProvider implements SwapProvider {
       } catch (e) {
         const message = errText(e);
         // a clear refusal before or by the relay: nothing was submitted, so a later retry is safe
-        if (/^(Failed to get Permit2 funding data|Gasless fund relay failed: 4(00|01|03|04|22|29)\b)|not found in local storage|Expected an EVM-sourced swap/.test(message)) { this.markAttempt(id, undefined); return { success: false, message }; }
+        if (/^(Failed to get Permit2 funding data|Gasless fund relay failed: 4(00|01|03|04|22)\b)|not found in local storage|Expected an EVM-sourced swap/.test(message)) { this.markAttempt(id, undefined); return { success: false, message }; }
         return { success: false, message, uncertain: true };
       }
     });
@@ -313,14 +313,14 @@ export class SatoraProvider implements SwapProvider {
     const beat = setInterval(() => { try { if (fs.readFileSync(lock, "utf8") === token) { const t = new Date(); fs.utimesSync(lock, t, t); } } catch { /* gone */ } }, LOCK_BEAT_MS);
     beat.unref?.();
     try { return await f(); }
-    finally { clearInterval(beat); try { if (fs.readFileSync(lock, "utf8") === token) fs.rmSync(lock, { force: true }); } catch { /* already gone */ } }
+    finally { clearInterval(beat); releaseLock(lock, token); }
   }
   async refundReverse(id: string) {
     return stdoutToStderr(async () => {
       let collab: string;
-      try { const r: any = await (this.c as any).collabRefundEvmSwap(id); return { success: true, txHash: r?.txHash ?? undefined, how: "collaborative (gasless)" }; }
+      try { const r: any = await (this.c as any).collabRefundEvmSwap(id); if (!r?.txHash) throw new Error("no refund transaction returned"); return { success: true, txHash: r.txHash, how: "collaborative (gasless)" }; }
       catch (x) { collab = errText(x); }
-      try { const r: any = await (this.c as any).refundEvmSponsored(id); return { success: true, txHash: r?.txHash ?? undefined, how: "timelock (sponsored, gasless)" }; }
+      try { const r: any = await (this.c as any).refundEvmSponsored(id); if (!r?.txHash && !r?.userOpHash) throw new Error("no refund transaction returned"); return { success: true, txHash: r.txHash ?? undefined, how: "timelock (sponsored, gasless)" }; }
       catch (x) { return { success: false, message: `collaborative refund: ${collab}; timelock refund: ${errText(x)}`.slice(0, 900) }; }
     });
   }
@@ -330,6 +330,7 @@ export class SatoraProvider implements SwapProvider {
         const k: any = await (this.c as any).getSwapDepositorKey(id);
         const signer = await this.signerFor(k.privateKey);
         const r: any = await (this.c as any).recoverGaslessFunds(id, signer, to);
+        if (!r?.txHash) return { success: false, message: "the recovery returned no transaction; check the explorer before retrying" };
         return { success: true, txHash: r?.txHash ?? undefined, amountUnits: r?.amount != null ? String(r.amount) : undefined };
       } catch (x) { return { success: false, message: errText(x) }; }
     });
@@ -352,6 +353,14 @@ function readRecord(f: string, name: string, ok: (v: unknown) => boolean): Recor
 const LOCK_WAIT_MS = 90_000, LOCK_STALE_MS = 5 * 60 * 1000, LOCK_BEAT_MS = 30_000;
 /** Take over a stale lock atomically: only one process can rename it away; if what was renamed is not the stale lock it looked
  *  at (another process took it over meanwhile), it is put back. True: retry acquiring now. */
+/** Release only our own lock, atomically: rename it away first (no other process can take that file over meanwhile), then
+ *  put back whatever was not ours. */
+function releaseLock(lock: string, token: string) {
+  const moved = `${lock}.rel-${process.pid}-${crypto.randomBytes(4).toString("hex")}`;
+  try { fs.renameSync(lock, moved); } catch { return; }
+  try { if (fs.readFileSync(moved, "utf8") !== token) { try { fs.linkSync(moved, lock); } catch { /* a newer lock is there */ } } }
+  finally { fs.rmSync(moved, { force: true }); }
+}
 function takeStale(lock: string): boolean {
   let seen: string, st: fs.Stats;
   try { st = fs.statSync(lock); seen = fs.readFileSync(lock, "utf8"); } catch { return true; }

@@ -7,6 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { SatoraProvider } from "../dist/src/swap/satora.js";
+import { viemSigner } from "../dist/src/swap/evm.js";
 import { SWAP_REFERRAL_ID, SWAP_MARKUP_BPS, SWAP_TARGETS, swapRoute, tokenUnits, formatReverseQuote } from "../dist/src/swap/stable.js";
 import * as sw from "../dist/src/core/swap.js";
 import { checkSwapArgs, parseArgs } from "../dist/src/cliArgs.js";
@@ -448,8 +449,20 @@ test("an uncertain funding is never signed again; a corrupt funding record refus
   m = mockClient(); await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
   const out = []; const ow = process.stdout.write, ew = process.stderr.write;
   process.stdout.write = (s, ...a) => { out.push(String(s)); return true; }; process.stderr.write = (s, ...a) => { out.push(String(s)); return true; };
-  let res; try { const pr = provider(m.client, { balances: [1_500_000n], eth: 10n ** 15n }); delete pr.signerFor; res = await sw.swapRecover(ctxWith(pr), "rv-1", ME).catch((x) => x); }
+  let res; try { const pr = provider(m.client, { balances: [1_500_000n], eth: 10n ** 15n }); pr.signerFor = async (pk) => viemSigner(pk); res = await sw.swapRecover(ctxWith(pr), "rv-1", ME).catch((x) => x); }
   finally { process.stdout.write = ow; process.stderr.write = ew; }
-  const all = out.join("") + JSON.stringify(res) + String(res?.stack ?? "");
+  const all = out.join("") + JSON.stringify(res) + String(res?.stack ?? ""); assert.equal(res.recovered, true, JSON.stringify(res)); assert.ok(m.calls.recover[0].signer.address, "a real viem signer");
   assert.ok(!all.includes("11".repeat(32)), "no private key anywhere");
+});
+
+test("a later read that changes the payout amount, chain or gasless flag is refused before funding; a relay 429 stays uncertain", async () => {
+  for (const change of [{ target_amount: "1" }, { evm_chain_id: 1 }, { gasless: false }]) {
+    const m = mockClient(); await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "arkade", amount: "1.5", address: ARK, confirm: true });
+    Object.assign(m.stored["rv-1"].response, change);
+    const e = await sw.swapFund(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1").catch((x) => x);
+    assert.equal(e.code, "SWAP_FAILED", JSON.stringify(change)); assert.equal(m.calls.fund.length, 0);
+  }
+  const m = mockClient({ fundError: "Gasless fund relay failed: 429 slow down" }); await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
+  await sw.swapFund(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1");
+  const r = await sw.swapFund(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1"); assert.match(r.note, /never signs it again|already submitted/); assert.equal(m.calls.fund.length, 1);
 });
