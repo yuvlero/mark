@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Client } from "@satora/swap";
 import type { SwapProvider, SwapInfo, ClaimResult, StableSwapCreated, StableSwapInfo, ReverseQuoteInput, ReverseCreateInput, ReverseSwapCreated, ReverseSwapInfo, FundResult, ReversePin } from "./provider.js";
+import { validPin, pinMismatch } from "./reversePin.js";
 import { arbitrumReader, viemSigner, type EvmReader } from "./evm.js";
 import { SWAP_REFERRAL_ID, SWAP_SOURCES, SWAP_TARGETS, checkMarkupBps, sameHex, type SatoraQuote, type SwapSource, type SwapTarget } from "./stable.js";
 import { encryptWith, decryptWith } from "../crypto/keystore.js";
@@ -269,13 +270,8 @@ export class SatoraProvider implements SwapProvider {
       if (!x.tokenContract || !x.depositAddress || !/^\d+$/.test(String(x.sourceUnits ?? ""))) return { success: false, message: "the swap has no deposit terms" };
       const pin = this.reversePin(id);
       if (!pin) return { success: false, stop: true, message: "this Mark home has no record of what was confirmed when the swap was created; not funding it" };
-      if (x.depositAddress.toLowerCase() !== this.depositAddress().toLowerCase() || pin.depositAddress.toLowerCase() !== x.depositAddress.toLowerCase()
-        || pin.tokenContract.toLowerCase() !== x.tokenContract.toLowerCase() || pin.sourceUnits !== x.sourceUnits
-        || (pin.invoice && String(x.invoice ?? "").toLowerCase() !== pin.invoice.toLowerCase()) || (pin.arkAddress && x.arkAddress !== pin.arkAddress)
-        || !!pin.invoice === !!pin.arkAddress || x.gasless !== true || pin.evmChainId === undefined || x.evmChainId !== pin.evmChainId
-        || pin.targetSats === undefined || x.targetSats !== pin.targetSats
-        || x.direction !== (pin.invoice ? "evm_to_lightning" : "evm_to_arkade") || x.targetChain !== (pin.invoice ? SWAP_SOURCES.lightning.chain : SWAP_SOURCES.arkade.chain))
-        return { success: false, stop: true, message: "the swap no longer matches what was confirmed at create; not funding it" };
+      const why = pinMismatch(pin, x, this.depositAddress(), true);
+      if (why) return { success: false, stop: true, message: `the swap no longer matches what was confirmed at create (${why}); not funding it` };
       // the deposit must not be locked behind an invoice that can no longer be paid: Satora pays it only after the lock
       if (pin.invoice) {
         let left = -1; try { left = decodeInvoice(pin.invoice).expiresAt - Date.now() / 1000; } catch { /* undecodable: refuse */ }
@@ -345,12 +341,6 @@ export class SatoraProvider implements SwapProvider {
 
 /** A record file in the swaps dir: missing -> empty; unreadable or malformed -> refuse (never treated as empty, which would
  *  forget a funding already submitted or the terms confirmed at create). */
-function validPin(v: unknown): boolean {
-  const p = v as any;
-  return !!p && typeof p === "object" && typeof p.depositAddress === "string" && typeof p.tokenContract === "string" && /^\d+$/.test(String(p.sourceUnits ?? ""))
-    && (typeof p.invoice === "string") !== (typeof p.arkAddress === "string")
-    && (p.targetSats === undefined || Number.isSafeInteger(p.targetSats)) && (p.evmChainId === undefined || Number.isSafeInteger(p.evmChainId));
-}
 function readRecord(f: string, name: string, ok: (v: unknown) => boolean): Record<string, any> {
   let v: any; try { v = JSON.parse(fs.readFileSync(f, "utf8")); } catch (e: any) { if (e?.code === "ENOENT") return {}; v = undefined; }
   if (!v || typeof v !== "object" || Array.isArray(v) || !Object.values(v).every(ok))

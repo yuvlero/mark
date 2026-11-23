@@ -8,6 +8,7 @@ import { mk } from "../invocation.js";
 import { checkArkadeAddress } from "./arkAddress.js";
 import { decodeInvoice, networkOk } from "../lightning/invoice.js";
 import { SWAP_DONE, SWAP_FAILED } from "../swap/states.js";
+import { pinMismatch } from "../swap/reversePin.js";
 import { sleep } from "../util.js";
 import { ARBISCAN_TX, SWAP_MARKUP_BPS, sameHex, targetByContract, txLink, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkMarkupBps,
   formatReverseQuote, pct, tokenUnits, units, type SwapRail, type SwapStable } from "../swap/stable.js";
@@ -193,22 +194,10 @@ function pinned(s: Rev, x: ReverseSwapInfo, mode: "show" | "act" | "return"): Re
   notReverse(x);
   const bad = (why: string) => { throw new MarkError("SWAP_FAILED", `swap ${x.id} does not match what was confirmed at create (${why}). Do NOT deposit or send anything for it.`, { id: x.id }); };
   if (mode !== "show" && !x.local) throw new MarkError("SWAP_NOT_LOCAL", "this Mark home does not hold the swap's keys: run it from the Mark home that created it");
-  const mine = s.depositAddress();
-  if (!sameHex(x.depositAddress, mine)) bad(`deposit address ${x.depositAddress} is not this Mark home's ${mine}`);
-  const pin = s.reversePin(x.id);
-  if (pin) {
-    if (pin.depositAddress.toLowerCase() !== mine.toLowerCase()) bad(`confirmed deposit address ${pin.depositAddress} is not this Mark home's`);
-    if (pin.tokenContract.toLowerCase() !== String(x.tokenContract ?? "").toLowerCase()) bad(`token ${x.tokenContract}`);
-    if (pin.sourceUnits !== x.sourceUnits) bad(`deposit amount ${x.sourceUnits} units, confirmed ${pin.sourceUnits}`);
-    if (x.gasless !== true) bad("no longer a gasless swap");
-    if (pin.evmChainId !== undefined ? x.evmChainId !== pin.evmChainId : mode === "act") bad(`chain ${x.evmChainId}`);
-    if (pin.targetSats !== undefined ? x.targetSats !== pin.targetSats : mode === "act") bad(`payout ${x.targetSats} sats, confirmed ${pin.targetSats ?? "unknown"}`);
-    const ln = !!pin.invoice, want = ln ? SWAP_SOURCES.lightning.chain : SWAP_SOURCES.arkade.chain;
-    if (x.targetChain !== want) bad(`payout chain ${x.targetChain}, confirmed ${want}`);
-    if (x.direction !== undefined && x.direction !== (ln ? "evm_to_lightning" : "evm_to_arkade")) bad(`direction ${x.direction}`);
-    if (ln && String(x.invoice ?? "").toLowerCase() !== pin.invoice!.toLowerCase()) bad("the invoice Satora pays is not the confirmed one");
-    if (!ln && x.arkAddress !== pin.arkAddress) bad(`payout address ${x.arkAddress}, confirmed ${pin.arkAddress}`);
-  } else if (mode === "act") bad("this Mark home has no record of what was confirmed at create");
+  const mine = s.depositAddress(); const pin = s.reversePin(x.id);
+  if (pin) { const why = pinMismatch(pin, x, mine, mode === "act"); if (why) bad(why); }
+  else if (!sameHex(x.depositAddress, mine)) bad(`deposit address ${x.depositAddress} is not this Mark home's ${mine}`);
+  else if (mode === "act") bad("this Mark home has no record of what was confirmed at create");
   // "return" (refund, recover) works without the record: it only moves funds back through this home's own key to an address you give
   return { ...x, depositAddress: mine, ...(pin?.arkAddress ? { arkAddress: pin.arkAddress } : {}) };
 }
