@@ -4,6 +4,9 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 
 ## [Unreleased]
 
+### Added
+- Dockerfile and `glama.json` so Glama can build and grade the MCP server. The image runs `mark mcp` over stdio as a non-root user, with `MARK_HOME` on a volume so the agent key never leaves that directory. A Cursor plugin manifest (`mcp.json` and `.cursor-plugin/plugin.json`) packages the MCP server with the existing agent-escrow skill. Optional `llms-install.md` for one-click MCP marketplace installs.
+
 ## [0.5.1] - 2026-11-23
 
 ### Added
