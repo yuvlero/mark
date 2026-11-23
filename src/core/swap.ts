@@ -98,11 +98,21 @@ async function waitAndClaim(s: Awaited<ReturnType<typeof stable>>, id: string, o
     if (SWAP_CLAIMABLE.has(last) && !claim?.success) {
       claim = await s.claimStable(id);
       if (!claim.success) return { id, status: last, claimFailed: true, claim, note: `The swap is funded but the claim failed. Your payment is safe while status is ${last}: retry with ${mk()} swap claim ${id} (same Mark home). Do NOT pay again.` };
-      if (claim.txHash) return done(id, last, claim.txHash);
+      if (claim.txHash) return settled(s, id, last, claim.txHash, poll);
     } else if (!SWAP_WAITING.has(last) && !SWAP_CLAIMABLE.has(last)) return { id, status: last, ended: true, note: endedNote(last, id, info.direction) };
     await sleep(poll);
   }
   return { id, status: last, timeout: true, note: `timeout at swap status ${last}. Run ${mk()} swap status ${id}; once it is serverfunded run ${mk()} swap claim ${id}. Do NOT pay again.` };
+}
+/** After a successful claim, re-read the swap a few times (short waits) so the output shows its final status (serverredeemed),
+ *  not the claim-time one (serverfunded). Still in progress, or the read fails: the claim-time status. Never throws. */
+const SETTLE_TRIES = 4;
+async function settled(s: Awaited<ReturnType<typeof stable>>, id: string, status: string, tx: string | undefined, poll: number) {
+  for (let i = 0; i < SETTLE_TRIES; i++) {
+    if (i) await sleep(Math.min(poll, 2000));
+    try { const x = await s.getStable(id); if (SWAP_DONE.has(x.status)) return done(id, x.status, tx ?? x.payoutTx); } catch { /* keep the claim-time status */ }
+  }
+  return done(id, status, tx);
 }
 const done = (id: string, status: string, tx?: string) => ({ id, status, swap: "done", ...(tx ? { payoutTx: tx, explorer: ARBISCAN_TX + tx } : {}), note: tx ? "Stablecoins sent to your address." : "Claimed; the payout tx id is not known yet: check mark swap status." });
 /** Ended without a payout. Never claims "unpaid" from the status alone: a Lightning hold invoice that was paid but not settled goes
@@ -138,7 +148,7 @@ export async function swapClaim(c: Ctx, id: string, o: { wait?: boolean; timeout
     : SWAP_UNPAID.has(x.status) ? "Not paid yet: nothing to claim. Pay the swap's invoice / Ark address once (shown when it was created)." : endedNote(x.status, id, x.direction) };
   const r = await s.claimStable(id);
   if (!r.success) return { id, status: x.status, claimFailed: true, claim: r, note: "Claim failed; retry later. Do NOT pay again." };
-  return done(id, x.status, r.txHash);
+  return settled(s, id, x.status, r.txHash, o.pollMs ?? 5000);
 }
 
 /** Refund an Arkade-funded swap that did not pay out (after its timelock) to an Ark address. Lightning swaps need no refund. */

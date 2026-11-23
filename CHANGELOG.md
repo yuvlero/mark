@@ -23,6 +23,9 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 - Internal cleanup with no change in behavior: escrow funding and `mark swap` now share one list of swap states and one sleep helper; Lightning and Ark funding share one terms check; repeated CLI flag parsing and the list of local hosts allowed over plain http are defined once. Commands, JSON output, error codes and MCP tools are unchanged.
 - The Arkade server URL an escrow server reports in `/limits` may now be plain `http://` to `[::1]` too, not only `localhost` and `127.0.0.1`. This matches the escrow URL rule, and both use the same list of local hosts. Any other `http://` host is still ignored, and Mark uses its network preset instead.
 
+### Fixed
+- After a swap is claimed, the result now shows the swap's final status (`serverredeemed`) instead of the status at the moment of the claim (`serverfunded`). Mark checks again for a few seconds; if Satora has not caught up yet or cannot be reached, it shows the claim-time status as before. This applies to `mark swap --wait`, `mark swap claim` and the MCP `swap_create` and `swap_claim` tools.
+
 ## [0.4.3] - 2026-11-21
 
 ### Changed

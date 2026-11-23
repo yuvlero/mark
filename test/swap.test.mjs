@@ -119,6 +119,35 @@ test("mark swap --wait: shows the invoice first, claims when serverfunded, retur
   const r = await sw.swapRun(ctxWith(provider(client)), { sats: 100000, address: ADDR, confirm: true, wait: true, pollMs: 1, onProgress: (x) => seen.push(x) });
   assert.match(seen[0].invoice, /^lnbc1000000n/); assert.equal(r.swap, "done"); assert.equal(r.payoutTx, "0xpayout"); assert.equal(r.explorer, "https://arbiscan.io/tx/0xpayout");
   assert.deepEqual(calls.claim, ["sw-1"]);
+  assert.equal(r.status, "serverredeemed", "final status after the claim, not the claim-time serverfunded");
+});
+
+// ---------- after a claim: the final status, not the claim-time one ----------
+test("after a claim, the output re-reads the swap: final status (serverredeemed) for create --wait, claim --wait and claim", async () => {
+  // claim without wait: claim-time serverfunded, a re-read still in progress, then redeemed
+  let m = mockClient({ statuses: ["serverfunded", "serverfunded", "serverredeemed"] });
+  let r = await sw.swapClaim(ctxWith(provider(m.client)), "sw-1", { pollMs: 1 });
+  assert.deepEqual({ status: r.status, swap: r.swap, payoutTx: r.payoutTx, note: r.note }, { status: "serverredeemed", swap: "done", payoutTx: "0xpayout", note: "Stablecoins sent to your address." });
+  assert.deepEqual(m.calls.claim, ["sw-1"], "re-reading never claims again");
+  // claim --wait (also MCP swap_claim with wait)
+  m = mockClient({ statuses: ["clientfunded", "serverfunded", "serverredeemed"] });
+  r = await sw.swapClaim(ctxWith(provider(m.client)), "sw-1", { wait: true, pollMs: 1 });
+  assert.equal(r.status, "serverredeemed"); assert.equal(r.payoutTx, "0xpayout"); assert.deepEqual(m.calls.claim, ["sw-1"]);
+  // same field names as before
+  assert.deepEqual(Object.keys(r), ["id", "status", "swap", "payoutTx", "explorer", "note"]);
+});
+test("after a claim, a re-read that stays in progress or fails falls back to the claim-time status without failing", async () => {
+  // still serverfunded on every re-read: claim-time status, payout tx from the claim, a bounded number of re-reads
+  let m = mockClient({ statuses: ["serverfunded"] });
+  let r = await sw.swapClaim(ctxWith(provider(m.client)), "sw-1", { pollMs: 1 });
+  assert.deepEqual({ status: r.status, swap: r.swap, payoutTx: r.payoutTx }, { status: "serverfunded", swap: "done", payoutTx: "0xpayout" });
+  assert.ok(m.calls.getSwap.length <= 5, `bounded re-reads (${m.calls.getSwap.length})`); assert.deepEqual(m.calls.claim, ["sw-1"]);
+  // every re-read throws after the claim (create --wait, also MCP swap_create with wait): no error, claim-time status
+  m = mockClient({ statuses: ["pending", "serverfunded"] }); const get = m.client.getSwap;
+  m.client.getSwap = async (id) => { if (m.calls.claim.length) throw new Error("satora down"); return get(id); };
+  r = await sw.swapRun(ctxWith(provider(m.client)), { sats: 100000, address: ADDR, confirm: true, wait: true, pollMs: 1, onProgress: () => {} });
+  assert.deepEqual({ status: r.status, swap: r.swap, payoutTx: r.payoutTx, payoutAddress: r.payoutAddress }, { status: "serverfunded", swap: "done", payoutTx: "0xpayout", payoutAddress: ADDR });
+  assert.deepEqual(m.calls.claim, ["sw-1"]);
 });
 test("claim failure stops at once with the reason and says not to pay again", async () => {
   const { client } = mockClient({ statuses: ["serverfunded"], claim: { success: false, message: "relay down" } });
