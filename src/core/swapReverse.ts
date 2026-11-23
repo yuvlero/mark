@@ -9,7 +9,7 @@ import { checkArkadeAddress } from "./arkAddress.js";
 import { decodeInvoice, networkOk } from "../lightning/invoice.js";
 import { SWAP_DONE, SWAP_FAILED } from "../swap/states.js";
 import { sleep } from "../util.js";
-import { ARBISCAN_TX, SWAP_MARKUP_BPS, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkMarkupBps,
+import { ARBISCAN_TX, SWAP_MARKUP_BPS, sameHex, targetByContract, txLink, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkMarkupBps,
   formatReverseQuote, pct, tokenUnits, units, type SwapRail, type SwapStable } from "../swap/stable.js";
 
 export interface ReverseInput { from: SwapStable; to: SwapRail; amount?: string | number; invoice?: string; address?: string }
@@ -119,10 +119,10 @@ function checkReverseCreated(c: Ctx, p: Parsed, x: ReverseSwapCreated, q: any, m
   if (x.status !== "pending") bad(`status ${x.status}, not a new unfunded swap`);
   if (x.gasless !== true) bad("not a gasless swap");
   if (x.evmChainId !== Number(t.chain) || (x.sourceChain !== undefined && x.sourceChain !== t.chain)) bad(`chain ${x.evmChainId} (token chain ${x.sourceChain}) is not ${t.network} (${t.chain})`);
-  if (String(x.tokenContract ?? "").toLowerCase() !== t.tokenId.toLowerCase()) bad(`token ${x.tokenContract} is not ${t.symbol} (${t.tokenId})`);
+  if (!sameHex(x.tokenContract, t.tokenId)) bad(`token ${x.tokenContract} is not ${t.symbol} (${t.tokenId})`);
   if (x.targetChain !== rail.chain) bad(`payout chain ${x.targetChain} is not ${rail.chain}`);
   let dep = ""; try { dep = checkEvmAddress(x.depositAddress, "deposit address"); } catch { bad(`deposit address ${x.depositAddress} is not an EVM address`); }
-  if (!myDeposit || dep.toLowerCase() !== myDeposit.toLowerCase()) bad(`deposit address ${dep} is not this Mark home's own gasless address`);
+  if (!sameHex(dep, myDeposit)) bad(`deposit address ${dep} is not this Mark home's own gasless address`);
   if (!/^\d+$/.test(String(x.sourceUnits ?? "")) || BigInt(x.sourceUnits!) <= 0n) bad(`deposit amount ${x.sourceUnits} is not a positive token amount`);
   const amt = BigInt(x.sourceUnits!);
   if (p.sourceUnits !== undefined) { if (amt !== p.sourceUnits) bad(`deposit amount ${units(amt, t.decimals)} ${t.symbol} is not ${units(p.sourceUnits, t.decimals)}`); }
@@ -130,7 +130,7 @@ function checkReverseCreated(c: Ctx, p: Parsed, x: ReverseSwapCreated, q: any, m
   if (!Number.isSafeInteger(x.targetSats) || x.targetSats! <= 0) bad(`payout ${x.targetSats} sats is not a positive amount`);
   if (x.direction !== (p.to === "lightning" ? "evm_to_lightning" : "evm_to_arkade")) bad(`direction ${x.direction}`);
   if (p.invoice) {
-    if (String(x.invoice ?? "").toLowerCase() !== p.invoice.toLowerCase()) bad("the invoice Satora will pay is not the one you gave");
+    if (!sameHex(x.invoice, p.invoice)) bad("the invoice Satora will pay is not the one you gave");
     if (x.targetSats! < p.invoiceSats!) bad(`payout ${x.targetSats} sats does not cover the invoice's ${p.invoiceSats}`);
   } else {
     if (x.targetSats! * 10000 < Number(q.net_target_amount) * (10000 - SWAP_MAX_SLIPPAGE_BPS)) bad(`payout ${x.targetSats} sats is more than ${pct(SWAP_MAX_SLIPPAGE_BPS)} below the quote (${q.net_target_amount})`);
@@ -142,7 +142,7 @@ function checkReverseCreated(c: Ctx, p: Parsed, x: ReverseSwapCreated, q: any, m
 
 /** Where to deposit, how much is still missing (the deposit address may already hold some of the token), and how to send it. */
 async function depositInfo(s: Rev, x: ReverseSwapCreated) {
-  const t = Object.values(SWAP_TARGETS).find((v) => v.tokenId.toLowerCase() === String(x.tokenContract).toLowerCase())!;
+  const t = targetByContract(x.tokenContract)!;
   const need = BigInt(x.sourceUnits!); let have: bigint | undefined; try { have = await s.evm.tokenBalance(t.tokenId, x.depositAddress!); } catch { have = undefined; }
   const base = { address: x.depositAddress, token: t.symbol, contract: t.tokenId, network: t.network, chainId: Number(t.chain), amount: units(need, t.decimals), amountUnits: need.toString() };
   if (have === undefined) return { ...base, howToDeposit: `Send exactly ${units(need, t.decimals)} ${t.symbol} (the ERC-20 at ${t.tokenId} on ${t.network}) to ${x.depositAddress}, ONCE. No ETH needed. Mark could not read the address's balance just now: if you already sent it, do not send again; check ${mk()} swap status ${x.id}.` };
@@ -151,9 +151,9 @@ async function depositInfo(s: Rev, x: ReverseSwapCreated) {
     howToDeposit: `Send exactly ${units(need - have, t.decimals)} ${t.symbol} (the ERC-20 at ${t.tokenId} on ${t.network}, not another chain) to ${x.depositAddress}, in ONE transfer. No ETH needed: Mark signs a permit and Satora's relay locks it into the swap.` };
 }
 
-const tokenOf = (x: ReverseSwapCreated) => Object.values(SWAP_TARGETS).find((v) => v.tokenId.toLowerCase() === String(x.tokenContract ?? "").toLowerCase());
+const tokenOf = (x: ReverseSwapCreated) => targetByContract(x.tokenContract);
 const isDone = (x: ReverseSwapInfo) => SWAP_DONE.has(x.status) || (x.targetChain === "Lightning" && x.lightningSettled === true);
-const doneOut = (x: ReverseSwapInfo) => ({ id: x.id, status: x.status, swap: "done", sats: x.targetSats, ...(x.fundTx ? { fundTx: x.fundTx, fundExplorer: ARBISCAN_TX + x.fundTx } : {}), ...(x.payoutTx ? { payoutTx: x.payoutTx } : {}),
+const doneOut = (x: ReverseSwapInfo) => ({ id: x.id, status: x.status, swap: "done", sats: x.targetSats, ...txLink(x.fundTx, "fundTx", "fundExplorer"), ...(x.payoutTx ? { payoutTx: x.payoutTx } : {}),
   note: x.targetChain === "Lightning" ? "Paid out over Lightning." : "Paid out to your Ark address." });
 
 /** What the swap needs next. Never asks for a deposit again once the deposit address holds it, or once a funding was submitted. */
@@ -179,7 +179,7 @@ export async function reverseFund(c: Ctx, id: string, o: { wait?: boolean; timeo
   return fundOut(x, await s.fundReverse(id));
 }
 function fundOut(x: ReverseSwapInfo, r: Awaited<ReturnType<Rev["fundReverse"]>>) {
-  if (r.success) return { id: x.id, status: x.status, funded: true, ...(r.txHash ? { fundTx: r.txHash, explorer: ARBISCAN_TX + r.txHash } : {}), note: `Funded through Satora's relay. ${DO_NOT_RESEND} Watch it with ${mk()} swap status ${x.id}.` };
+  if (r.success) return { id: x.id, status: x.status, funded: true, ...txLink(r.txHash, "fundTx"), note: `Funded through Satora's relay. ${DO_NOT_RESEND} Watch it with ${mk()} swap status ${x.id}.` };
   if (r.skipped) return { id: x.id, status: x.status, funded: false, note: `${r.skipped}. ${DO_NOT_RESEND} Check ${mk()} swap status ${x.id}.` };
   if (r.stop) return { id: x.id, status: x.status, funded: false, fundFailed: true, message: r.message, note: `Nothing was signed or locked. If you sent the stablecoins, get them back with ${mk()} swap recover ${x.id} --to <your 0x address> (and start a new swap with a fresh invoice if you still want it). ${DO_NOT_RESEND}` };
   return { id: x.id, status: x.status, funded: false, fundFailed: true, message: r.message, note: r.uncertain
@@ -194,7 +194,7 @@ function pinned(s: Rev, x: ReverseSwapInfo, mode: "show" | "act" | "return"): Re
   const bad = (why: string) => { throw new MarkError("SWAP_FAILED", `swap ${x.id} does not match what was confirmed at create (${why}). Do NOT deposit or send anything for it.`, { id: x.id }); };
   if (mode !== "show" && !x.local) throw new MarkError("SWAP_NOT_LOCAL", "this Mark home does not hold the swap's keys: run it from the Mark home that created it");
   const mine = s.depositAddress();
-  if (String(x.depositAddress ?? "").toLowerCase() !== mine.toLowerCase()) bad(`deposit address ${x.depositAddress} is not this Mark home's ${mine}`);
+  if (!sameHex(x.depositAddress, mine)) bad(`deposit address ${x.depositAddress} is not this Mark home's ${mine}`);
   const pin = s.reversePin(x.id);
   if (pin) {
     if (pin.depositAddress.toLowerCase() !== mine.toLowerCase()) bad(`confirmed deposit address ${pin.depositAddress} is not this Mark home's`);
@@ -292,7 +292,7 @@ export async function reverseRefund(s: Rev, x0: ReverseSwapInfo) {
   if (!REFUNDABLE.has(x.status) && !SWAP_FAILED.has(x.status)) return { id: x.id, status: x.status, refunded: false, note: `Not refundable while the payout is under way (${x.status}). ${nextNote(x)}` };
   if (/refunded/.test(x.status) && x.status !== "clientfundedserverrefunded") return { id: x.id, status: x.status, refunded: false, note: nextNote(x) };
   const r = await s.refundReverse(x.id);
-  return r.success ? { id: x.id, refunded: true, how: r.how, ...(r.txHash ? { txHash: r.txHash, explorer: ARBISCAN_TX + r.txHash } : {}), note: `Refunded to the deposit address ${x.depositAddress}. Send it to your wallet with ${mk()} swap recover ${x.id} --to <your 0x address>.` }
+  return r.success ? { id: x.id, refunded: true, how: r.how, ...txLink(r.txHash), note: `Refunded to the deposit address ${x.depositAddress}. Send it to your wallet with ${mk()} swap recover ${x.id} --to <your 0x address>.` }
     : { id: x.id, status: x.status, refunded: false, message: r.message, note: "Satora would not refund it collaboratively and its timelock has not passed (or the refund failed): retry later." };
 }
 
@@ -308,17 +308,17 @@ export async function reverseRecover(c: Ctx, id: string, to: string | undefined)
   return s.exclusive(async () => {
     // re-read under the lock: a funding that took the lock first is seen here, before anything is swept
     const x = pinned(s, await s.getReverse(id), "return"); const at = s.fundAttemptedAt(id);
-    if (String(x.tokenContract ?? "").toLowerCase() !== t.tokenId.toLowerCase()) throw new MarkError("SWAP_FAILED", `swap ${id} changed token while recovering (${x.tokenContract}); nothing was moved`);
+    if (!sameHex(x.tokenContract, t.tokenId)) throw new MarkError("SWAP_FAILED", `swap ${id} changed token while recovering (${x.tokenContract}); nothing was moved`);
     // a funding submitted in the last RECOVER_AFTER_FUND_MS may still land, whatever the status says (unless the swap ended)
     if (at !== undefined && Date.now() - at < RECOVER_AFTER_FUND_MS && !SWAP_FAILED.has(x.status) && !isDone(x)) throw new MarkError("SWAP_FUNDING", "a funding of this swap was submitted less than 30 minutes ago and may still land: wait for it (mark swap status) before recovering");
     // any other swap of this home funded in the last 30 minutes may still need the shared address's balance: unless its deposit
     // is already pulled (funding tx known) or it ended, do not sweep; a failed read refuses too
     for (const o of s.fundAttemptsSince(Date.now() - RECOVER_AFTER_FUND_MS).filter((o) => o !== id)) {
       let y: ReverseSwapInfo | undefined; try { y = await s.getReverse(o); } catch { y = undefined; }
-      if (!y || (String(y.tokenContract ?? "").toLowerCase() === t.tokenId.toLowerCase() && !y.fundTx && !SWAP_FAILED.has(y.status) && !isDone(y)))
+      if (!y || (sameHex(y.tokenContract, t.tokenId) && !y.fundTx && !SWAP_FAILED.has(y.status) && !isDone(y)))
         throw new MarkError("SWAP_FUNDING", `swap ${o} was funded from the same deposit address less than 30 minutes ago and may still need it: wait for it (${mk()} swap status ${o}) before recovering`);
     }
-    const others = (await s.openReverse()).filter((o) => o.id !== id && String(o.tokenContract).toLowerCase() === t.tokenId.toLowerCase());
+    const others = (await s.openReverse()).filter((o) => o.id !== id && sameHex(o.tokenContract, t.tokenId));
     if (others.length) throw new MarkError("SWAP_OPEN_DEPOSIT", `swap ${others[0].id} is waiting for a ${t.symbol} deposit at the same address: recovering now would take its deposit too. Finish it or let it expire first.`);
     const bal = await s.evm.tokenBalance(t.tokenId, x.depositAddress!);
     if (bal === 0n) return { id, recovered: false, note: `The deposit address holds no ${t.symbol}. ${x.fundTx && !SWAP_FAILED.has(x.status) && !isDone(x) ? `Its deposit is locked in the swap: if it does not pay out, run ${mk()} swap refund ${id} first.` : "Nothing to recover."}` };
@@ -327,7 +327,7 @@ export async function reverseRecover(c: Ctx, id: string, to: string | undefined)
     if (eth < needWei) return { id, recovered: false, holds: `${units(bal, t.decimals)} ${t.symbol}`, depositAddress: x.depositAddress,
       note: `Sending tokens out of the deposit address costs a little Arbitrum ETH for gas: send about ${units(needWei - eth, 18)} ETH (Arbitrum One) to ${x.depositAddress}, then run this again.` };
     const r = await s.recoverReverse(id, dest);
-    return r.success ? { id, recovered: true, to: dest, amount: r.amountUnits ? units(r.amountUnits, t.decimals) : undefined, token: t.symbol, ...(r.txHash ? { txHash: r.txHash, explorer: ARBISCAN_TX + r.txHash } : {}) }
+    return r.success ? { id, recovered: true, to: dest, amount: r.amountUnits ? units(r.amountUnits, t.decimals) : undefined, token: t.symbol, ...txLink(r.txHash) }
       : { id, recovered: false, message: r.message, note: "Recovery failed; nothing was moved unless the explorer shows it. Retry later." };
   });
 }

@@ -11,7 +11,7 @@ import type { StableSwapCreated, StableSwapInfo } from "../swap/provider.js";
 import { SWAP_UNPAID, SWAP_PAID, SWAP_WAITING, SWAP_CLAIMABLE, SWAP_DONE } from "../swap/states.js";
 import { sleep } from "../util.js";
 import { reverse, waitReverse, reverseQuote, reverseRun, reverseStatus, reverseClaim, reverseRefund, reverseFund, reverseRecover } from "./swapReverse.js";
-import { ARBISCAN_TX, SWAP_MARKUP_BPS, SWAP_REFERRAL_ID, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkMarkupBps, formatSwapQuote, pct, swapSats, swapSource, swapTarget, units, swapRoute, allSwapRoutes, type SwapSource, type SwapTarget } from "../swap/stable.js";
+import { ARBISCAN_TX, sameHex, targetByContract, txLink, SWAP_MARKUP_BPS, SWAP_REFERRAL_ID, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkMarkupBps, formatSwapQuote, pct, swapSats, swapSource, swapTarget, units, swapRoute, allSwapRoutes, type SwapSource, type SwapTarget } from "../swap/stable.js";
 
 /** sats: BTC -> stablecoin. amount (token units like 1.5) / invoice: stablecoin -> BTC (address is the payout target there). */
 export interface SwapQuoteInput { from?: string; to?: string; sats?: number | string; amount?: string | number; invoice?: string; address?: string }
@@ -118,9 +118,9 @@ function checkCreated(c: Ctx, p: { from: SwapSource; to: SwapTarget; sats: numbe
   if (!x?.id) bad("no swap id");
   if (x.status !== "pending") bad(`status ${x.status}, not a new unpaid swap`);
   if (x.sourceChain !== src.chain) bad(`source ${x.sourceChain} is not ${src.chain}`);
-  if (String(x.tokenContract ?? "").toLowerCase() !== tgt.tokenId.toLowerCase()) bad(`token ${x.tokenContract} is not ${tgt.symbol} (${tgt.tokenId})`);
+  if (!sameHex(x.tokenContract, tgt.tokenId)) bad(`token ${x.tokenContract} is not ${tgt.symbol} (${tgt.tokenId})`);
   if (x.evmChainId !== Number(tgt.chain) || (x.targetChain !== undefined && x.targetChain !== tgt.chain)) bad(`chain ${x.evmChainId} (token chain ${x.targetChain}) is not ${tgt.network} (${tgt.chain})`);
-  if (String(x.targetAddress ?? "").toLowerCase() !== address.toLowerCase()) bad(`payout address ${x.targetAddress} is not ${address}`);
+  if (!sameHex(x.targetAddress, address)) bad(`payout address ${x.targetAddress} is not ${address}`);
   if (!Number.isSafeInteger(x.payAmountSats) || x.payAmountSats !== p.sats) bad(`amount ${x.payAmountSats} sats is not ${p.sats}`);
   // the stablecoin amount it promises: a whole positive number of token units, at most SWAP_MAX_SLIPPAGE_BPS below the quote shown
   if (!/^\d+$/.test(String(x.receiveUnits ?? "")) || BigInt(x.receiveUnits!) <= 0n) bad(`payout amount ${x.receiveUnits} is not a positive token amount`);
@@ -179,10 +179,10 @@ async function done(s: SwapProvider, id: string, status: string, tx?: string, x?
   let got: { reverted?: boolean; receivedUnits?: string; receivedNote?: string } = {};
   if (tx) {
     let info = x; if (!info?.targetAddress && !info?.noReread) { try { info = await s.getStable!(id); } catch { info = undefined; } }
-    const t = Object.values(SWAP_TARGETS).find((v) => v.tokenId.toLowerCase() === String(info?.tokenContract ?? "").toLowerCase());
+    const t = targetByContract(info?.tokenContract);
     got = t && info?.targetAddress ? await arrived(s, tx, t.tokenId, info.targetAddress, t.decimals) : { receivedNote: "the amount that arrived could not be read: see the explorer link" };
   }
-  return { id, status, swap: "done", ...(tx ? { payoutTx: tx, explorer: ARBISCAN_TX + tx } : {}), ...got, ...(got.reverted || got.receivedUnits === "0" ? { payoutFailed: true } : {}), note: got.reverted ? "The payout transaction reverted: nothing was sent from it. Check mark swap status."
+  return { id, status, swap: "done", ...txLink(tx, "payoutTx"), ...got, ...(got.reverted || got.receivedUnits === "0" ? { payoutFailed: true } : {}), note: got.reverted ? "The payout transaction reverted: nothing was sent from it. Check mark swap status."
     : got.receivedUnits === "0" ? "The payout transaction moved none of the token to your address: inspect it with the explorer link and mark swap status."
     : got.receivedNote ? "Satora reports the payout sent; the amount that arrived could not be read yet (explorer link)."
     : tx ? "Stablecoins sent to your address." : "Claimed; the payout tx id is not known yet: check mark swap status." };
@@ -202,7 +202,7 @@ export async function swapStatus(c: Ctx, id: string) {
   if (!id) throw new MarkError("USAGE", "mark swap status <id>");
   const s = await stable(c); const x = await s.getStable(id);
   if (/^evm_to_/.test(x.direction ?? "")) { const r = await reverse(c); return reverseStatus(r, await r.getReverse(id)); }
-  const t = Object.values(SWAP_TARGETS).find((v) => v.tokenId.toLowerCase() === (x.tokenContract ?? "").toLowerCase());
+  const t = targetByContract(x.tokenContract);
   const { raw: _raw, ...info } = x;
   const got = x.payoutTx && t && x.targetAddress ? await arrived(s, x.payoutTx, t.tokenId, x.targetAddress, t.decimals) : {};
   return { ...info, ...(t && x.targetUnits ? { expectedReceive: units(x.targetUnits, t.decimals), token: t.symbol } : {}), ...got,

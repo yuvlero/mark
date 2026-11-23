@@ -4,7 +4,7 @@ import path from "node:path";
 import { Client } from "@satora/swap";
 import type { SwapProvider, SwapInfo, ClaimResult, StableSwapCreated, StableSwapInfo, ReverseQuoteInput, ReverseCreateInput, ReverseSwapCreated, ReverseSwapInfo, FundResult, ReversePin } from "./provider.js";
 import { arbitrumReader, viemSigner, type EvmReader } from "./evm.js";
-import { SWAP_REFERRAL_ID, SWAP_SOURCES, SWAP_TARGETS, checkMarkupBps, type SatoraQuote, type SwapSource, type SwapTarget } from "./stable.js";
+import { SWAP_REFERRAL_ID, SWAP_SOURCES, SWAP_TARGETS, checkMarkupBps, sameHex, type SatoraQuote, type SwapSource, type SwapTarget } from "./stable.js";
 import { encryptWith, decryptWith } from "../crypto/keystore.js";
 import { MarkError } from "../errors.js";
 import { decodeInvoice } from "../lightning/invoice.js";
@@ -253,7 +253,7 @@ export class SatoraProvider implements SwapProvider {
     const f = this.pinsFile(); if (f) { fs.writeFileSync(f + ".tmp", JSON.stringify(a), { mode: 0o600 }); fs.renameSync(f + ".tmp", f); }
   }
   reversePin(id: string) { return this.readPins()[id]; }
-  invoiceUsedBy(invoice: string) { const inv = invoice.toLowerCase(); return Object.entries(this.readPins()).find(([, p]) => p.invoice?.toLowerCase() === inv)?.[0]; }
+  invoiceUsedBy(invoice: string) { return Object.entries(this.readPins()).find(([, p]) => sameHex(p.invoice, invoice))?.[0]; }
   fundReverse(id: string): Promise<FundResult> {
     const running = this.funding.get(id); if (running) return running;
     const run = this.fundOnce(id).finally(() => this.funding.delete(id));

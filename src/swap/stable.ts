@@ -31,6 +31,12 @@ export const SWAP_TARGETS = {
 export type SwapSource = keyof typeof SWAP_SOURCES;
 export type SwapTarget = keyof typeof SWAP_TARGETS;
 export const ARBISCAN_TX = "https://arbiscan.io/tx/";
+/** Same hex address, invoice or contract, ignoring case (a missing value never matches). */
+export const sameHex = (a: unknown, b: unknown) => typeof a === "string" && typeof b === "string" && a !== "" && a.toLowerCase() === b.toLowerCase();
+/** The swap stablecoin with this contract on Arbitrum, if any. */
+export const targetByContract = (contract: unknown) => Object.values(SWAP_TARGETS).find((v) => sameHex(v.tokenId, contract));
+/** `{ [key]: tx, [explorerKey]: arbiscan link }`, or nothing without a tx. */
+export const txLink = (tx: string | undefined, key = "txHash", explorerKey = "explorer") => tx ? { [key]: tx, [explorerKey]: ARBISCAN_TX + tx } : {};
 
 export function swapSource(v: string | undefined): SwapSource {
   const k = (v ?? "lightning").toLowerCase();
