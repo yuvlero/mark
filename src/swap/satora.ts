@@ -71,7 +71,10 @@ function dirOf(s: any): SwapInfo["direction"] {
 export class SatoraProvider implements SwapProvider {
   readonly name = "satora";
   /** dir: where the funding-attempt record lives (none: in memory only, tests). */
-  private constructor(private c: Client, private baseUrl: string, private arkUrl: string, private dir?: string) {}
+  private constructor(private c: Client, private baseUrl: string, private arkUrl: string, private dir?: string) {
+    this.attempts = new RecordFile<number>(dir, "evm-funding.json", (v) => typeof v === "number" && Number.isFinite(v));
+    this.pins = new RecordFile<ReversePin>(dir, "reverse-pins.json", validPin);
+  }
   /** Arbitrum reads (tests replace it). */
   evm: EvmReader = arbitrumReader();
   /** Where the library's bundled Transaction classes come from (tests replace it). */
@@ -231,28 +234,15 @@ export class SatoraProvider implements SwapProvider {
   /** Funding attempts: in memory plus a file in the swaps dir, so a second process (or a restart) does not sign again while the
    *  first relay may still land. */
   private funding = new Map<string, Promise<FundResult>>();
-  private attempts: Record<string, number> = {};
-  private attemptsFile() { return this.dir ? path.join(this.dir, "evm-funding.json") : undefined; }
-  private readAttempts(): Record<string, number> {
-    const f = this.attemptsFile(); if (!f || !fs.existsSync(f)) return this.attempts;
-    return { ...readRecord(f, "evm-funding.json", (v) => typeof v === "number" && Number.isFinite(v)), ...this.attempts };
-  }
-  private markAttempt(id: string, at: number | undefined) {
-    const a = this.readAttempts(); if (at === undefined) delete a[id]; else a[id] = at; this.attempts = a;
-    const f = this.attemptsFile(); if (f) { fs.writeFileSync(f + ".tmp", JSON.stringify(a), { mode: 0o600 }); fs.renameSync(f + ".tmp", f); }
-  }
+  /** Funding attempts and create records: in memory plus files in the swaps dir, so a second process (or a restart) sees them. */
+  private attempts: RecordFile<number>;
+  private pins: RecordFile<ReversePin>;
+  private readAttempts() { return this.attempts.read(); }
+  private readPins() { return this.pins.read(); }
+  private markAttempt(id: string, at: number | undefined) { this.attempts.set(id, at); }
   fundAttemptedAt(id: string) { return this.readAttempts()[id]; }
   fundAttemptsSince(since: number) { return Object.entries(this.readAttempts()).filter(([, at]) => at >= since).map(([id]) => id); }
-  private pins: Record<string, ReversePin> = {};
-  private pinsFile() { return this.dir ? path.join(this.dir, "reverse-pins.json") : undefined; }
-  private readPins(): Record<string, ReversePin> {
-    const f = this.pinsFile(); if (!f || !fs.existsSync(f)) return this.pins;
-    return { ...readRecord(f, "reverse-pins.json", validPin), ...this.pins };
-  }
-  pinReverse(id: string, pin: ReversePin) {
-    const a = { ...this.readPins(), [id]: pin }; this.pins = a;
-    const f = this.pinsFile(); if (f) { fs.writeFileSync(f + ".tmp", JSON.stringify(a), { mode: 0o600 }); fs.renameSync(f + ".tmp", f); }
-  }
+  pinReverse(id: string, pin: ReversePin) { this.pins.set(id, pin); }
   reversePin(id: string) { return this.readPins()[id]; }
   invoiceUsedBy(invoice: string) { return Object.entries(this.readPins()).find(([, p]) => sameHex(p.invoice, invoice))?.[0]; }
   fundReverse(id: string): Promise<FundResult> {
@@ -339,6 +329,20 @@ export class SatoraProvider implements SwapProvider {
   signerFor: (privateKey: string) => Promise<any> = (k) => viemSigner(k);
 }
 
+/** A record (id -> value) in memory, mirrored to a 0600 JSON file in the swaps dir when there is one (written atomically). */
+class RecordFile<T> {
+  private mem: Record<string, T> = {};
+  constructor(private dir: string | undefined, private name: string, private ok: (v: unknown) => boolean) {}
+  private file() { return this.dir ? path.join(this.dir, this.name) : undefined; }
+  read(): Record<string, T> {
+    const f = this.file(); if (!f || !fs.existsSync(f)) return this.mem;
+    return { ...readRecord(f, this.name, this.ok), ...this.mem };
+  }
+  set(id: string, v: T | undefined) {
+    const a = { ...this.read() }; if (v === undefined) delete a[id]; else a[id] = v; this.mem = a;
+    const f = this.file(); if (f) { fs.writeFileSync(f + ".tmp", JSON.stringify(a), { mode: 0o600 }); fs.renameSync(f + ".tmp", f); }
+  }
+}
 /** A record file in the swaps dir: missing -> empty; unreadable or malformed -> refuse (never treated as empty, which would
  *  forget a funding already submitted or the terms confirmed at create). */
 function readRecord(f: string, name: string, ok: (v: unknown) => boolean): Record<string, any> {

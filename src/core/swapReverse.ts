@@ -14,13 +14,15 @@ import { ARBISCAN_TX, SWAP_MARKUP_BPS, sameHex, targetByContract, txLink, SWAP_M
   formatReverseQuote, pct, tokenUnits, units, type SwapRail, type SwapStable } from "../swap/stable.js";
 
 export interface ReverseInput { from: SwapStable; to: SwapRail; amount?: string | number; invoice?: string; address?: string }
-type Rev = Required<Pick<SwapProvider, "quoteReverse" | "createReverse" | "getReverse" | "depositAddress" | "openReverse" | "fundReverse" | "fundAttemptedAt" | "refundReverse" | "recoverReverse" | "evm" | "claim" | "exclusive" | "pinReverse" | "reversePin" | "invoiceUsedBy" | "fundAttemptsSince">> & SwapProvider;
+/** What mark swap from a stablecoin needs from the swap provider. */
+const REV_KEYS = ["quoteReverse", "createReverse", "getReverse", "depositAddress", "openReverse", "fundReverse", "fundAttemptedAt", "refundReverse",
+  "recoverReverse", "evm", "claim", "exclusive", "pinReverse", "reversePin", "invoiceUsedBy", "fundAttemptsSince"] as const;
+type Rev = Required<Pick<SwapProvider, typeof REV_KEYS[number]>> & SwapProvider;
 
 export async function reverse(c: Ctx): Promise<Rev> {
   const s = await c.swaps();
-  for (const k of ["quoteReverse", "createReverse", "getReverse", "depositAddress", "openReverse", "fundReverse", "fundAttemptedAt", "refundReverse", "recoverReverse", "evm", "exclusive", "pinReverse", "reversePin", "invoiceUsedBy", "fundAttemptsSince"] as const)
-    if (!(s as any)[k]) throw new MarkError("BAD_CONFIG", `swap provider ${s.name} does not support mark swap from a stablecoin`);
-  return s as any;
+  for (const k of REV_KEYS) if (!(s as any)[k]) throw new MarkError("BAD_CONFIG", `swap provider ${s.name} does not support mark swap from a stablecoin`);
+  return s as Rev;
 }
 
 const RECOVER_AFTER_FUND_MS = 30 * 60 * 1000;
