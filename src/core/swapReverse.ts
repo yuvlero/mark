@@ -269,8 +269,8 @@ export async function reverseStatus(s: Rev, x0: ReverseSwapInfo) {
 
 /** Claim an Ark payout Satora has funded (Lightning payouts need no claim). */
 export async function reverseClaim(s: Rev, x0: ReverseSwapInfo) {
-  if (isDone(x0)) return doneOut(x0);
   const x = pinned(s, x0, "act");
+  if (isDone(x)) return doneOut(x);
   if (x.targetChain !== "Arkade") return { id: x.id, status: x.status, claimed: false, note: `A Lightning payout needs no claim: Satora pays the invoice. ${nextNote(x)}` };
   if (x.status !== "serverfunded" && x.status !== "clientredeeming") return { id: x.id, status: x.status, claimed: false, note: nextNote(x) };
   const r = await s.claim(x.id, x.arkAddress!);

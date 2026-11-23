@@ -176,13 +176,16 @@ async function arrived(s: SwapProvider, tx: string, token: string, to: string, d
 /** settled() already tried reading the swap: done() must not read it again (a bounded number of reads). */
 const NO_REREAD = { noReread: true } as const;
 async function done(s: SwapProvider, id: string, status: string, tx?: string, x?: { targetAddress?: string; tokenContract?: string; noReread?: boolean }) {
-  let got: { reverted?: boolean } = {};
+  let got: { reverted?: boolean; receivedUnits?: string; receivedNote?: string } = {};
   if (tx) {
     let info = x; if (!info?.targetAddress && !info?.noReread) { try { info = await s.getStable!(id); } catch { info = undefined; } }
     const t = Object.values(SWAP_TARGETS).find((v) => v.tokenId.toLowerCase() === String(info?.tokenContract ?? "").toLowerCase());
     got = t && info?.targetAddress ? await arrived(s, tx, t.tokenId, info.targetAddress, t.decimals) : { receivedNote: "the amount that arrived could not be read: see the explorer link" };
   }
-  return { id, status, swap: "done", ...(tx ? { payoutTx: tx, explorer: ARBISCAN_TX + tx } : {}), ...got, note: got.reverted ? "The payout transaction reverted: nothing was sent from it. Check mark swap status." : tx ? "Stablecoins sent to your address." : "Claimed; the payout tx id is not known yet: check mark swap status." };
+  return { id, status, swap: "done", ...(tx ? { payoutTx: tx, explorer: ARBISCAN_TX + tx } : {}), ...got, note: got.reverted ? "The payout transaction reverted: nothing was sent from it. Check mark swap status."
+    : got.receivedUnits === "0" ? "The payout transaction moved none of the token to your address: inspect it with the explorer link and mark swap status."
+    : got.receivedNote ? "Satora reports the payout sent; the amount that arrived could not be read yet (explorer link)."
+    : tx ? "Stablecoins sent to your address." : "Claimed; the payout tx id is not known yet: check mark swap status." };
 }
 /** Ended without a payout. Never claims "unpaid" from the status alone: a Lightning hold invoice that was paid but not settled goes
  *  back to the payer's wallet by itself; Arkade sats sent to the swap address come back only with a refund after its timelock. */
