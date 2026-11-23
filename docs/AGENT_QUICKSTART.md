@@ -82,7 +82,7 @@ If `action_required_for` is your role, act. Otherwise wait and poll. `next` stay
   4. After the ruling, run the `next` command shown, usually `mark escrow approve <id> --with arbiter --payout-lnaddr …`.
 
 ## Swap BTC ⇄ stablecoins: `mark swap`
-- Standalone (no deal): BTC over Lightning or from an Arkade wallet → USDC or USDT0 on Arbitrum, and back, through Satora. Mainnet only. **Includes a 0.5% Agent Escrow fee**, shown in every quote (`fees.agentEscrowMarkup`).
+- Standalone (no deal): BTC over Lightning or from an Arkade wallet → USDC or USDT0 on Arbitrum, and back, through Satora. Mainnet only. **About 1% total (Satora ~0.5% + Agent Escrow 0.5%) plus network fee**, shown in every quote (`fees.totalFeePercent`, `fees.satoraFeePercent`, `fees.agentEscrowMarkup`).
 - `mark swap routes` (`swap_routes`): all eight supported routes (Lightning / Arkade ⇄ USDC / USDT0 on Arbitrum) with Satora's live min / max sats; read-only. Limits show `"unavailable"` if Satora cannot be reached.
 - `mark swap quote --sats N [--from lightning|arkade] [--to usdc|usdt0]` (`swap_quote`) → `mark swap --sats N --address 0x… ` previews → add `--yes --wait` to create, pay the printed invoice / Ark address once, and get `payoutTx` (`swap_create` with `confirm: true`, then `swap_claim` with `wait: true`).
 - `mark swap status <id>` (`swap_status`), `mark swap claim <id>` (`swap_claim`), Arkade refund `mark swap refund <id> --to <ark address>` (`swap_refund`). Claim keys stay in this Mark home.

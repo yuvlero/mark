@@ -11,7 +11,7 @@ import type { StableSwapCreated, StableSwapInfo } from "../swap/provider.js";
 import { SWAP_UNPAID, SWAP_PAID, SWAP_WAITING, SWAP_CLAIMABLE, SWAP_DONE, isReverseDir } from "../swap/states.js";
 import { sleep } from "../util.js";
 import { reverse, loadReverse, waitReverse, reverseQuote, reverseRun, reverseStatus, reverseClaim, reverseRefund, reverseFund, reverseRecover } from "./swapReverse.js";
-import { ARBISCAN_TX, sameHex, targetByContract, txLink, SWAP_MARKUP_BPS, SWAP_REFERRAL_ID, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkMarkupBps, formatSwapQuote, pct, swapSats, swapSource, swapTarget, units, swapRoute, allSwapRoutes, type SwapSource, type SwapTarget } from "../swap/stable.js";
+import { ARBISCAN_TX, sameHex, targetByContract, txLink, SWAP_MARKUP_BPS, SWAP_REFERRAL_ID, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkMarkupBps, formatSwapQuote, pct, swapFeeRates, swapFeeSummaryNote, swapSats, swapSource, swapTarget, units, swapRoute, allSwapRoutes, type SwapSource, type SwapTarget } from "../swap/stable.js";
 
 /** sats: BTC -> stablecoin. amount (token units like 1.5) / invoice: stablecoin -> BTC (address is the payout target there). */
 export interface SwapQuoteInput { from?: string; to?: string; sats?: number | string; amount?: string | number; invoice?: string; address?: string }
@@ -73,12 +73,18 @@ export async function swapRoutes(c: Ctx) {
     const t = SWAP_TARGETS[p.dir === "to_stable" ? p.to : p.from]; const rail = p.dir === "to_stable" ? p.from : p.to;
     const r = live[i]; const q: any = r.status === "fulfilled" ? r.value : null;
     const ok = q && Number.isSafeInteger(q.min_amount) && Number.isSafeInteger(q.max_amount) && q.min_amount > 0 && q.max_amount >= q.min_amount;
+    const fees = q ? swapFeeRates(q, bps) : null;
     return { from: p.from, to: p.to, direction: p.dir === "to_stable" ? "btc_to_stablecoin" : "stablecoin_to_btc", ...(p.dir === "to_stable" ? { source: SWAP_SOURCES[rail].chain } : { target: SWAP_SOURCES[rail].chain }),
       token: t.symbol, chain: t.network, chainId: Number(t.chain), contract: t.tokenId,
       limits: ok ? { minSats: q.min_amount, maxSats: q.max_amount } : "unavailable",
+      ...(fees ? { fees } : {}),
       ...(ok ? {} : { limitsNote: `live limits unavailable: ${r.status === "rejected" ? String((r.reason as any)?.message ?? r.reason).slice(0, 200) : "Satora's quote had no valid min/max"}` }) };
   });
-  return { routes, markup: { bps, percent: pct(bps), note: `Every swap includes a ${pct(bps)} Agent Escrow fee, on top of Satora's fee. Paid inside the swap; nothing extra to send.` },
+  // one agreed live pair rate across the successful quotes, else the approximate note
+  const rates = routes.map((x) => x.fees).filter((f): f is NonNullable<typeof f> => !!f);
+  const key = (f: (typeof rates)[number]) => `${f.satoraFeeRate}:${f.totalFeeRate}`;
+  const agreed = rates.length > 0 && rates.every((f) => key(f) === key(rates[0])) ? rates[0] : null;
+  return { routes, markup: { bps, percent: pct(bps), note: swapFeeSummaryNote(agreed ? { satoraFeeRate: agreed.satoraFeeRate, totalFeeRate: agreed.totalFeeRate, markupBps: bps } : null) },
     referral: SWAP_REFERRAL_ID, limitsSource: mainnet ? "Satora live quote (nothing is created)" : "none on this network",
     next: `${mk()} swap quote --from <from> --to <to> --sats N (from BTC) or --amount <tokens> (from a stablecoin) for a priced quote` };
 }

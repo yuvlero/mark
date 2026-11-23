@@ -91,7 +91,10 @@ test("quote: referral ID and the 50 bps markup on getQuote; markup shown openly 
   const a = await sw.swapQuote(ctxWith(provider(client)), { from: "usdc", to: "arkade", amount: "1.5" }); assert.match(a.next, /--address <ark address> --amount 1\.5/);
   assert.equal(r.quote.send, "1.5"); assert.equal(r.quote.receiveSats, 2420);
   assert.equal(r.quote.fees.agentEscrowMarkup, "0.5%"); assert.equal(r.quote.fees.agentEscrowMarkupSats, 12); assert.equal(r.quote.fees.satoraFeeSats, 12); assert.equal(r.quote.fees.totalFeeSats, 28);
-  assert.match(r.quote.markupNote, /0\.5% Agent Escrow fee \(12 sats\)/); assert.equal(r.quote.referral, SWAP_REFERRAL_ID);
+  assert.equal(r.quote.fees.satoraFeeRate, 0.0048); assert.equal(r.quote.fees.satoraFeePercent, "0.48%");
+  assert.equal(r.quote.fees.totalFeeRate, 0.0098); assert.equal(r.quote.fees.totalFeePercent, "0.98%");
+  assert.equal(r.quote.markupNote, "Total fee: 0.98% (Satora 0.48% + Agent Escrow 0.5%) plus 4 sats network fee. Taken inside the swap; nothing extra to send. No ETH needed: the deposit is gasless.");
+  assert.equal(r.quote.referral, SWAP_REFERRAL_ID);
   // an invoice quotes the invoice's sats (it pins the payout)
   const inv = INV(); await sw.swapQuote(ctxWith(provider(client)), { from: "usdt0", to: "lightning", invoice: inv });
   const gi = calls.getQuote.at(-1); assert.equal(gi.targetAmount, 2420); assert.equal(gi.lightningDestination, inv); assert.equal(gi.sourceToken, SWAP_TARGETS.usdt0.tokenId);
@@ -102,7 +105,7 @@ test("preview (no confirm): nothing is created, the target and the markup are sp
   const { client, calls } = mockClient();
   const r = await sw.swapRun(ctxWith(provider(client)), { from: "usdc", to: "arkade", amount: "1.5", address: ARK });
   assert.equal(r.swap, "preview"); assert.equal(calls.createSwap.length, 0); assert.equal(calls.fund.length, 0);
-  assert.match(r.notice, /REAL MONEY/); assert.match(r.notice, /0\.5% Agent Escrow fee/); assert.match(r.next, /--yes --wait/); assert.equal(r.deposit, undefined);
+  assert.match(r.notice, /REAL MONEY/); assert.match(r.notice, /Total fee: 0\.98% \(Satora 0\.48% \+ Agent Escrow 0\.5%\) plus 4 sats network fee/); assert.match(r.next, /--yes --wait/); assert.equal(r.deposit, undefined);
 });
 
 test("create: gasless, referral ID and the SAME markup on createSwap; deposit address, exact amount and token shown once checked", async () => {

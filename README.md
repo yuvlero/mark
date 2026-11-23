@@ -353,7 +353,7 @@ mark escrow inbox                              # unread across all your deals
 
 `mark swap` turns bitcoin (paid over **Lightning** or from an **Arkade** wallet) into **USDC** or **USDT0** on **Arbitrum One**, through [Satora](https://satora.io), and back: USDC or USDT0 on Arbitrum into BTC over Lightning or to an Ark address ([below](#stablecoins-back-to-btc-gasless)). It is standalone: no deal, no escrow server, nothing to do with the escrow flow. Mainnet only (Satora has no Arbitrum stablecoin route on mutinynet).
 
-**Fee: a 0.5% Agent Escrow fee is added** on top of Satora's own fee and the network fee. It is shown openly in every quote and preview (`fees.agentEscrowMarkup`, `agentEscrowMarkupSats`) and paid inside the swap: you never send it separately. Mark passes it to Satora as `extraFees` (50 bps), the same value on the quote and on the swap, with Agent Escrow's public Satora referral ID `lnds_29617a89f8a6b5a7`. Mark refuses any markup above 100 bps.
+**Fee: about 1% total (Satora ~0.5% + Agent Escrow 0.5%) plus network fee.** Every quote and preview shows the live rates (`fees.totalFeeRate`, `fees.totalFeePercent`, `fees.satoraFeePercent`, `fees.agentEscrowMarkup`) and a `markupNote` like `Total fee: 1% (Satora 0.5% + Agent Escrow 0.5%) plus 7 sats network fee`. The numbers always come from the quote, never from a hard-coded 1%. The fee is paid inside the swap: you never send it separately. Mark passes the Agent Escrow part to Satora as `extraFees` (50 bps), the same value on the quote and on the swap, with Agent Escrow's public Satora referral ID `lnds_29617a89f8a6b5a7`. Mark refuses any markup above 100 bps.
 
 ```sh
 # 0) which routes, with Satora's live min / max (free, nothing is created)
@@ -370,12 +370,12 @@ Example quote (100,000 sats, Lightning → USDC; numbers move with the market):
 
 ```json
 {"quote":{"from":"lightning","to":"usdc","payAmountSats":100000,"rate":"61292.781 USDC per BTC","receive":"60.675562",
- "fees":{"satoraFeeSats":500,"satoraFeeRate":0.005,"agentEscrowMarkupSats":500,"agentEscrowMarkupBps":50,"agentEscrowMarkup":"0.5%","networkFeeSats":7,"totalFeeSats":1007},
- "markupNote":"Includes a 0.5% Agent Escrow fee (500 sats), on top of Satora's fee. Paid inside the swap; nothing extra to send.",
+ "fees":{"satoraFeeSats":500,"satoraFeeRate":0.005,"satoraFeePercent":"0.5%","agentEscrowMarkupSats":500,"agentEscrowMarkupBps":50,"agentEscrowMarkup":"0.5%","networkFeeSats":7,"totalFeeSats":1007,"totalFeeRate":0.01,"totalFeePercent":"1%"},
+ "markupNote":"Total fee: 1% (Satora 0.5% + Agent Escrow 0.5%) plus 7 sats network fee. Paid inside the swap; nothing extra to send.",
  "limits":{"minSats":356,"maxSats":20000000},"referral":"lnds_29617a89f8a6b5a7"}}
 ```
 
-- `mark swap routes` (`swap_routes`) lists the eight supported routes: `--from lightning|arkade` × `--to usdc|usdt0`, then back, `--from usdc|usdt0` × `--to lightning|arkade`, all on Arbitrum One (`direction`: `btc_to_stablecoin` or `stablecoin_to_btc`). Each shows the token contract and Satora's live `limits` (`minSats`, `maxSats`), read from a quote per route; nothing is created. If Satora cannot be reached (or on mutinynet) the routes are still listed with `"limits": "unavailable"` and a `limitsNote`. Other Satora pairs are not supported yet.
+- `mark swap routes` (`swap_routes`) lists the eight supported routes: `--from lightning|arkade` × `--to usdc|usdt0`, then back, `--from usdc|usdt0` × `--to lightning|arkade`, all on Arbitrum One (`direction`: `btc_to_stablecoin` or `stablecoin_to_btc`). Each shows the token contract and Satora's live `limits` (`minSats`, `maxSats`), read from a quote per route; nothing is created. When those quotes succeed, each route also shows Satora's live pair rate (`fees.totalFeePercent`, `fees.satoraFeePercent`) and the summary note uses it; if the rates differ, or Satora cannot be reached (or on mutinynet), the note is `about 1% total (Satora ~0.5% + Agent Escrow 0.5%) plus network fee` and unavailable routes have `"limits": "unavailable"` plus a `limitsNote`. Other Satora pairs are not supported yet.
 - `--from lightning` (default) prints a Lightning **hold invoice**: pay it once from any wallet. It settles only when the stablecoins are claimed; otherwise it expires and your wallet keeps the sats.
 - `--from arkade` prints an Ark address and the exact `amountSats`: pay it in ONE payment from an Arkade wallet on https://arkade.computer (not Bark / Second). If the swap fails, `mark swap refund <id> --to <your ark address>` after its timelock.
 - `--to usdc` (default) or `--to usdt0` (USDT0 on Arbitrum, the former USDT contract `0xFd08…Cbb9`).
@@ -390,7 +390,7 @@ Example quote (100,000 sats, Lightning → USDC; numbers move with the market):
 
 ### Stablecoins back to BTC (gasless)
 
-`mark swap --from usdc|usdt0 --to lightning|arkade` swaps USDC or USDT0 on Arbitrum One into BTC. **Gasless: you need no EVM wallet in Mark and no ETH.** Same 0.5% Agent Escrow fee, same referral ID and `extraFees` on the quote and the swap, same 100 bps cap; the quote shows the fee in sats (`fees.agentEscrowMarkupSats`).
+`mark swap --from usdc|usdt0 --to lightning|arkade` swaps USDC or USDT0 on Arbitrum One into BTC. **Gasless: you need no EVM wallet in Mark and no ETH.** Same total fee (about 1%: Satora ~0.5% + Agent Escrow 0.5%, plus network fee), same referral ID and `extraFees` on the quote and the swap, same 100 bps cap; the quote shows the live rates and the fee in sats.
 
 ```sh
 # quote (free): send 1.5 USDC, paid out over Lightning
@@ -446,9 +446,9 @@ Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL` (https; http onl
 | `mark escrow message <id> --text "..." [--kind question\|dispute\|evidence\|info] [--reply-to <msgId>]` | Post to the thread |
 | `mark escrow inbox` | Unread messages across your deals |
 | `mark escrow invites [--all] [--needs accept\|fund\|sign\|any] [--state s]` | Deals for my key: waiting for my accept (default), or all / filtered. Each item has `needs`, `awaiting`, `action_required_for`, `nextStep`. Signed request, no id needed |
-| `mark swap quote [--from lightning\|arkade] [--to usdc\|usdt0] --sats N` | Quote BTC → stablecoin on Arbitrum: rate, what you receive, Satora fee, the 0.5% Agent Escrow markup, network fee, total. Nothing is created |
-| `mark swap routes` | Every route Mark supports (Lightning / Arkade → USDC / USDT0 on Arbitrum): token contract, chain and Satora's live min / max sats, plus the 0.5% Agent Escrow fee note. Read-only |
-| `mark swap [--from lightning\|arkade] [--to usdc\|usdt0] --sats N --address 0x… [--yes] [--wait] [--timeout sec]` | Preview (no `--yes`), or create the swap: prints the invoice / Ark address to pay; `--wait` claims and prints `payoutTx`. Includes a 0.5% Agent Escrow fee |
+| `mark swap quote [--from lightning\|arkade] [--to usdc\|usdt0] --sats N` | Quote BTC → stablecoin on Arbitrum: rate, what you receive, and the fees (about 1% total: Satora ~0.5% + Agent Escrow 0.5%, plus network fee; live rates are in the quote). Nothing is created |
+| `mark swap routes` | Every route Mark supports (Lightning / Arkade → USDC / USDT0 on Arbitrum, and back): token contract, chain and Satora's live min / max sats, plus the total-fee note (about 1%: Satora ~0.5% + Agent Escrow 0.5%, plus network fee; live pair rates when Satora can be reached). Read-only |
+| `mark swap [--from lightning\|arkade] [--to usdc\|usdt0] --sats N --address 0x… [--yes] [--wait] [--timeout sec]` | Preview (no `--yes`), or create the swap: prints the invoice / Ark address to pay; `--wait` claims and prints `payoutTx`. About 1% total (Satora ~0.5% + Agent Escrow 0.5%) plus network fee, shown in the quote |
 | `mark swap status <id>` | Swap status (read-only), amount, `payoutTx` once claimed |
 | `mark swap claim <id> [--wait] [--timeout sec]` | Claim a paid swap's stablecoins to its address (safe to repeat) |
 | `mark swap --from usdc\|usdt0 --to lightning --invoice <bolt11>` or `--to arkade --address <ark address> --amount <tokens>`, `[--yes] [--wait] [--timeout sec]` | Stablecoin → BTC, gasless: preview (no `--yes`), or create the swap and print the deposit address, exact amount and token; `--wait` funds it once the deposit is there and waits for the payout |

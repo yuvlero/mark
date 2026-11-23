@@ -4,6 +4,12 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-23
+
+### Changed
+- Swap quotes now state the **total fee** as a rate, not only the 0.5% Agent Escrow markup. Every quote (both directions, CLI and MCP) includes `fees.totalFeeRate`, `fees.totalFeePercent` and `fees.satoraFeePercent`, computed from Satora's live `protocol_fee_rate` plus the markup, and a `markupNote` like `Total fee: 1% (Satora 0.5% + Agent Escrow 0.5%) plus 7 sats network fee`. The numbers always come from the quote, never from a hard-coded 1%.
+- `mark swap routes`, the create/preview notice, MCP tool descriptions, CLI usage, the README, the agent quickstart, AGENTS.md and the skill now say the total is about 1% (Satora ~0.5% + Agent Escrow 0.5%) plus the network fee. When `mark swap routes` can read Satora's live pair rate from the same probe quotes it already fetches, each route shows that rate and the summary note uses it when every route agrees.
+
 ## [0.5.0] - 2026-11-23
 
 **New: `mark swap`** turns bitcoin (Lightning or Arkade) into USDC or USDT0 on Arbitrum through Satora, and back: USDC or USDT0 on Arbitrum into BTC over Lightning or to an Ark address, gasless. It is standalone: no deal and no escrow server involved. A 0.5% Agent Escrow fee is added, and every quote shows it.

@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { SatoraProvider } from "../dist/src/swap/satora.js";
-import { SWAP_REFERRAL_ID, SWAP_MARKUP_BPS, SWAP_MARKUP_CAP_BPS, SWAP_TARGETS, SWAP_SOURCES, checkMarkupBps, splitSwapFees, formatSwapQuote, checkEvmAddress, units, pct } from "../dist/src/swap/stable.js";
+import { SWAP_REFERRAL_ID, SWAP_MARKUP_BPS, SWAP_MARKUP_CAP_BPS, SWAP_FEE_TOTAL_NOTE, SWAP_TARGETS, SWAP_SOURCES, checkMarkupBps, splitSwapFees, formatSwapQuote, checkEvmAddress, units, pct, ratePct, swapFeeSummaryNote } from "../dist/src/swap/stable.js";
 import * as sw from "../dist/src/core/swap.js";
 import { checkSwapArgs, parseArgs, helpFor, SWAP_USAGE } from "../dist/src/cliArgs.js";
 import { openCtx } from "../dist/src/core/context.js";
@@ -61,20 +61,41 @@ test("over-cap markup is refused before anything reaches Satora (quote and creat
 // ---------- fee math ----------
 test("fee math: Satora's protocol fee splits into Satora's fee + our 50 bps markup; total adds the network fee", () => {
   const f = splitSwapFees(Q, 100000, 50);
-  assert.deepEqual(f, { satoraFeeSats: 500, satoraFeeRate: 0.005, markupSats: 500, markupBps: 50, networkFeeSats: 7, totalFeeSats: 1007 });
+  assert.deepEqual(f, { satoraFeeSats: 500, satoraFeeRate: 0.005, satoraFeePercent: "0.5%", agentEscrowMarkup: "0.5%", agentEscrowMarkupBps: 50, totalFeeRate: 0.01, totalFeePercent: "1%", markupSats: 500, markupBps: 50, networkFeeSats: 7, totalFeeSats: 1007 });
   // odd amount: markup rounds to the nearest sat, Satora gets the rest of its single protocol fee
   const g = splitSwapFees({ ...Q, protocol_fee: 123, protocol_fee_rate: 0.0075, network_fee: 5, gasless_network_fee: 2 }, 12345, 50);
   assert.equal(g.markupSats, 62); assert.equal(g.satoraFeeSats, 61); assert.equal(g.networkFeeSats, 7); assert.equal(g.totalFeeSats, 130);
-  assert.equal(g.satoraFeeRate, 0.0025);
+  assert.equal(g.satoraFeeRate, 0.0025); assert.equal(g.totalFeeRate, 0.0075); assert.equal(g.totalFeePercent, "0.75%");
   assert.throws(() => splitSwapFees(Q, 100000, 101), (e) => e.code === "BAD_MARKUP");
 });
 test("quote output names the Agent Escrow markup openly, in sats, bps and percent", () => {
   const q = formatSwapQuote(Q, { from: "lightning", to: "usdc", sats: 100000, bps: SWAP_MARKUP_BPS });
   assert.equal(q.fees.agentEscrowMarkup, "0.5%"); assert.equal(q.fees.agentEscrowMarkupBps, 50); assert.equal(q.fees.agentEscrowMarkupSats, 500);
-  assert.equal(q.fees.satoraFeeSats, 500); assert.equal(q.fees.networkFeeSats, 7); assert.equal(q.fees.totalFeeSats, 1007);
-  assert.match(q.markupNote, /0\.5% Agent Escrow fee \(500 sats\)/);
+  assert.equal(q.fees.satoraFeeSats, 500); assert.equal(q.fees.satoraFeeRate, 0.005); assert.equal(q.fees.satoraFeePercent, "0.5%");
+  assert.equal(q.fees.networkFeeSats, 7); assert.equal(q.fees.totalFeeSats, 1007);
+  assert.equal(q.fees.totalFeeRate, 0.01); assert.equal(q.fees.totalFeePercent, "1%");
+  assert.equal(q.markupNote, "Total fee: 1% (Satora 0.5% + Agent Escrow 0.5%) plus 7 sats network fee. Paid inside the swap; nothing extra to send.");
   assert.equal(q.receive, "60.675562"); assert.equal(q.payAmountSats, 100000); assert.equal(q.token.symbol, "USDC"); assert.equal(q.token.chainId, 42161);
   assert.match(q.rate, /61292\.781 USDC per BTC/); assert.equal(q.referral, SWAP_REFERRAL_ID);
+});
+test("quote total fee rate comes from the live quote, never a hard-coded 1%", () => {
+  const q = formatSwapQuote({ ...Q, protocol_fee: 980, protocol_fee_rate: 0.0098, network_fee: 13 }, { from: "lightning", to: "usdc", sats: 100000, bps: SWAP_MARKUP_BPS });
+  assert.equal(q.fees.satoraFeeRate, 0.0048); assert.equal(q.fees.satoraFeePercent, "0.48%");
+  assert.equal(q.fees.agentEscrowMarkup, "0.5%"); assert.equal(q.fees.totalFeeRate, 0.0098); assert.equal(q.fees.totalFeePercent, "0.98%");
+  assert.equal(q.fees.satoraFeeSats, 480); assert.equal(q.fees.agentEscrowMarkupSats, 500); assert.equal(q.fees.networkFeeSats, 13); assert.equal(q.fees.totalFeeSats, 993);
+  assert.equal(q.markupNote, "Total fee: 0.98% (Satora 0.48% + Agent Escrow 0.5%) plus 13 sats network fee. Paid inside the swap; nothing extra to send.");
+  assert.equal(ratePct(0.01), "1%"); assert.equal(ratePct(0.005), "0.5%"); assert.equal(SWAP_FEE_TOTAL_NOTE, "about 1% total (Satora ~0.5% + Agent Escrow 0.5%) plus network fee");
+  assert.match(swapFeeSummaryNote(), /about 1% total \(Satora ~0\.5% \+ Agent Escrow 0\.5%\) plus network fee/);
+  assert.equal(swapFeeSummaryNote({ satoraFeeRate: 0.005, totalFeeRate: 0.01, markupBps: 50 }), "Every swap costs 1% total (Satora 0.5% + Agent Escrow 0.5%) plus network fee. Paid inside the swap; nothing extra to send.");
+  // a quote whose combined rate is below our markup: do not invent a higher total, and never print NaN
+  const low = formatSwapQuote({ ...Q, protocol_fee: 30, protocol_fee_rate: 0.003 }, { from: "lightning", to: "usdc", sats: 100000, bps: SWAP_MARKUP_BPS });
+  assert.equal(low.fees.satoraFeeRate, 0); assert.equal(low.fees.totalFeeRate, 0.003); assert.equal(low.fees.totalFeePercent, "0.3%");
+  assert.match(low.markupNote, /Total fee: 0\.3% \(Satora 0% \+ Agent Escrow 0\.5%\)/);
+  for (const bad of [NaN, Infinity, -0.01]) {
+    const q = formatSwapQuote({ ...Q, protocol_fee_rate: bad }, { from: "lightning", to: "usdc", sats: 100000, bps: SWAP_MARKUP_BPS });
+    assert.equal(q.fees.totalFeeRate, 0); assert.equal(q.fees.satoraFeeRate, 0); assert.equal(q.fees.totalFeePercent, "0%");
+    assert.doesNotMatch(q.markupNote, /NaN|Infinity/);
+  }
 });
 test("units: 6-decimal token amounts", () => {
   assert.equal(units("60675562", 6), "60.675562"); assert.equal(units("1000000", 6), "1"); assert.equal(units("5", 6), "0.000005"); assert.equal(units(undefined, 6), undefined);
@@ -102,7 +123,7 @@ test("mark swap (create): getQuote and createSwap both get referral ID + 50 bps,
 test("mark swap without --yes is a preview: quote only, no swap created", async () => {
   const { client, calls } = mockClient(); const r = await sw.swapRun(ctxWith(provider(client)), { sats: 100000, address: ADDR });
   assert.equal(r.swap, "preview"); assert.equal(calls.createSwap.length, 0); assert.equal(calls.getQuote[0].referralCode, SWAP_REFERRAL_ID); assert.equal(calls.getQuote[0].extraFees, 50);
-  assert.match(r.notice, /REAL MONEY/); assert.match(r.notice, /0\.5% Agent Escrow fee/);
+  assert.match(r.notice, /REAL MONEY/); assert.match(r.notice, /Total fee: 1% \(Satora 0\.5% \+ Agent Escrow 0\.5%\) plus 7 sats network fee/);
 });
 test("mark swap quote: referral ID + extraFees sent; out-of-range amounts flagged; create refuses them", async () => {
   const { client, calls } = mockClient(); const c = ctxWith(provider(client));
@@ -216,11 +237,12 @@ test("CLI: mark swap usage checks before any key or network access", () => {
 
 // ---------- cross-surface consistency ----------
 const rd = (p) => fs.readFileSync(new URL(p, import.meta.url), "utf8");
-test("docs: README, quickstart, skill and help all state the same markup and list every swap command and flag", () => {
+test("docs: README, quickstart, skill and help all state the same total fee and markup and list every swap command and flag", () => {
   const README = rd("../README.md"), QS = rd("../docs/AGENT_QUICKSTART.md"), SKILL = rd("../skills/agent-escrow/SKILL.md"), AGENTS = rd("../AGENTS.md");
   const p = pct(SWAP_MARKUP_BPS);
-  for (const [n, d] of [["README", README], ["quickstart", QS], ["skill", SKILL], ["AGENTS", AGENTS], ["help quote", SWAP_USAGE.quote], ["help create", SWAP_USAGE.create]]) {
-    assert.ok(d.includes(`${p} Agent Escrow`), `${n} must say "${p} Agent Escrow"`);
+  for (const [n, d] of [["README", README], ["quickstart", QS], ["skill", SKILL], ["AGENTS", AGENTS], ["help quote", SWAP_USAGE.quote], ["help create", SWAP_USAGE.create], ["help routes", SWAP_USAGE.routes]]) {
+    assert.ok(d.toLowerCase().includes(SWAP_FEE_TOTAL_NOTE.toLowerCase()), `${n} must state the total fee (${SWAP_FEE_TOTAL_NOTE})`);
+    assert.ok(d.includes(`${p} Agent Escrow`) || d.includes(`Agent Escrow ${p}`), `${n} must name the ${p} Agent Escrow markup`);
     for (const other of ["0.25% Agent Escrow", "1% Agent Escrow", "0.75% Agent Escrow"]) assert.ok(!d.includes(other), `${n} has a stale markup: ${other}`);
   }
   for (const sub of ["quote", "status", "claim", "refund"]) assert.ok(README.includes("`mark swap " + sub), `README is missing mark swap ${sub}`);
@@ -315,7 +337,9 @@ test("swap routes: every route both ways (SWAP_SOURCES x SWAP_TARGETS, then back
   for (const g of calls.getQuote) { assert.equal(g.referralCode, SWAP_REFERRAL_ID); assert.equal(g.extraFees, SWAP_MARKUP_BPS); }
   // the reverse probes quote a stablecoin source amount on Arbitrum
   for (const g of calls.getQuote.slice(4)) { assert.equal(g.sourceChain, "42161"); assert.equal(g.targetToken, "btc"); assert.equal(String(g.sourceAmount), "10000000"); }
-  assert.deepEqual(r.markup, { bps: 50, percent: "0.5%", note: "Every swap includes a 0.5% Agent Escrow fee, on top of Satora's fee. Paid inside the swap; nothing extra to send." });
+  const liveFees = { satoraFeeRate: 0.005, satoraFeePercent: "0.5%", agentEscrowMarkup: "0.5%", agentEscrowMarkupBps: 50, totalFeeRate: 0.01, totalFeePercent: "1%" };
+  for (const x of r.routes) assert.deepEqual(x.fees, liveFees);
+  assert.deepEqual(r.markup, { bps: 50, percent: "0.5%", note: "Every swap costs 1% total (Satora 0.5% + Agent Escrow 0.5%) plus network fee. Paid inside the swap; nothing extra to send." });
   assert.equal(r.referral, SWAP_REFERRAL_ID);
 });
 test("swap routes: a failed or incomplete limits lookup still lists every route, limits unavailable, no error", async () => {
@@ -339,7 +363,17 @@ test("swap routes: a failed or incomplete limits lookup still lists every route,
   // mutinynet: no Satora stablecoin routes, so no lookup at all
   ({ client, calls } = mockClient());
   r = await sw.swapRoutes(ctxWith(provider(client), "mutinynet"));
-  assert.equal(r.routes.length, 8); assert.ok(r.routes.every((x) => x.limits === "unavailable" && /mainnet only/.test(x.limitsNote))); assert.equal(calls.getQuote.length, 0);
+  assert.equal(r.routes.length, 8); assert.ok(r.routes.every((x) => x.limits === "unavailable" && /mainnet only/.test(x.limitsNote) && x.fees === undefined)); assert.equal(calls.getQuote.length, 0);
+  assert.match(r.markup.note, /about 1% total \(Satora ~0\.5% \+ Agent Escrow 0\.5%\) plus network fee/);
+});
+test("swap routes: mixed live pair rates fall back to the approximate total-fee note; each route still shows its own rate", async () => {
+  const { client } = mockClient(); const q = client.getQuote;
+  client.getQuote = async (p) => ({ ...(await q(p)), protocol_fee_rate: p.sourceChain === "Arkade" || p.targetChain === "Arkade" ? 0.012 : 0.01 });
+  const r = await sw.swapRoutes(ctxWith(provider(client)));
+  const by = Object.fromEntries(r.routes.map((x) => [`${x.from}->${x.to}`, x]));
+  assert.equal(by["lightning->usdc"].fees.totalFeePercent, "1%"); assert.equal(by["lightning->usdc"].fees.satoraFeePercent, "0.5%");
+  assert.equal(by["arkade->usdc"].fees.totalFeePercent, "1.2%"); assert.equal(by["arkade->usdc"].fees.satoraFeePercent, "0.7%");
+  assert.match(r.markup.note, /about 1% total \(Satora ~0\.5% \+ Agent Escrow 0\.5%\) plus network fee/);
 });
 test("swap routes CLI: takes no amount / address / wait flags; --json is fine; help shows its usage", () => {
   assert.equal(checkSwapArgs("routes", undefined, {}), null); assert.equal(checkSwapArgs("routes", undefined, { json: true }), null);
@@ -354,10 +388,10 @@ test("MCP swap_routes: listed with no required arguments; a call returns all eig
   try {
     const tool = (await cl.listTools()).tools.find((x) => x.name === "swap_routes");
     assert.ok(tool, "swap_routes is registered"); assert.deepEqual(tool.inputSchema.required ?? [], []); assert.deepEqual(Object.keys(tool.inputSchema.properties ?? {}), []);
-    assert.match(tool.description, /Read-only: nothing is created/); assert.match(tool.description, /0\.5% Agent Escrow fee/);
+    assert.match(tool.description, /Read-only: nothing is created/); assert.match(tool.description, /about 1% total \(Satora ~0\.5% \+ Agent Escrow 0\.5%\) plus network fee/);
     const r = JSON.parse((await cl.callTool({ name: "swap_routes", arguments: {} })).content[0].text);
     assert.deepEqual(r.routes.map((x) => `${x.from}->${x.to}`), ["lightning->usdc", "lightning->usdt0", "arkade->usdc", "arkade->usdt0", "usdc->lightning", "usdc->arkade", "usdt0->lightning", "usdt0->arkade"]);
-    assert.ok(r.routes.every((x) => x.limits === "unavailable")); assert.equal(r.markup.percent, "0.5%"); assert.equal(r.referral, SWAP_REFERRAL_ID);
+    assert.ok(r.routes.every((x) => x.limits === "unavailable" && x.fees === undefined)); assert.equal(r.markup.percent, "0.5%"); assert.match(r.markup.note, /about 1% total/); assert.equal(r.referral, SWAP_REFERRAL_ID);
   } finally { await cl.close(); }
 });
 test("a reverted payout tx is never reported as received or sent", async () => {

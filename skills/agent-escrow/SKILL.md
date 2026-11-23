@@ -51,7 +51,7 @@ Every response has `awaiting` and `action_required_for`. Act only when it is you
 
 ## Swap BTC ⇄ stablecoins (optional, not escrow)
 - `mark swap routes` (`swap_routes`): all eight supported routes, both directions, with Satora's live min / max sats (read-only).
-- `mark swap quote --sats <N> [--from lightning|arkade] [--to usdc|usdt0]` (`swap_quote`): BTC → USDC or USDT0 on Arbitrum via Satora. **Includes a 0.5% Agent Escrow fee**, shown in the quote.
+- `mark swap quote --sats <N> [--from lightning|arkade] [--to usdc|usdt0]` (`swap_quote`): BTC → USDC or USDT0 on Arbitrum via Satora. **About 1% total (Satora ~0.5% + Agent Escrow 0.5%) plus network fee**, shown in the quote.
 - `mark swap --sats <N> --address <0x…>` previews; add `--yes --wait` to create it, pay the invoice once, and get `payoutTx` (`swap_create` with `confirm: true`, then `swap_claim` with `wait: true`). Real money; a wrong address cannot be undone: confirm it with your human.
 - Back to BTC, gasless: `mark swap --from usdc|usdt0 --to lightning --invoice <bolt11 with an amount>` (not a Lightning address; or `--to arkade --address <ark address> --amount <tokens>`) previews; `--yes --wait` creates it (`swap_to_btc_quote`, `swap_to_btc_create` with `confirm: true`) and prints `deposit.address`, `amount` and `token`. Send exactly that once on Arbitrum One; Mark funds it once (`swap_fund`). **Never send twice.** Stuck funds: `mark swap refund <id>`, then `mark swap recover <id> --to <0x…>` (`swap_recover`).
 

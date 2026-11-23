@@ -1,7 +1,7 @@
 /** CLI usage checks (pure; tested without spawning). */
 import { str as s } from "./util.js";
 import { MarkError } from "./errors.js";
-import { SWAP_MARKUP_BPS, SWAP_SOURCES, SWAP_TARGETS, pct } from "./swap/stable.js";
+import { SWAP_FEE_TOTAL_NOTE, SWAP_SOURCES, SWAP_TARGETS } from "./swap/stable.js";
 export function parseArgs(argv: string[]) {
   const pos: string[] = []; const f: Record<string, string | boolean> = {};
   for (let i = 0; i < argv.length; i++) {
@@ -37,12 +37,12 @@ export function checkDemoArgs(f: Record<string, string | boolean>) {
 }
 /** `mark swap` (BTC <-> USDC / USDT0 on Arbitrum via Satora; standalone, not tied to a deal). Key "create" is plain `mark swap` (`mark swap create` is the same). */
 export const SWAP_USAGE: Record<string, string> = {
-  quote: `mark swap quote [--from lightning|arkade] [--to usdc|usdt0] --sats N | mark swap quote --from usdc|usdt0 --to lightning|arkade (--amount <tokens> | --invoice <bolt11>)   (rate, Satora fee, the ${pct(SWAP_MARKUP_BPS)} Agent Escrow markup, network fee, total; nothing is created)`,
-  create: `mark swap [--from lightning|arkade] [--to usdc|usdt0] --sats N --address <0x... on Arbitrum> [--yes] [--wait] [--timeout <sec>] | mark swap --from usdc|usdt0 --to lightning --invoice <bolt11 with an amount> [--yes] [--wait] | mark swap --from usdc|usdt0 --to arkade --address <ark address on https://arkade.computer> --amount <tokens> [--yes] [--wait]   (no --yes: preview only, nothing is created. From a stablecoin: gasless, Mark shows a deposit address, the exact amount and the token. Includes a ${pct(SWAP_MARKUP_BPS)} Agent Escrow fee)`,
+  quote: `mark swap quote [--from lightning|arkade] [--to usdc|usdt0] --sats N | mark swap quote --from usdc|usdt0 --to lightning|arkade (--amount <tokens> | --invoice <bolt11>)   (rate, fees: ${SWAP_FEE_TOTAL_NOTE}; live rates are in the quote; nothing is created)`,
+  create: `mark swap [--from lightning|arkade] [--to usdc|usdt0] --sats N --address <0x... on Arbitrum> [--yes] [--wait] [--timeout <sec>] | mark swap --from usdc|usdt0 --to lightning --invoice <bolt11 with an amount> [--yes] [--wait] | mark swap --from usdc|usdt0 --to arkade --address <ark address on https://arkade.computer> --amount <tokens> [--yes] [--wait]   (no --yes: preview only, nothing is created. From a stablecoin: gasless, Mark shows a deposit address, the exact amount and the token. ${SWAP_FEE_TOTAL_NOTE}, shown in the quote)`,
   status: "mark swap status <id>",
   claim: "mark swap claim <id> [--wait] [--timeout <sec>]   (claim a paid swap's stablecoins to its address, or a swap's Ark payout; --wait first waits for Satora to fund its side; never funds a swap from a stablecoin (that is mark swap fund); safe to repeat)",
   fund: "mark swap fund <id> [--wait] [--timeout <sec>]   (swap from a stablecoin: once the deposit is at the deposit address, sign the permits so Satora's relay locks it, once, gasless; --wait waits for the deposit, then the payout)",
-  routes: `mark swap routes   (every route Mark supports, both directions, with Satora's live min/max sats; read-only, nothing is created. Includes the ${pct(SWAP_MARKUP_BPS)} Agent Escrow fee note)`,
+  routes: `mark swap routes   (every route Mark supports, both directions, with Satora's live min/max sats; read-only, nothing is created. Fee: ${SWAP_FEE_TOTAL_NOTE}; live pair rates are shown when Satora can be reached)`,
   refund: "mark swap refund <id> --to <ark address from an Arkade wallet on https://arkade.computer>   (Arkade-funded swap that did not pay out, after its timelock) | mark swap refund <id>   (swap from a stablecoin whose locked deposit did not pay out: back to the deposit address, gasless)",
   recover: "mark swap recover <id> --to <your 0x address on Arbitrum>   (swap from a stablecoin: send the stablecoins at the deposit address to your address; needs a little Arbitrum ETH there for gas)",
 };
