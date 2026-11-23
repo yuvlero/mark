@@ -4,6 +4,9 @@ import path from "node:path";
 import os from "node:os";
 import { MarkError } from "./errors.js";
 
+/** Hostnames of this machine: the only ones plain http:// may reach (local dev server). */
+export const LOOPBACK_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
+
 export type NetworkName = "bitcoin" | "mutinynet";
 /** One-line switch for the default network. */
 export const DEFAULT_NETWORK: NetworkName = "bitcoin";
@@ -49,7 +52,7 @@ export function normalizeUrl(u: string): string {
   try { x = new URL(u); } catch { throw new MarkError("BAD_ESCROW_URL", `invalid escrow URL: ${u}`); }
   if (x.protocol !== "https:" && x.protocol !== "http:") throw new MarkError("BAD_ESCROW_URL", "escrow URL must be http(s)");
   // plain http only to this machine (local dev server); anything else could be read or rewritten in transit (deal data, funding address)
-  if (x.protocol === "http:" && !["localhost", "127.0.0.1", "[::1]"].includes(x.hostname)) throw new MarkError("BAD_ESCROW_URL", `insecure escrow URL ${x.origin}: use https:// (http:// is allowed only for localhost)`);
+  if (x.protocol === "http:" && !LOOPBACK_HOSTS.includes(x.hostname)) throw new MarkError("BAD_ESCROW_URL", `insecure escrow URL ${x.origin}: use https:// (http:// is allowed only for localhost)`);
   return x.toString().replace(/\/+$/, "");
 }
 

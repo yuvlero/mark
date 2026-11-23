@@ -3,6 +3,7 @@
  * `fetchImpl` is injectable so tests can mock the API without a server.
  */
 import { MarkError } from "../errors.js";
+import { LOOPBACK_HOSTS } from "../config.js";
 import type { FeeTerms } from "../core/fees.js";
 import { MARK_VERSION, MARK_USER_AGENT } from "../version.js";
 import type { DeadlineCountdown } from "../core/deadline.js";
@@ -105,7 +106,7 @@ export const HOUSE_ORIGINS = ["https://agentescrow.to"];
 export function houseHeader(baseUrl: string | undefined, env: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const k = (env.MARK_HOUSE_KEY ?? "").trim(); if (!/^[\x21-\x7e]{1,1024}$/.test(k)) return {}; // visible ASCII only: never a header-construction error that could echo it
   let u: URL; try { u = new URL(String(baseUrl ?? "")); } catch { return {}; }
-  const local = u.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname);
+  const local = u.protocol === "http:" && LOOPBACK_HOSTS.includes(u.hostname);
   const extra = (env.MARK_HOUSE_ORIGIN ?? "").split(",").map((x) => { try { const o = new URL(x.trim()); return o.protocol === "https:" ? o.origin : null; } catch { return null; } }).filter(Boolean);
   const trusted = u.protocol === "https:" && (HOUSE_ORIGINS.includes(u.origin) || extra.includes(u.origin));
   return trusted || local ? { "x-escrow-house": k } : {};
