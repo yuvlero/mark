@@ -466,3 +466,17 @@ test("a later read that changes the payout amount, chain or gasless flag is refu
   await sw.swapFund(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1");
   const r = await sw.swapFund(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1"); assert.match(r.note, /never signs it again|already submitted/); assert.equal(m.calls.fund.length, 1);
 });
+
+test("fund re-validates every pinned term on its own read under the lock; recover will not sweep while another swap's recent funding may still need the balance", async () => {
+  for (const change of [{ targetSats: 1 }, { evmChainId: 1 }, { gasless: false }, { direction: "evm_to_arkade" }]) {
+    const m = mockClient(); await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
+    const p = provider(m.client, { balances: [1_500_000n] }); const get = p.getReverse.bind(p); let n = 0;
+    p.getReverse = async (id) => { const x = await get(id); return ++n === 1 ? x : { ...x, ...change }; };
+    const r = await sw.swapFund(ctxWith(p), "rv-1"); assert.equal(r.funded, false, JSON.stringify(change)); assert.equal(m.calls.fund.length, 0);
+  }
+  const m = mockClient(); await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
+  const p = provider(m.client, { balances: [1_500_000n], eth: 10n ** 15n });
+  p.fundAttemptsSince = () => ["rv-other"]; const get = p.getReverse.bind(p);
+  p.getReverse = async (id) => id === "rv-other" ? { ...(await get("rv-1")), id: "rv-other", status: "pending", fundTx: undefined } : get(id);
+  const e = await sw.swapRecover(ctxWith(p), "rv-1", ME).catch((x) => x); assert.equal(e.code, "SWAP_FUNDING"); assert.match(e.message, /rv-other/); assert.equal(m.calls.recover.length, 0);
+});

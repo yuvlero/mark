@@ -23,8 +23,9 @@ export interface ReverseSwapInfo extends ReverseSwapCreated { direction?: string
 export interface ReversePin { invoice?: string; arkAddress?: string; depositAddress: string; tokenContract: string; sourceUnits: string; targetSats?: number; evmChainId?: number }
 export interface ReverseQuoteInput { from: SwapStable; to: SwapRail; bps: number; sourceUnits?: bigint; targetSats?: number; destination?: string }
 export interface ReverseCreateInput { from: SwapStable; to: SwapRail; bps: number; sourceUnits?: bigint; invoice?: string; arkAddress?: string }
-/** A gasless funding attempt: at most one per swap. uncertain: the relay may have submitted it (no clear refusal), so Mark does not
- *  sign again for a while. */
+/** A gasless funding attempt: at most one per swap. uncertain: the relay may have submitted it (no clear refusal), so Mark never
+ *  signs it again (only a clear refusal clears the record). stop: refused before signing (terms changed, no record, invoice
+ *  too close to expiry). */
 export interface FundResult { success: boolean; txHash?: string; message?: string; uncertain?: boolean; skipped?: string; stop?: boolean }
 
 export interface SwapProvider {
@@ -58,10 +59,13 @@ export interface SwapProvider {
   /** Run f alone among this Mark home's deposit-address actions (create, fund, recover), across processes too. */
   exclusive?<T>(f: () => Promise<T>): Promise<T>;
   /** Sign the permits and let Satora's relay lock the deposit into the swap. At most once per swap (see FundResult): under the
-   *  deposit lock it re-checks that the swap is unfunded, the deposit is at the address and no recent attempt exists. Never throws. */
+   *  deposit lock it re-checks that the swap is unfunded, the deposit is at the address and no attempt is recorded, and the swap still matches every term pinned at create. Throws SWAP_BUSY (lock held) or SWAP_FAILED
+   *  (unreadable records); otherwise a FundResult. */
   fundReverse?(id: string): Promise<FundResult>;
   /** When a funding was last attempted for this swap (ms epoch), if ever. */
   fundAttemptedAt?(id: string): number | undefined;
+  /** Swaps of this Mark home with a funding attempt recorded after `since` (ms epoch). */
+  fundAttemptsSince?(since: number): string[];
   /** A locked deposit that did not pay out back to the deposit address: Satora's collaborative refund, else the sponsored timelock refund. */
   refundReverse?(id: string): Promise<{ success: boolean; txHash?: string; how?: string; message?: string }>;
   /** Sweep the swap token from the deposit address to `to` (needs a little ETH there for gas). */

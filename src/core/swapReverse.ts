@@ -13,11 +13,11 @@ import { ARBISCAN_TX, SWAP_MARKUP_BPS, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP
   formatReverseQuote, pct, tokenUnits, units, type SwapRail, type SwapStable } from "../swap/stable.js";
 
 export interface ReverseInput { from: SwapStable; to: SwapRail; amount?: string | number; invoice?: string; address?: string }
-type Rev = Required<Pick<SwapProvider, "quoteReverse" | "createReverse" | "getReverse" | "depositAddress" | "openReverse" | "fundReverse" | "fundAttemptedAt" | "refundReverse" | "recoverReverse" | "evm" | "claim" | "exclusive" | "pinReverse" | "reversePin" | "invoiceUsedBy">> & SwapProvider;
+type Rev = Required<Pick<SwapProvider, "quoteReverse" | "createReverse" | "getReverse" | "depositAddress" | "openReverse" | "fundReverse" | "fundAttemptedAt" | "refundReverse" | "recoverReverse" | "evm" | "claim" | "exclusive" | "pinReverse" | "reversePin" | "invoiceUsedBy" | "fundAttemptsSince">> & SwapProvider;
 
 export async function reverse(c: Ctx): Promise<Rev> {
   const s = await c.swaps();
-  for (const k of ["quoteReverse", "createReverse", "getReverse", "depositAddress", "openReverse", "fundReverse", "fundAttemptedAt", "refundReverse", "recoverReverse", "evm", "exclusive", "pinReverse", "reversePin", "invoiceUsedBy"] as const)
+  for (const k of ["quoteReverse", "createReverse", "getReverse", "depositAddress", "openReverse", "fundReverse", "fundAttemptedAt", "refundReverse", "recoverReverse", "evm", "exclusive", "pinReverse", "reversePin", "invoiceUsedBy", "fundAttemptsSince"] as const)
     if (!(s as any)[k]) throw new MarkError("BAD_CONFIG", `swap provider ${s.name} does not support mark swap from a stablecoin`);
   return s as any;
 }
@@ -311,6 +311,13 @@ export async function reverseRecover(c: Ctx, id: string, to: string | undefined)
     if (String(x.tokenContract ?? "").toLowerCase() !== t.tokenId.toLowerCase()) throw new MarkError("SWAP_FAILED", `swap ${id} changed token while recovering (${x.tokenContract}); nothing was moved`);
     // a funding submitted in the last RECOVER_AFTER_FUND_MS may still land, whatever the status says (unless the swap ended)
     if (at !== undefined && Date.now() - at < RECOVER_AFTER_FUND_MS && !SWAP_FAILED.has(x.status) && !isDone(x)) throw new MarkError("SWAP_FUNDING", "a funding of this swap was submitted less than 30 minutes ago and may still land: wait for it (mark swap status) before recovering");
+    // any other swap of this home funded in the last 30 minutes may still need the shared address's balance: unless its deposit
+    // is already pulled (funding tx known) or it ended, do not sweep; a failed read refuses too
+    for (const o of s.fundAttemptsSince(Date.now() - RECOVER_AFTER_FUND_MS).filter((o) => o !== id)) {
+      let y: ReverseSwapInfo | undefined; try { y = await s.getReverse(o); } catch { y = undefined; }
+      if (!y || (String(y.tokenContract ?? "").toLowerCase() === t.tokenId.toLowerCase() && !y.fundTx && !SWAP_FAILED.has(y.status) && !isDone(y)))
+        throw new MarkError("SWAP_FUNDING", `swap ${o} was funded from the same deposit address less than 30 minutes ago and may still need it: wait for it (${mk()} swap status ${o}) before recovering`);
+    }
     const others = (await s.openReverse()).filter((o) => o.id !== id && String(o.tokenContract).toLowerCase() === t.tokenId.toLowerCase());
     if (others.length) throw new MarkError("SWAP_OPEN_DEPOSIT", `swap ${others[0].id} is waiting for a ${t.symbol} deposit at the same address: recovering now would take its deposit too. Finish it or let it expire first.`);
     const bal = await s.evm.tokenBalance(t.tokenId, x.depositAddress!);

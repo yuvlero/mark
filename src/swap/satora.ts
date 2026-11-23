@@ -241,6 +241,7 @@ export class SatoraProvider implements SwapProvider {
     const f = this.attemptsFile(); if (f) { fs.writeFileSync(f + ".tmp", JSON.stringify(a), { mode: 0o600 }); fs.renameSync(f + ".tmp", f); }
   }
   fundAttemptedAt(id: string) { return this.readAttempts()[id]; }
+  fundAttemptsSince(since: number) { return Object.entries(this.readAttempts()).filter(([, at]) => at >= since).map(([id]) => id); }
   private pins: Record<string, ReversePin> = {};
   private pinsFile() { return this.dir ? path.join(this.dir, "reverse-pins.json") : undefined; }
   private readPins(): Record<string, ReversePin> {
@@ -270,7 +271,10 @@ export class SatoraProvider implements SwapProvider {
       if (!pin) return { success: false, stop: true, message: "this Mark home has no record of what was confirmed when the swap was created; not funding it" };
       if (x.depositAddress.toLowerCase() !== this.depositAddress().toLowerCase() || pin.depositAddress.toLowerCase() !== x.depositAddress.toLowerCase()
         || pin.tokenContract.toLowerCase() !== x.tokenContract.toLowerCase() || pin.sourceUnits !== x.sourceUnits
-        || (pin.invoice && String(x.invoice ?? "").toLowerCase() !== pin.invoice.toLowerCase()) || (pin.arkAddress && x.arkAddress !== pin.arkAddress))
+        || (pin.invoice && String(x.invoice ?? "").toLowerCase() !== pin.invoice.toLowerCase()) || (pin.arkAddress && x.arkAddress !== pin.arkAddress)
+        || !!pin.invoice === !!pin.arkAddress || x.gasless !== true || pin.evmChainId === undefined || x.evmChainId !== pin.evmChainId
+        || pin.targetSats === undefined || x.targetSats !== pin.targetSats
+        || x.direction !== (pin.invoice ? "evm_to_lightning" : "evm_to_arkade") || x.targetChain !== (pin.invoice ? SWAP_SOURCES.lightning.chain : SWAP_SOURCES.arkade.chain))
         return { success: false, stop: true, message: "the swap no longer matches what was confirmed at create; not funding it" };
       // the deposit must not be locked behind an invoice that can no longer be paid: Satora pays it only after the lock
       if (pin.invoice) {
@@ -339,7 +343,6 @@ export class SatoraProvider implements SwapProvider {
   signerFor: (privateKey: string) => Promise<any> = (k) => viemSigner(k);
 }
 
-/** After a funding attempt that may have reached the relay, wait this long before signing again (Arbitrum confirms in seconds). */
 /** A record file in the swaps dir: missing -> empty; unreadable or malformed -> refuse (never treated as empty, which would
  *  forget a funding already submitted or the terms confirmed at create). */
 function readRecord(f: string, name: string, ok: (v: unknown) => boolean): Record<string, any> {
