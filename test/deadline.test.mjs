@@ -112,7 +112,8 @@ test("unknown future state -> unknown_state (not 'final'); no deadline -> deadli
 });
 test("server's above_auto_cap claim: honoured but labelled as the server's, and the seller still gets the local dispute-by time", async () => {
   let d; const c = await ctx({ "GET /escrows/e1": async () => [200, d], [`GET /reputation/${other.p}`]: async () => [404, { code: "NOT_FOUND", error: "x" }] });
-  const future = new Date(Date.now() + 10 * 3600e3).toISOString(), fundedAt = new Date(Date.now() - 10 * 3600e3).toISOString(); // window 20 h -> margin 2 h
+  // ONE clock read: two Date.now() calls a millisecond apart made the window 71999.999 s, the margin 7199 s and the expected time 1 s off
+  const now = Date.now(); const future = new Date(now + 10 * 3600e3).toISOString(), fundedAt = new Date(now - 10 * 3600e3).toISOString(); // window 20 h -> margin 2 h
   d = deal({ buyerPubkey: other.p, sellerPubkey: c.pubkey, deadline: future, funding: { outpoint: "a:0", amount: 1200, seenAt: fundedAt }, deadlineCountdown: { status: "not_applicable", reason: "above_auto_cap" } });
   const x = (await uc.show(c, "e1")).deadlineCountdown;
   assert.equal(x.reason, "above_auto_cap"); assert.equal(x.aboveAutoCapSource, "server"); assert.match(x.note, /escrow server's statement; Mark cannot check its cap/);
