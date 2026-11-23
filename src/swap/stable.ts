@@ -16,6 +16,8 @@ export function checkMarkupBps(bps: number = SWAP_MARKUP_BPS): number {
   if (!Number.isInteger(bps) || bps < 0 || bps > SWAP_MARKUP_CAP_BPS) throw new MarkError("BAD_MARKUP", `swap markup must be a whole number of bps from 0 to ${SWAP_MARKUP_CAP_BPS} (got ${bps})`);
   return bps;
 }
+/** The created swap may promise at most this much less than the quote just shown (price moves between the two calls); more is refused. */
+export const SWAP_MAX_SLIPPAGE_BPS = 100;
 /** "0.5%" for 50 bps. */
 export const pct = (bps: number) => `${+(bps / 100).toFixed(2)}%`;
 

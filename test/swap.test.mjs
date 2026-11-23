@@ -201,12 +201,17 @@ test("create: a swap that does not match what was confirmed is refused before an
     [{ id: undefined }, /no swap id/], [{ source_amount: undefined }, /amount NaN/], [{ target_evm_address: undefined }, /payout address undefined/],
     [{ status: "serverfunded" }, /status serverfunded/], [{ target_token: { chain: "42161", token_id: SWAP_TARGETS.usdt0.tokenId } }, /not USDC/],
     [{ evm_chain_id: 137 }, /chain 137/], [{ target_token: { chain: "137", token_id: SWAP_TARGETS.usdc.tokenId }, evm_chain_id: 42161 }, /token chain 137/],
-    [{ source_token: { chain: "Arkade", token_id: "btc" } }, /source Arkade is not Lightning/], [{ source_token: undefined }, /source undefined/], [{ btc_vhtlc_address: payoutArk(3, "tark") }, /tark1/, "arkade"], [{ btc_vhtlc_address: undefined }, /no Ark address/, "arkade"]]) {
+    [{ source_token: { chain: "Arkade", token_id: "btc" } }, /source Arkade is not Lightning/],
+    [{ target_amount: "0" }, /not a positive token amount/], [{ target_amount: "abc" }, /not a positive token amount/], [{ target_amount: undefined }, /not a positive token amount/],
+    [{ target_amount: "60000000" }, /more than 1% below the quote \(60\.675562\)/], [{ source_token: undefined }, /source undefined/], [{ btc_vhtlc_address: payoutArk(3, "tark") }, /tark1/, "arkade"], [{ btc_vhtlc_address: undefined }, /no Ark address/, "arkade"]]) {
     const { client } = mockClient({ tamper }); const seen = [];
     await assert.rejects(sw.swapRun(ctxWith(provider(client)), { from: from ?? "lightning", sats: 100000, address: ADDR, confirm: true, wait: true, onProgress: (x) => seen.push(x) }),
       (e) => e.code === "SWAP_FAILED" && why.test(e.message) && /Do NOT pay/.test(e.message), JSON.stringify(tamper));
     assert.equal(seen.length, 0);
   }
+  // a payout within 1% of the quote is fine and shown as the actual promised amount
+  const near = await sw.swapRun(ctxWith(provider(mockClient({ tamper: { target_amount: "60100000" } }).client)), { sats: 100000, address: ADDR, confirm: true });
+  assert.equal(near.receive, "60.1");
   // address case differences are fine; an Arkade swap shows the Ark address and exact sats
   const ok = await sw.swapRun(ctxWith(provider(mockClient({ tamper: { target_evm_address: ADDR.toLowerCase() } }).client)), { from: "arkade", sats: 100000, address: ADDR, confirm: true });
   assert.equal(ok.arkAddress, VHTLC); assert.equal(ok.amountSats, 100000); assert.match(ok.howToPay, /swap refund sw-1/);
@@ -229,4 +234,11 @@ test("concurrent claims of one swap share a single SDK claim", async () => {
   const p = provider(client); const a = p.claimStable("sw-1"), b = p.claimStable("sw-1"); release();
   const [x, y] = await Promise.all([a, b]); assert.equal(n, 1); assert.equal(x.txHash, "0xone"); assert.equal(y.txHash, "0xone");
   await p.claimStable("sw-1"); assert.equal(n, 2); // a later, separate call claims again (safe to repeat)
+});
+test("stable claims of different swaps run one at a time (same per-process serialization as the escrow claims)", async () => {
+  const order = []; let release; const gate = new Promise((r) => (release = r));
+  const { client } = mockClient(); client.claim = async (id) => { order.push("start " + id); if (id === "a") await gate; order.push("end " + id); return { success: true, txHash: "0x" + id }; };
+  const p = provider(client); const a = p.claimStable("a"), b = p.claimStable("b");
+  await new Promise((r) => setTimeout(r, 20)); assert.deepEqual(order, ["start a"]); release(); await Promise.all([a, b]);
+  assert.deepEqual(order, ["start a", "end a", "start b", "end b"]);
 });

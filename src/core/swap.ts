@@ -8,7 +8,7 @@ import { mk } from "../invocation.js";
 import { checkArkadeAddress } from "./arkAddress.js";
 import { decodeInvoice, networkOk } from "../lightning/invoice.js";
 import type { StableSwapCreated } from "../swap/provider.js";
-import { ARBISCAN_TX, SWAP_MARKUP_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkMarkupBps, formatSwapQuote, swapSats, swapSource, swapTarget, units, type SwapSource, type SwapTarget } from "../swap/stable.js";
+import { ARBISCAN_TX, SWAP_MARKUP_BPS, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkMarkupBps, formatSwapQuote, pct, swapSats, swapSource, swapTarget, units, type SwapSource, type SwapTarget } from "../swap/stable.js";
 
 export interface SwapQuoteInput { from?: string; to?: string; sats?: number | string }
 export interface SwapRunInput extends SwapQuoteInput { address?: string; confirm?: boolean; wait?: boolean; timeoutSec?: number; pollMs?: number; onProgress?: (x: unknown) => void }
@@ -58,8 +58,8 @@ export async function swapRun(c: Ctx, i: SwapRunInput) {
     notice: `REAL MONEY: this swaps ${p.sats} sats of bitcoin mainnet into about ${quote.receive} ${t.symbol} on Arbitrum, sent to ${address}. Check the address: a payout to a wrong address cannot be undone. ${quote.markupNote}`,
     next: `Nothing was created. To create it: ${mk()} swap --from ${p.from} --to ${p.to} --sats ${p.sats} --address ${address} --yes --wait` };
   const created = await s.createStable({ ...p, address });
-  checkCreated(c, p, address, created);
-  const first = { swap: "created", id: created.id, status: created.status, from: p.from, to: p.to, payoutAddress: created.targetAddress, quote, ...payInstructions(p.from, created),
+  checkCreated(c, p, address, created, q.net_target_amount);
+  const first = { swap: "created", id: created.id, status: created.status, from: p.from, to: p.to, payoutAddress: created.targetAddress, receive: units(created.receiveUnits, t.decimals), quote, ...payInstructions(p.from, created),
     next: i.wait && i.onProgress ? "Waiting for your payment, then Mark claims the stablecoins to your address." : `After paying, run: ${mk()} swap claim ${created.id} --wait  (claims as soon as Satora funds its side)` };
   if (!i.wait || !i.onProgress) return first; // waiting is only useful once the payer has seen the invoice / address
   i.onProgress?.(first);
@@ -69,7 +69,7 @@ export async function swapRun(c: Ctx, i: SwapRunInput) {
 /** Before showing anything payable: the swap must pay out to the confirmed address, ask for exactly the requested sats, and carry a
  *  payable invoice (this network, that amount) or an Ark address for this network. Else SWAP_FAILED: do not pay (an unpaid swap
  *  simply expires). */
-function checkCreated(c: Ctx, p: { from: SwapSource; to: SwapTarget; sats: number }, address: string, x: StableSwapCreated) {
+function checkCreated(c: Ctx, p: { from: SwapSource; to: SwapTarget; sats: number }, address: string, x: StableSwapCreated, quotedUnits: string) {
   const bad = (why: string) => { throw new MarkError("SWAP_FAILED", `Satora's swap does not match what you confirmed (${why}). Do NOT pay it; nothing is lost while it is unpaid.`, { id: x?.id }); };
   const src = SWAP_SOURCES[p.from], tgt = SWAP_TARGETS[p.to];
   if (!x?.id) bad("no swap id");
@@ -79,6 +79,10 @@ function checkCreated(c: Ctx, p: { from: SwapSource; to: SwapTarget; sats: numbe
   if (x.evmChainId !== Number(tgt.chain) || (x.targetChain !== undefined && x.targetChain !== tgt.chain)) bad(`chain ${x.evmChainId} (token chain ${x.targetChain}) is not ${tgt.network} (${tgt.chain})`);
   if (String(x.targetAddress ?? "").toLowerCase() !== address.toLowerCase()) bad(`payout address ${x.targetAddress} is not ${address}`);
   if (!Number.isSafeInteger(x.payAmountSats) || x.payAmountSats !== p.sats) bad(`amount ${x.payAmountSats} sats is not ${p.sats}`);
+  // the stablecoin amount it promises: a whole positive number of token units, at most SWAP_MAX_SLIPPAGE_BPS below the quote shown
+  if (!/^\d+$/.test(String(x.receiveUnits ?? "")) || BigInt(x.receiveUnits!) <= 0n) bad(`payout amount ${x.receiveUnits} is not a positive token amount`);
+  if (/^\d+$/.test(String(quotedUnits ?? "")) && BigInt(x.receiveUnits!) * 10000n < BigInt(quotedUnits) * BigInt(10000 - SWAP_MAX_SLIPPAGE_BPS))
+    bad(`payout ${units(x.receiveUnits, tgt.decimals)} ${tgt.symbol} is more than ${pct(SWAP_MAX_SLIPPAGE_BPS)} below the quote (${units(quotedUnits, tgt.decimals)})`);
   if (p.from === "lightning") {
     if (!x.invoice || !networkOk(x.invoice, c.network)) bad("no Lightning invoice for this network");
     let sats: number | undefined; try { sats = decodeInvoice(x.invoice!).sats; } catch { bad("undecodable invoice"); }
