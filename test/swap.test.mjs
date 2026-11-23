@@ -10,6 +10,8 @@ import { checkSwapArgs, parseArgs, helpFor, SWAP_USAGE } from "../dist/src/cliAr
 import { openCtx } from "../dist/src/core/context.js";
 import { tmpHome, payoutArk } from "./mockApi.mjs";
 import { makeInvoice } from "./helpers.mjs";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 const VHTLC = payoutArk(3, "ark"); // a mainnet Ark address (the swap's VHTLC in these mocks)
 const ADDR = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"; // a valid EIP-55 address (USDC's contract; only its format matters here)
@@ -323,4 +325,18 @@ test("swap routes CLI: takes no amount / address / wait flags; --json is fine; h
   assert.equal(checkSwapArgs("routes", undefined, {}), null); assert.equal(checkSwapArgs("routes", undefined, { json: true }), null);
   for (const f of [{ sats: "5" }, { address: ADDR }, { from: "lightning" }, { to: "usdc" }, { wait: true }, { yes: true }, { timeout: "5" }]) assert.equal(checkSwapArgs("routes", undefined, f)?.code, "USAGE", JSON.stringify(f));
   assert.match(helpFor(["swap", "routes"], { help: true }, "x").usage, /^mark swap routes/); assert.ok("routes" in SWAP_USAGE);
+});
+test("MCP swap_routes: listed with no required arguments; a call returns all four routes (mutinynet: no Satora lookup, limits unavailable)", async () => {
+  tmpHome(); const CLI = new URL("../dist/src/cli.js", import.meta.url).pathname;
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("npm_")));
+  const t = new StdioClientTransport({ command: process.execPath, args: [CLI, "mcp", "--network", "mutinynet", "--escrow-url", "http://127.0.0.1:9"], env, stderr: "ignore" });
+  const cl = new Client({ name: "swap-routes-test", version: "0" }); await cl.connect(t);
+  try {
+    const tool = (await cl.listTools()).tools.find((x) => x.name === "swap_routes");
+    assert.ok(tool, "swap_routes is registered"); assert.deepEqual(tool.inputSchema.required ?? [], []); assert.deepEqual(Object.keys(tool.inputSchema.properties ?? {}), []);
+    assert.match(tool.description, /Read-only: nothing is created/); assert.match(tool.description, /0\.5% Agent Escrow fee/);
+    const r = JSON.parse((await cl.callTool({ name: "swap_routes", arguments: {} })).content[0].text);
+    assert.deepEqual(r.routes.map((x) => `${x.from}->${x.to}`), ["lightning->usdc", "lightning->usdt0", "arkade->usdc", "arkade->usdt0"]);
+    assert.ok(r.routes.every((x) => x.limits === "unavailable")); assert.equal(r.markup.percent, "0.5%"); assert.equal(r.referral, SWAP_REFERRAL_ID);
+  } finally { await cl.close(); }
 });
