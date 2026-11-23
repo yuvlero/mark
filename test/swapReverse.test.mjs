@@ -185,8 +185,8 @@ test("gasless flow (--wait): watch the deposit, fund ONCE when it is there, then
 
 test("fund: never twice. No deposit -> no signing; concurrent calls share one; a submitted funding is not signed again; a clear refusal may retry", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mark-rev-"));
-  const { client, calls } = mockClient();
-  await sw.swapRun(ctxWith(provider(client, { balances: [0n] })), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
+  const { client, calls } = mockClient(); homes.set(client, dir);
+  await sw.swapRun(ctxWith(provider(client, { balances: [0n], dir })), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
   // no deposit yet
   let p = provider(client, { balances: [0n], dir });
   let r = await sw.swapFund(ctxWith(p), "rv-1"); assert.equal(r.funded, false); assert.match(r.note, /No deposit seen/); assert.equal(calls.fund.length, 0);
@@ -201,12 +201,10 @@ test("fund: never twice. No deposit -> no signing; concurrent calls share one; a
   // status after funds are seen never asks for a deposit
   const st = await sw.swapStatus(ctxWith(provider(client, { balances: [0n], dir })), "rv-1"); assert.match(st.next, /A funding was submitted/); assert.doesNotMatch(st.next, /Waiting for the deposit/);
   // an uncertain failure (network) keeps the record; a clear relay refusal clears it so a retry is allowed
-  const u = mockClient({ fundError: "fetch failed" }); await sw.swapRun(ctxWith(provider(u.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
-  const d2 = fs.mkdtempSync(path.join(os.tmpdir(), "mark-rev-"));
+  const d2 = fs.mkdtempSync(path.join(os.tmpdir(), "mark-rev-")); const u = mockClient({ fundError: "fetch failed" }); homes.set(u.client, d2); await sw.swapRun(ctxWith(provider(u.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
   r = await sw.swapFund(ctxWith(provider(u.client, { balances: [1_500_000n], dir: d2 })), "rv-1"); assert.equal(r.fundFailed, true); assert.match(r.note, /may still have submitted/);
   r = await sw.swapFund(ctxWith(provider(u.client, { balances: [1_500_000n], dir: d2 })), "rv-1"); assert.match(r.note, /already submitted/); assert.equal(u.calls.fund.length, 1);
-  const k = mockClient({ fundError: "Gasless fund relay failed: 400 insufficient balance" }); await sw.swapRun(ctxWith(provider(k.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
-  const d3 = fs.mkdtempSync(path.join(os.tmpdir(), "mark-rev-"));
+  const d3 = fs.mkdtempSync(path.join(os.tmpdir(), "mark-rev-")); const k = mockClient({ fundError: "Gasless fund relay failed: 400 insufficient balance" }); homes.set(k.client, d3); await sw.swapRun(ctxWith(provider(k.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
   r = await sw.swapFund(ctxWith(provider(k.client, { balances: [1_500_000n], dir: d3 })), "rv-1"); assert.match(r.note, /refused the funding; nothing was locked/);
   await sw.swapFund(ctxWith(provider(k.client, { balances: [1_500_000n], dir: d3 })), "rv-1"); assert.equal(k.calls.fund.length, 2);
   assert.ok(!fs.readFileSync(path.join(dir, "evm-funding.json"), "utf8").includes("0x11"), "no key material in the funding record");
@@ -344,4 +342,30 @@ test("later reads are checked against what create confirmed: a changed Ark payou
   p.exclusive = (f) => ex(async () => { p.fundAttemptedAt = () => Date.now(); return f(); });
   e = await sw.swapRecover(ctxWith(p), "rv-1", ME).catch((x) => x); assert.equal(e.code, "SWAP_FUNDING"); assert.equal(m.calls.recover.length, 0);
   void c;
+});
+
+test("fund refuses without signing: invoice near expiry, no create record; a used invoice and a wrong direction are refused at create", async () => {
+  // invoice valid at create (11 min left), 7 minutes later only 4 left: fund and fund --wait sign nothing and point to recover
+  let m = mockClient(); await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: makeInvoice({ sats: 2420, expiry: 660 }), confirm: true });
+  const now = Date.now; Date.now = () => now() + 7 * 60 * 1000;
+  try {
+    let r = await sw.swapFund(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1");
+    assert.equal(r.funded, false); assert.match(r.message, /expires in \d+ s/); assert.match(r.note, /Nothing was signed .*swap recover rv-1/); assert.equal(m.calls.fund.length, 0);
+    r = await sw.swapFund(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1", { wait: true, pollMs: 1, timeoutSec: 5 });
+    assert.equal(r.funded, false); assert.equal(m.calls.fund.length, 0);
+  } finally { Date.now = now; }
+  // the create record is missing (another home's files, or lost): no deposit instructions, no funding, recover still possible
+  m = mockClient(); await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
+  const fresh = fs.mkdtempSync(path.join(os.tmpdir(), "mark-rev-"));
+  const st = await sw.swapStatus(ctxWith(provider(m.client, { dir: fresh })), "rv-1"); assert.match(st.next, /no record .* shows no deposit instructions/); assert.ok(!("deposit" in st));
+  let e = await sw.swapFund(ctxWith(provider(m.client, { balances: [1_500_000n], dir: fresh })), "rv-1").catch((x) => x); assert.equal(e.code, "SWAP_FAILED"); assert.equal(m.calls.fund.length, 0);
+  const rc = await sw.swapRecover(ctxWith(provider(m.client, { balances: [1_500_000n], eth: 10n ** 15n, dir: fresh })), "rv-1", ME); assert.equal(rc.recovered, true);
+  // a paid invoice cannot be paid again: reusing one in this home is refused before anything is created
+  m = mockClient({ statuses: ["serverredeemed"] }); const inv = INV(); await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: inv, confirm: true });
+  e = await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: inv, confirm: true }).catch((x) => x);
+  assert.equal(e.code, "BAD_INVOICE"); assert.match(e.message, /already used for swap rv-1/); assert.equal(m.calls.createSwap.length, 1);
+  // wrong direction in Satora's answer -> no deposit address shown
+  m = mockClient({ tamper: { direction: "lightning_to_evm" } });
+  e = await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true }).catch((x) => x);
+  assert.equal(e.code, "SWAP_FAILED"); assert.match(e.message, /direction/); assert.ok(!JSON.stringify(e).includes(DEP));
 });

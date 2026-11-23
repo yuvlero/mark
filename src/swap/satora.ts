@@ -6,6 +6,9 @@ import { arbitrumReader, viemSigner, type EvmReader } from "./evm.js";
 import { SWAP_REFERRAL_ID, SWAP_SOURCES, SWAP_TARGETS, checkMarkupBps, type SatoraQuote, type SwapSource, type SwapTarget } from "./stable.js";
 import { encryptWith, decryptWith } from "../crypto/keystore.js";
 import { MarkError } from "../errors.js";
+import { decodeInvoice } from "../lightning/invoice.js";
+/** Fund only while the payout invoice has at least this long left (the swap pays it after the lock lands). */
+const FUND_MIN_INVOICE_SECS = 300;
 import { WITNESS_SCRIPT_BUG, WORKAROUND_ID, libTransactionBases, withTaprootWitnessScriptFix } from "./satoraWorkaround.js";
 
 /** Encrypted JSON file swap storage (preimages live here, so encrypt). */
@@ -244,6 +247,7 @@ export class SatoraProvider implements SwapProvider {
     const f = this.pinsFile(); if (f) { fs.writeFileSync(f + ".tmp", JSON.stringify(a), { mode: 0o600 }); fs.renameSync(f + ".tmp", f); }
   }
   reversePin(id: string) { return this.readPins()[id]; }
+  invoiceUsedBy(invoice: string) { const inv = invoice.toLowerCase(); return Object.entries(this.readPins()).find(([, p]) => p.invoice?.toLowerCase() === inv)?.[0]; }
   fundReverse(id: string): Promise<FundResult> {
     const running = this.funding.get(id); if (running) return running;
     const run = this.fundOnce(id).finally(() => this.funding.delete(id));
@@ -257,8 +261,16 @@ export class SatoraProvider implements SwapProvider {
       if (x.status !== "pending" || x.fundTx) return { success: false, skipped: `the swap is already past funding (${x.status}${x.fundTx ? `, funding tx ${x.fundTx}` : ""})` };
       if (!x.tokenContract || !x.depositAddress || !/^\d+$/.test(String(x.sourceUnits ?? ""))) return { success: false, message: "the swap has no deposit terms" };
       const pin = this.reversePin(id);
-      if (x.depositAddress.toLowerCase() !== this.depositAddress().toLowerCase() || (pin && (pin.tokenContract.toLowerCase() !== x.tokenContract.toLowerCase() || pin.sourceUnits !== x.sourceUnits)))
-        return { success: false, message: "the swap's deposit terms no longer match what was confirmed at create; not funding it" };
+      if (!pin) return { success: false, stop: true, message: "this Mark home has no record of what was confirmed when the swap was created; not funding it" };
+      if (x.depositAddress.toLowerCase() !== this.depositAddress().toLowerCase() || pin.depositAddress.toLowerCase() !== x.depositAddress.toLowerCase()
+        || pin.tokenContract.toLowerCase() !== x.tokenContract.toLowerCase() || pin.sourceUnits !== x.sourceUnits
+        || (pin.invoice && String(x.invoice ?? "").toLowerCase() !== pin.invoice.toLowerCase()) || (pin.arkAddress && x.arkAddress !== pin.arkAddress))
+        return { success: false, stop: true, message: "the swap no longer matches what was confirmed at create; not funding it" };
+      // the deposit must not be locked behind an invoice that can no longer be paid: Satora pays it only after the lock
+      if (pin.invoice) {
+        let left = -1; try { left = decodeInvoice(pin.invoice).expiresAt - Date.now() / 1000; } catch { /* undecodable: refuse */ }
+        if (left < FUND_MIN_INVOICE_SECS) return { success: false, stop: true, message: `the payout invoice ${left < 0 ? "has expired" : `expires in ${Math.floor(left)} s`}: Satora could not pay it after the deposit is locked, so Mark does not fund this swap` };
+      }
       let have: bigint; try { have = await this.evm.tokenBalance(x.tokenContract, x.depositAddress); } catch (e) { return { success: false, message: `could not read the deposit address: ${errText(e)}` }; }
       if (have < BigInt(x.sourceUnits!)) return { success: false, skipped: `the deposit address holds ${have} of the ${x.sourceUnits} token units this swap needs` };
       this.markAttempt(id, Date.now());
@@ -321,7 +333,7 @@ const FUND_RETRY_AFTER_MS = 10 * 60 * 1000;
 const LOCK_WAIT_MS = 90_000, LOCK_STALE_MS = 5 * 60 * 1000;
 /** Satora's EVM-sourced swap answer only (never defaulted to the request), so a missing or different value is caught. */
 function reverseFields(r: any): ReverseSwapCreated {
-  return { id: r.id, status: r.status, gasless: r.gasless ?? undefined, depositAddress: r.client_evm_address ?? undefined,
+  return { id: r.id, status: r.status, direction: r.direction ?? undefined, gasless: r.gasless ?? undefined, depositAddress: r.client_evm_address ?? undefined,
     sourceUnits: r.source_amount != null ? String(r.source_amount) : undefined, tokenContract: r.source_token?.token_id ?? undefined,
     sourceChain: r.source_token?.chain ?? undefined, evmChainId: r.evm_chain_id != null ? Number(r.evm_chain_id) : undefined,
     targetChain: r.target_token?.chain ?? undefined, targetSats: r.target_amount != null ? Number(r.target_amount) : undefined,

@@ -22,7 +22,7 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 - Funding happens at most once: concurrent calls share one, and after a submitted funding Mark does not sign again for 10 minutes. Once funds are seen at the deposit address, Mark never asks for a deposit again; a partial deposit asks only for the missing part. One waiting deposit per Mark home at a time (`SWAP_OPEN_DEPOSIT`), since all such swaps share the deposit address. Create, fund and recover run under a per-home lock file, so two processes cannot both create or both fund (`SWAP_BUSY` if the lock stays held); the funding re-checks the swap, the deposit and the last attempt under that lock.
 - Recovery: `mark swap refund <id>` returns a locked deposit that did not pay out to the deposit address (Satora's collaborative refund, else the sponsored refund after the timelock; gasless). `mark swap recover <id> --to <0x address>` sends the stablecoins at the deposit address to your address; it needs a little Arbitrum ETH there and says how much first.
 - MCP tools `swap_to_btc_quote`, `swap_to_btc_create` (needs `confirm: true` to create), `swap_fund` and `swap_recover`; `swap_status`, `swap_claim` and `swap_refund` also cover swaps from a stablecoin (`swap_refund` takes no `to` for them).
-- New error codes: `BAD_MARKUP`, `SWAP_AMOUNT`, `SWAP_UNSUPPORTED_NETWORK`, `SWAP_FAILED`, `SWAP_OPEN_DEPOSIT`, `SWAP_BUSY`.
+- New error codes: `BAD_MARKUP`, `SWAP_AMOUNT`, `SWAP_UNSUPPORTED_NETWORK`, `SWAP_FAILED`, `SWAP_OPEN_DEPOSIT`, `SWAP_BUSY`, `SWAP_DONE`, `SWAP_FUNDING`, `SWAP_NOT_LOCAL`.
 
 ### Changed
 - `viem` (2.52.2, already in the dependency tree through `@satora/swap`) is now a direct dependency: Mark uses it only to sign the recovery sweep from the deposit address.

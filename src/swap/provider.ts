@@ -16,7 +16,7 @@ export interface StableSwapInfo { id: string; status: string; direction?: string
 
 /** `mark swap` from a stablecoin: Satora's own answer, checked before the deposit address is shown. depositAddress is where the
  *  stablecoins go (this Mark home's gasless depositor key, client_evm_address); sourceUnits the exact token units to deposit. */
-export interface ReverseSwapCreated { id: string; status: string; gasless?: boolean; depositAddress?: string; sourceUnits?: string; tokenContract?: string;
+export interface ReverseSwapCreated { id: string; status: string; direction?: string; gasless?: boolean; depositAddress?: string; sourceUnits?: string; tokenContract?: string;
   sourceChain?: string; evmChainId?: number; targetChain?: string; targetSats?: number; invoice?: string; arkAddress?: string; raw?: unknown }
 /** fundTx: the gasless funding (relay) tx once Satora saw it. local: this Mark home holds the swap's keys. */
 export interface ReverseSwapInfo extends ReverseSwapCreated { direction?: string; fundTx?: string; payoutTx?: string; lightningSettled?: boolean; createdAt?: string; local: boolean }
@@ -25,7 +25,7 @@ export interface ReverseQuoteInput { from: SwapStable; to: SwapRail; bps: number
 export interface ReverseCreateInput { from: SwapStable; to: SwapRail; bps: number; sourceUnits?: bigint; invoice?: string; arkAddress?: string }
 /** A gasless funding attempt: at most one per swap. uncertain: the relay may have submitted it (no clear refusal), so Mark does not
  *  sign again for a while. */
-export interface FundResult { success: boolean; txHash?: string; message?: string; uncertain?: boolean; skipped?: string }
+export interface FundResult { success: boolean; txHash?: string; message?: string; uncertain?: boolean; skipped?: string; stop?: boolean }
 
 export interface SwapProvider {
   readonly name: string;
@@ -53,6 +53,8 @@ export interface SwapProvider {
   /** The payout target and deposit terms confirmed at create (kept in this Mark home), checked on every later read. */
   pinReverse?(id: string, pin: ReversePin): void;
   reversePin?(id: string): ReversePin | undefined;
+  /** The id of a swap of this Mark home already pinned to this invoice (a paid invoice cannot be paid again). */
+  invoiceUsedBy?(invoice: string): string | undefined;
   /** Run f alone among this Mark home's deposit-address actions (create, fund, recover), across processes too. */
   exclusive?<T>(f: () => Promise<T>): Promise<T>;
   /** Sign the permits and let Satora's relay lock the deposit into the swap. At most once per swap (see FundResult): under the
