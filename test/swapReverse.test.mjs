@@ -382,3 +382,13 @@ test("later reads fail closed: a dropped invoice or a switch to Ark is refused; 
   for (const k of ["depositAddress", "sourceUnits", "tokenContract", "deposit", "invoice"]) assert.ok(!(k in st), k);
   assert.ok(!JSON.stringify(st).includes(DEP));
 });
+
+test("create needs the exact direction and a payout covering the invoice; invoice reuse ignores case", async () => {
+  for (const tamper of [{ direction: undefined }, { target_amount: "2000" }]) {
+    const m = mockClient({ tamper }); const e = await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true }).catch((x) => x);
+    assert.equal(e.code, "SWAP_FAILED", JSON.stringify(tamper)); assert.ok(!JSON.stringify(e).includes(DEP));
+  }
+  const m = mockClient({ statuses: ["serverredeemed"] }); const inv = INV(); await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: inv, confirm: true });
+  const e = await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: "lightning:" + inv.toUpperCase(), confirm: true }).catch((x) => x);
+  assert.equal(e.code, "BAD_INVOICE"); assert.equal(m.calls.createSwap.length, 1);
+});

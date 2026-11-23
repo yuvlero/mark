@@ -124,9 +124,10 @@ function checkReverseCreated(c: Ctx, p: Parsed, x: ReverseSwapCreated, q: any, m
   if (p.sourceUnits !== undefined) { if (amt !== p.sourceUnits) bad(`deposit amount ${units(amt, t.decimals)} ${t.symbol} is not ${units(p.sourceUnits, t.decimals)}`); }
   else if (amt * 10000n > BigInt(q.source_amount) * BigInt(10000 + SWAP_MAX_SLIPPAGE_BPS)) bad(`deposit amount ${units(amt, t.decimals)} ${t.symbol} is more than ${pct(SWAP_MAX_SLIPPAGE_BPS)} above the quote (${units(q.source_amount, t.decimals)})`);
   if (!Number.isSafeInteger(x.targetSats) || x.targetSats! <= 0) bad(`payout ${x.targetSats} sats is not a positive amount`);
-  if (x.direction !== undefined && x.direction !== (p.to === "lightning" ? "evm_to_lightning" : "evm_to_arkade")) bad(`direction ${x.direction}`);
+  if (x.direction !== (p.to === "lightning" ? "evm_to_lightning" : "evm_to_arkade")) bad(`direction ${x.direction}`);
   if (p.invoice) {
     if (String(x.invoice ?? "").toLowerCase() !== p.invoice.toLowerCase()) bad("the invoice Satora will pay is not the one you gave");
+    if (x.targetSats! < p.invoiceSats!) bad(`payout ${x.targetSats} sats does not cover the invoice's ${p.invoiceSats}`);
   } else {
     if (x.targetSats! * 10000 < Number(q.net_target_amount) * (10000 - SWAP_MAX_SLIPPAGE_BPS)) bad(`payout ${x.targetSats} sats is more than ${pct(SWAP_MAX_SLIPPAGE_BPS)} below the quote (${q.net_target_amount})`);
     if (!p.arkAddress) bad("no payout target");
