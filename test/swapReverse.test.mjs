@@ -398,3 +398,11 @@ test("create needs the exact direction and a payout covering the invoice; invoic
   const e = await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: "lightning:" + inv.toUpperCase(), confirm: true }).catch((x) => x);
   assert.equal(e.code, "BAD_INVOICE"); assert.equal(m.calls.createSwap.length, 1);
 });
+
+test("two creates racing in one Mark home (two processes): the first is checked and recorded under the lock, so the second never creates", async () => {
+  const m = mockClient(); const inv = INV();
+  const [a, b] = await Promise.allSettled([provider(m.client), provider(m.client)].map((p) => sw.swapRun(ctxWith(p), { from: "usdc", to: "lightning", invoice: inv, confirm: true })));
+  const ok = [a, b].filter((r) => r.status === "fulfilled"); const bad = [a, b].filter((r) => r.status === "rejected");
+  assert.equal(ok.length, 1); assert.equal(bad.length, 1); assert.ok(["SWAP_OPEN_DEPOSIT", "BAD_INVOICE"].includes(bad[0].reason.code), bad[0].reason.code);
+  assert.equal(m.calls.createSwap.length, 1);
+});

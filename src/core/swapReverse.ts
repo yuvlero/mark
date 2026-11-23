@@ -94,10 +94,12 @@ export async function reverseRun(c: Ctx, i: ReverseRunInput) {
     if (open.length) throw new MarkError("SWAP_OPEN_DEPOSIT", `swap ${open[0].id} from this Mark home is still waiting for its deposit at the same address. Finish it (${mk()} swap fund ${open[0].id}) or let it expire before creating another.`, { open: open.map((x) => x.id) });
     const used = p.invoice ? s.invoiceUsedBy(p.invoice) : undefined;
     if (used) throw new MarkError("BAD_INVOICE", `--invoice was already used for swap ${used}: a Lightning invoice is paid once. Make a new one.`);
-    return s.createReverse({ from: p.from, to: p.to, bps: p.bps, ...(p.invoice ? { invoice: p.invoice } : { sourceUnits: p.sourceUnits }), ...(p.arkAddress ? { arkAddress: p.arkAddress } : {}) });
+    const x = await s.createReverse({ from: p.from, to: p.to, bps: p.bps, ...(p.invoice ? { invoice: p.invoice } : { sourceUnits: p.sourceUnits }), ...(p.arkAddress ? { arkAddress: p.arkAddress } : {}) });
+    // checked and recorded before the lock is released: the next create (any process) sees this swap as open and its invoice as used
+    checkReverseCreated(c, p, x, q, s.depositAddress());
+    s.pinReverse(x.id, { ...(p.invoice ? { invoice: p.invoice } : { arkAddress: p.arkAddress }), depositAddress: s.depositAddress(), tokenContract: x.tokenContract!, sourceUnits: x.sourceUnits! });
+    return x;
   });
-  checkReverseCreated(c, p, created, q, s.depositAddress());
-  s.pinReverse(created.id, { ...(p.invoice ? { invoice: p.invoice } : { arkAddress: p.arkAddress }), depositAddress: s.depositAddress(), tokenContract: created.tokenContract!, sourceUnits: created.sourceUnits! });
   const deposit = await depositInfo(s, created);
   const first = { swap: "created", id: created.id, status: created.status, from: p.from, to: p.to, payout: { ...target(p), sats: created.targetSats }, quote, deposit,
     next: i.wait && i.onProgress ? "Waiting for the deposit; then Mark funds the swap (gasless) and waits for the payout." : `After the deposit, run: ${mk()} swap fund ${created.id} --wait  (signs the permits once; Satora's relay locks the deposit)` };
