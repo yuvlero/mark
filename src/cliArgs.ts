@@ -1,4 +1,5 @@
 /** CLI usage checks (pure; tested without spawning). */
+import { str as s } from "./util.js";
 import { MarkError } from "./errors.js";
 import { SWAP_MARKUP_BPS, pct } from "./swap/stable.js";
 export function parseArgs(argv: string[]) {
@@ -10,7 +11,6 @@ export function parseArgs(argv: string[]) {
   }
   return { pos, f };
 }
-const s = (v: unknown) => (typeof v === "string" ? v : undefined);
 /** Per-subcommand usage, shown on a usage error. */
 export const ESCROW_USAGE: Record<string, string> = {
   create: "mark escrow create --role buyer|seller --counterparty <xonly pubkey> --sats N --deadline <seconds|ISO> --title <short> --description <text> [--deliverable <text>] [--acceptance <criteria>] [--deliverable-sha256 <hex>] [--terms-file <json>] [--hash <sha256hex>] [--arbiter auto|manual] [--webhook url]",

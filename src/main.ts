@@ -2,6 +2,7 @@
 import readline from "node:readline";
 import fs from "node:fs";
 import { normalizeNetwork, dataDir } from "./config.js";
+import { str as s } from "./util.js";
 import { MarkError, errorJson, toJson } from "./errors.js";
 import { openCtx as openCtx_, type Ctx, type CtxOptions } from "./core/context.js";
 import { updateNotice } from "./core/clientVersion.js";
@@ -17,7 +18,6 @@ export { parseArgs };
 /** The context the command opened (if any): after the command, its escrow server's version policy decides the update notice. */
 let ctx: Ctx | undefined;
 const openCtx = async (n: NetworkName, o: CtxOptions) => (ctx = await openCtx_(n, o));
-const s = (v: unknown) => (typeof v === "string" ? v : undefined);
 const out = (o: unknown) => process.stdout.write(toJson(o) + "\n");
 const payout = (f: Record<string, unknown>) => ({ payoutInvoice: s(f["payout-invoice"]), payoutLnaddr: s(f["payout-lnaddr"]), payoutArk: s(f["payout-ark"]) });
 /** Terms from --terms-file <json> then per-field flags (flags win). */
