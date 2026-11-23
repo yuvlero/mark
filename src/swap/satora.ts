@@ -12,7 +12,19 @@ import { MarkError } from "../errors.js";
 import { decodeInvoice } from "../lightning/invoice.js";
 /** Fund only while the payout invoice has at least this long left (the swap pays it after the lock lands). */
 const FUND_MIN_INVOICE_SECS = 300;
-import { WITNESS_SCRIPT_BUG, WORKAROUND_ID, libTransactionBases, withTaprootWitnessScriptFix } from "./satoraWorkaround.js";
+/** Exact 1.11.1 fundSwapGasless messages that mean nothing is locked, so a later fund is safe. Each pattern is the whole message, except the two HTTP prefixes (`Failed to get Permit2 funding data` and `Gasless fund relay failed: 4xx`) whose official errors append a status and body. */
+function isClearFundRefusal(message: string): boolean {
+  if (/^Failed to get Permit2 funding data/.test(message)) return true;
+  if (/^Gasless fund relay failed: 4(00|01|03|04|22)\b/.test(message)) return true;
+  if (/^Swap \S+ not found in local storage\. Cannot sign without the secret key\.$/.test(message)) return true;
+  if (/^Expected an EVM-sourced swap, got \S+\. Gasless fund is for EVM-sourced swaps\.$/.test(message)) return true;
+  if (message === "Sponsored funding requires swap storage") return true;
+  if (message === "Previous funding operation reverted; retry funding again.") return true;
+  if (/^Swap \S+ locks on chain \d+, not the sponsored chain \d+; refusing to fund it there$/.test(message)) return true;
+  if (/^Swap \S+ locks on chain \d+, not \d+$/.test(message)) return true;
+  if (/^Cannot fund swap \S+ sponsored: its depositor 0x[0-9a-fA-F]+ is not an SDK-controlled account\. Fund it from that wallet with fundSwap\.$/.test(message)) return true;
+  return false;
+}
 
 /** Encrypted JSON file swap storage (preimages live here, so encrypt). */
 class EncryptedFileSwapStorage {
@@ -47,8 +59,7 @@ class MemWalletStorage {
 }
 
 /** The swap library prints progress with console.log; Mark's stdout is JSON (CLI) or the MCP stdio stream, so send it to stderr. */
-/** Claims and refunds run one at a time per process (MCP may get concurrent calls): the console redirect and the resume-bug
- *  workaround patch process-global objects, and overlapping patch/restore pairs could leave either one in place. */
+/** Claims and refunds run one at a time per process (MCP may get concurrent calls), so the console redirect is never overlapping. */
 let serialTail: Promise<unknown> = Promise.resolve();
 function serial<T>(f: () => Promise<T>): Promise<T> {
   const run = serialTail.then(f, f); serialTail = run.catch(() => undefined); return run;
@@ -78,8 +89,6 @@ export class SatoraProvider implements SwapProvider {
   }
   /** Arbitrum reads (tests replace it). */
   evm: EvmReader = arbitrumReader();
-  /** Where the library's bundled Transaction classes come from (tests replace it). */
-  txBases: () => Promise<any[]> = () => libTransactionBases();
 
   static async create(opts: { baseUrl: string; arkServerUrl: string; esploraUrl: string; bitcoinNetwork: "mainnet" | "signet"; mnemonic: string; key: Buffer; dir: string; referralCode?: string }) {
     const sdir = path.join(opts.dir, "swaps"); fs.mkdirSync(sdir, { recursive: true, mode: 0o700 });
@@ -118,9 +127,9 @@ export class SatoraProvider implements SwapProvider {
   }
 
   /**
-   * claimArkade first finalizes a pending claim (if one was submitted) and otherwise submits a new one. When it finds the VHTLC
-   * already spent it retries the finalize internally but only reports "All VTXOs have already been spent."; ask the finalize step
-   * directly so the real reason reaches the user (detail).
+   * claimArkade first finalizes a pending claim (if one was submitted) and otherwise submits a new one.
+   * @satora/swap 1.11.1+ surfaces a resume error as-is. If an older answer still says only
+   * "All VTXOs have already been spent.", ask the finalize step so the real reason reaches the user (detail).
    */
   async claim(id: string, arkAddress: string): Promise<ClaimResult> {
     return stdoutToStderr(async () => {
@@ -129,25 +138,14 @@ export class SatoraProvider implements SwapProvider {
       catch (x) { return { success: false, message: `claim failed: ${errText(x)}` }; }
       if (r?.success) return { success: true, txid: r.txId, message: r.message };
       const message = typeof r?.message === "string" ? r.message.slice(0, 500) : "claim failed";
-      // generic "already spent" (the library swallowed the finalize error) or the resume bug itself: ask the finalize step directly
-      if (!/already been spent/i.test(message) && !WITNESS_SCRIPT_BUG.test(message)) return { success: false, message };
-      return this.finishPendingClaim(id, message);
+      if (!/already been spent/i.test(message)) return { success: false, message };
+      let k: any;
+      try { k = await this.c.continueArkadeClaimSwap(id) as any; }
+      catch (x) { k = { success: false, message: errText(x) }; }
+      if (k?.success) return { success: true, txid: k.txId, message: k.message };
+      const detail = typeof k?.message === "string" && k.message ? `finalizing the pending claim failed: ${k.message.slice(0, 500)}` : undefined;
+      return { success: false, message, ...(detail && k.message !== message ? { detail } : {}) };
     });
-  }
-
-  /** Finalize a claim that was submitted but not finalized; works around the upstream resume bug (satoraWorkaround.ts) once. */
-  private async finishPendingClaim(id: string, message: string): Promise<ClaimResult> {
-    const once = async () => { try { return await this.c.continueArkadeClaimSwap(id) as any; } catch (x) { return { success: false, message: errText(x) }; } };
-    let k: any = await once();
-    if (k?.success) return { success: true, txid: k.txId, message: k.message };
-    let detail = typeof k?.message === "string" && k.message ? `finalizing the pending claim failed: ${k.message.slice(0, 500)}` : undefined;
-    if (!WITNESS_SCRIPT_BUG.test(String(k?.message ?? ""))) return { success: false, message, ...(detail && k.message !== message ? { detail } : {}) };
-    const bases = await this.txBases().catch(() => []);
-    if (!bases.length) return { success: false, message, detail: `${detail} (upstream @satora/swap resume bug; Mark could not apply its workaround to this library version)` };
-    const { result, dropped } = await withTaprootWitnessScriptFix(bases, once);
-    k = result;
-    if (k?.success) return { success: true, txid: k.txId, message: k.message, workaround: WORKAROUND_ID, workaroundApplied: dropped } as ClaimResult;
-    return { success: false, message, detail: `${detail}; retry with Mark's workaround for the upstream resume bug (${dropped} field(s) dropped) failed: ${String(k?.message ?? "unknown error").slice(0, 500)}`, workaround: WORKAROUND_ID } as ClaimResult;
   }
 
   async refund(id: string, arkAddress: string) {
@@ -210,6 +208,7 @@ export class SatoraProvider implements SwapProvider {
     const extraFees = checkMarkupBps(p.bps);
     const targetAddress = p.to === "lightning" ? p.invoice : p.arkAddress;
     if (!targetAddress) throw new MarkError("USAGE", "a payout target is required");
+    this.assertGaslessFundingPlan(Number(SWAP_TARGETS[p.from].chain));
     const r: any = await stdoutToStderr(() => this.c.createSwap({ source: SWAP_TARGETS[p.from] as any, target: SWAP_SOURCES[p.to] as any, targetAddress, gasless: true,
       ...(p.invoice ? {} : { sourceAmount: p.sourceUnits?.toString() as any }), referralCode: SWAP_REFERRAL_ID, extraFees } as any));
     const out = reverseFields(r?.response ?? {});
@@ -225,6 +224,15 @@ export class SatoraProvider implements SwapProvider {
       lightningSettled: r.lightning_payment_settled ?? undefined, createdAt: r.created_at ?? undefined, local };
   }
   depositAddress(): string { return (this.c as any).getEvmAddress(); }
+  /** Before creating a gasless swap: refuse if this client could not later move the deposit (no paymaster, or a self-paid plan that needs ETH). */
+  assertGaslessFundingPlan(chainId: number): { mode: "sponsored" | "self-paid" | "relay" } {
+    let plan: { mode: "sponsored" | "self-paid" | "relay" };
+    try { plan = (this.c as any).gaslessFundingPlan(chainId); }
+    catch (e) { throw new MarkError("SWAP_FAILED", `this Mark cannot fund a gasless swap on this chain (${errText(e)}). No swap was created and nothing was deposited.`); }
+    if (plan?.mode === "self-paid") throw new MarkError("SWAP_FAILED", "gasless funding on this chain would need ETH on the deposit address; Mark will not create the swap or show a deposit address");
+    if (plan?.mode !== "sponsored" && plan?.mode !== "relay") throw new MarkError("SWAP_FAILED", `this Mark cannot fund a gasless swap on this chain (funding plan ${String(plan?.mode)}). No swap was created.`);
+    return plan;
+  }
   async openReverse(): Promise<ReverseSwapInfo[]> {
     const all: any[] = (await (this.c as any).swapStorage?.getAll?.()) ?? [];
     const mine = all.map((x) => x?.response).filter((r) => r?.id && r.gasless && r.client_evm_address && r.status === "pending" && isReverseDir(r.direction));
@@ -298,8 +306,9 @@ export class SatoraProvider implements SwapProvider {
         return { success: true, txHash: r?.txHash ?? undefined };
       } catch (e) {
         const message = errText(e);
-        // a clear refusal before or by the relay: nothing was submitted, so a later retry is safe
-        if (/^(Failed to get Permit2 funding data|Gasless fund relay failed: 4(00|01|03|04|22)\b)|not found in local storage|Expected an EVM-sourced swap/.test(message)) { this.markAttempt(id, undefined); return { success: false, message }; }
+        // Only exact pre-submit refusals, or a previous UserOp that 1.11.1 already dropped after a revert, are safe to retry.
+        // "outcome unknown", a UserOp with no transaction hash, and lookalike strings stay uncertain so Mark never signs twice.
+        if (isClearFundRefusal(message)) { this.markAttempt(id, undefined); return { success: false, message }; }
         return { success: false, message, uncertain: true };
       }
     });

@@ -4,6 +4,18 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-23
+
+### Changed
+- `@satora/swap` is now **1.11.1** (was 1.8.1), pinned by `npm-shrinkwrap.json`. The swap implementation now ships inside `@satora/swap`, so `@lendasat/lendaswap-sdk-pure` is no longer a runtime dependency. Official 1.11.1 builds include Satora's default account-abstraction config (bundler and paymaster) used for gasless Arbitrum funding.
+- Other non-major dependencies in the same release: `@arkade-os/sdk` ^0.5.13 (was 0.5.4; 1.11.1 needs at least 0.5.5). Mark only uses `ArkAddress`, whose decode/encode/`pkScript` API is unchanged; no public exports were removed between 0.5.4 and 0.5.13. New 0.5.x wallet features (on-chain cosign, Executor delegation, a compiler entry) are unused here. `@modelcontextprotocol/sdk` ^1.32.2 (was 1.32.1): Transport optional properties accept `undefined`, and tools can be registered after `connect()` when the capability was declared. `viem` is **2.58.4** (was 2.52.2, exact pin) for Mark's recovery-sweep signer only. Breaking viem changes in this range are in optional `viem/tempo` APIs Mark does not use. `@satora/swap` still pins `viem` 2.52.2, so that copy stays nested under it; Mark does not override it.
+- On Arbitrum, a gasless swap from a stablecoin is funded by Mark's Satora client itself (a paymaster-sponsored transaction from this Mark home's deposit key; no ETH). The old server relay is no longer used on that chain. Before creating such a swap or showing a deposit address, Mark checks Satora's funding plan (`gaslessFundingPlan`) and refuses if the deposit could not be moved later (for example if the paymaster is missing, or the plan would need ETH on the deposit address). User-facing fund text no longer says "Satora's relay".
+- `mark escrow approve` uses `@satora/swap` 1.10.1+'s own signers first, which now accept the escrow server's PSBTs (they drop the stray `witnessScript` on taproot inputs). Mark still has a fallback if that exact old error returns.
+
+### Fixed
+- The local workaround for resuming a pending Arkade claim (`src/swap/satoraWorkaround.ts`) is gone. Satora 1.11.1 fixed that bug (satoraHQ/satora-sdk#6): `continueArkadeClaim` no longer sets `witnessScript` on taproot checkpoints, and a resume error is no longer hidden as `All VTXOs have already been spent.`
+- After a failed gasless funding, Mark only treats the exact 1.11.1 pre-submit refusals (and a previous UserOp that the library already dropped after a revert) as safe to retry. An unknown outcome, or a submitted UserOp with no transaction hash, stays uncertain so Mark does not sign again.
+
 ## [0.5.1] - 2026-11-23
 
 ### Added

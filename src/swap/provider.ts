@@ -5,8 +5,7 @@ export interface PaySwap { id: string; fundAddress: string; fundAmountSats: numb
 /** invoice: the swap's BOLT11 (Lightning -> Arkade swaps), so an unpaid funding invoice can be shown again. */
 export interface SwapInfo { id: string; direction: "ln_to_ark" | "ark_to_ln" | "other"; status: string; invoice?: string; raw?: unknown }
 /** detail: the underlying error when the library's own message is generic (e.g. "All VTXOs have already been spent."). */
-export interface ClaimResult { success: boolean; txid?: string; message?: string; detail?: string;
-  /** set when Mark's workaround for the upstream resume bug was used (see swap/satoraWorkaround.ts) */ workaround?: string; workaroundApplied?: number }
+export interface ClaimResult { success: boolean; txid?: string; message?: string; detail?: string }
 
 /** `mark swap` (BTC to a stablecoin on Arbitrum). */
 /** Fields are Satora's own answer (no fallback to what was requested), so Mark can check them before showing anything to pay. */
@@ -18,12 +17,12 @@ export interface StableSwapInfo { id: string; status: string; direction?: string
  *  stablecoins go (this Mark home's gasless depositor key, client_evm_address); sourceUnits the exact token units to deposit. */
 export interface ReverseSwapCreated { id: string; status: string; direction?: string; gasless?: boolean; depositAddress?: string; sourceUnits?: string; tokenContract?: string;
   sourceChain?: string; evmChainId?: number; targetChain?: string; targetSats?: number; invoice?: string; arkAddress?: string; raw?: unknown }
-/** fundTx: the gasless funding (relay) tx once Satora saw it. local: this Mark home holds the swap's keys. */
+/** fundTx: the gasless funding tx once Satora saw it. local: this Mark home holds the swap's keys. */
 export interface ReverseSwapInfo extends ReverseSwapCreated { direction?: string; fundTx?: string; payoutTx?: string; lightningSettled?: boolean; createdAt?: string; local: boolean }
 export interface ReversePin { invoice?: string; arkAddress?: string; depositAddress: string; tokenContract: string; sourceUnits: string; targetSats?: number; evmChainId?: number }
 export interface ReverseQuoteInput { from: SwapStable; to: SwapRail; bps: number; sourceUnits?: bigint; targetSats?: number; destination?: string }
 export interface ReverseCreateInput { from: SwapStable; to: SwapRail; bps: number; sourceUnits?: bigint; invoice?: string; arkAddress?: string }
-/** A gasless funding attempt: at most one per swap. uncertain: the relay may have submitted it (no clear refusal), so Mark never
+/** A gasless funding attempt: at most one per swap. uncertain: a funding may already have been submitted (no clear refusal), so Mark never
  *  signs it again (only a clear refusal clears the record). stop: refused before signing (terms changed, no record, invoice
  *  too close to expiry). */
 export interface FundResult { success: boolean; txHash?: string; message?: string; uncertain?: boolean; skipped?: string; stop?: boolean }
@@ -76,7 +75,7 @@ export interface SwapProvider {
   invoiceUsedBy?(invoice: string): string | undefined;
   /** Run f alone among this Mark home's deposit-address actions (create, fund, recover), across processes too. */
   exclusive?<T>(f: () => Promise<T>): Promise<T>;
-  /** Sign the permits and let Satora's relay lock the deposit into the swap. At most once per swap (see FundResult): under the
+  /** Lock the deposit into the swap (gasless). At most once per swap (see FundResult): under the
    *  deposit lock it re-checks that the swap is unfunded, the deposit is at the address and no attempt is recorded, and the swap still matches every term pinned at create. Throws SWAP_BUSY (lock held) or SWAP_FAILED
    *  (unreadable records); otherwise a FundResult. */
   fundReverse?(id: string): Promise<FundResult>;

@@ -25,10 +25,11 @@ const RQ = { exchange_rate: "61274.5", network_fee: 4, gasless_network_fee: 0, p
   source_amount: "1500000", target_amount: "2448", net_source_amount: "1500000", net_target_amount: "2420" };
 
 function mockClient(o = {}) {
-  const calls = { getQuote: [], createSwap: [], fund: [], getSwap: [], collab: [], sponsored: [], recover: [], claimArkade: [] };
+  const calls = { getQuote: [], createSwap: [], fund: [], getSwap: [], collab: [], sponsored: [], recover: [], claimArkade: [], plan: [] };
   const stored = {}; let statuses = [...(o.statuses ?? ["pending"])];
   const client = {
     getEvmAddress: () => DEP,
+    gaslessFundingPlan: (chainId) => { calls.plan.push(chainId); if (o.planError) throw new Error(o.planError); return o.plan ?? { mode: "sponsored" }; },
     getQuote: async (p) => { calls.getQuote.push(p); return o.quote ?? RQ; },
     createSwap: async (p) => {
       calls.createSwap.push(p);
@@ -121,9 +122,30 @@ test("create: gasless, referral ID and the SAME markup on createSwap; deposit ad
   assert.equal(r.swap, "created"); assert.equal(r.deposit.address, DEP); assert.equal(r.deposit.amount, "1.5"); assert.equal(r.deposit.token, "USDC"); assert.equal(r.deposit.contract, USDC);
   assert.equal(r.deposit.chainId, 42161); assert.match(r.deposit.howToDeposit, /exactly 1\.5 USDC .* ONE transfer\. No ETH needed/);
   assert.equal(calls.fund.length, 0, "nothing is funded before the deposit");
+  assert.deepEqual(calls.plan, [42161], "funding plan is checked before createSwap");
   // amount mode passes the exact token units
   const m = mockClient(); await sw.swapRun(ctxWith(provider(m.client)), { from: "usdt0", to: "arkade", amount: "1.5", address: ARK, confirm: true });
   assert.equal(m.calls.createSwap[0].sourceAmount, "1500000"); assert.equal(m.calls.createSwap[0].targetAddress, ARK); assert.equal(m.calls.createSwap[0].gasless, true);
+});
+
+test("create: refused before createSwap when the gasless funding plan is self-paid, unknown, or missing", async () => {
+  const inv = INV();
+  for (const [opts, re] of [
+    [{ plan: { mode: "self-paid" } }, /would need ETH on the deposit address/],
+    [{ plan: { mode: "unknown" } }, /funding plan unknown/],
+    [{ planError: "no paymaster" }, /this Mark cannot fund a gasless swap on this chain \(no paymaster\)/],
+  ]) {
+    const { client, calls } = mockClient(opts);
+    const e = await sw.swapRun(ctxWith(provider(client)), { from: "usdc", to: "lightning", invoice: inv, confirm: true }).catch((x) => x);
+    assert.equal(e.code, "SWAP_FAILED"); assert.match(e.message, re);
+    assert.equal(calls.createSwap.length, 0, "no swap is created and no deposit address is shown");
+  }
+});
+
+test("create: a relay funding plan is allowed (same as sponsored)", async () => {
+  const { client, calls } = mockClient({ plan: { mode: "relay" } });
+  const r = await sw.swapRun(ctxWith(provider(client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
+  assert.equal(r.swap, "created"); assert.equal(calls.createSwap.length, 1); assert.deepEqual(calls.plan, [42161]);
 });
 
 test("create: Satora's swap is checked before any deposit address is shown (chain, token, amount, target, status, depositor)", async () => {
@@ -215,10 +237,10 @@ test("fund: never twice. No deposit -> no signing; concurrent calls share one; a
   const st = await sw.swapStatus(ctxWith(provider(client, { balances: [0n], dir })), "rv-1"); assert.match(st.next, /A funding was submitted/); assert.doesNotMatch(st.next, /Waiting for the deposit/);
   // an uncertain failure (network) keeps the record; a clear relay refusal clears it so a retry is allowed
   const d2 = fs.mkdtempSync(path.join(os.tmpdir(), "mark-rev-")); const u = mockClient({ fundError: "fetch failed" }); homes.set(u.client, d2); await sw.swapRun(ctxWith(provider(u.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
-  r = await sw.swapFund(ctxWith(provider(u.client, { balances: [1_500_000n], dir: d2 })), "rv-1"); assert.equal(r.fundFailed, true); assert.match(r.note, /may still have submitted/);
+  r = await sw.swapFund(ctxWith(provider(u.client, { balances: [1_500_000n], dir: d2 })), "rv-1"); assert.equal(r.fundFailed, true); assert.match(r.note, /may already have been submitted/);
   r = await sw.swapFund(ctxWith(provider(u.client, { balances: [1_500_000n], dir: d2 })), "rv-1"); assert.match(r.note, /already submitted/); assert.equal(u.calls.fund.length, 1);
   const d3 = fs.mkdtempSync(path.join(os.tmpdir(), "mark-rev-")); const k = mockClient({ fundError: "Gasless fund relay failed: 400 insufficient balance" }); homes.set(k.client, d3); await sw.swapRun(ctxWith(provider(k.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
-  r = await sw.swapFund(ctxWith(provider(k.client, { balances: [1_500_000n], dir: d3 })), "rv-1"); assert.match(r.note, /refused the funding; nothing was locked/);
+  r = await sw.swapFund(ctxWith(provider(k.client, { balances: [1_500_000n], dir: d3 })), "rv-1"); assert.match(r.note, /Funding was refused before anything was locked/);
   await sw.swapFund(ctxWith(provider(k.client, { balances: [1_500_000n], dir: d3 })), "rv-1"); assert.equal(k.calls.fund.length, 2);
   assert.ok(!fs.readFileSync(path.join(dir, "evm-funding.json"), "utf8").includes("0x11"), "no key material in the funding record");
 });
@@ -420,6 +442,48 @@ test("claim --wait never funds: a pending swap is handed back with how to fund i
   assert.equal(r.funded, false); assert.match(r.note, /claim never funds .*swap fund rv-1 --wait/); assert.equal(m.calls.fund.length, 0);
 });
 
+test("fund: only exact 1.11.1 pre-submit or library-cleared-revert errors may retry; lookalikes and post-submit errors stay uncertain", async () => {
+  const clear = [
+    "Sponsored funding requires swap storage",
+    "Previous funding operation reverted; retry funding again.",
+    "Swap rv-1 locks on chain 1, not the sponsored chain 42161; refusing to fund it there",
+    "Swap rv-1 locks on chain 1, not 42161",
+    "Cannot fund swap rv-1 sponsored: its depositor 0xabc is not an SDK-controlled account. Fund it from that wallet with fundSwap.",
+    "Failed to get Permit2 funding data: 500 boom",
+    "Swap rv-1 not found in local storage. Cannot sign without the secret key.",
+    "Expected an EVM-sourced swap, got lightning_to_evm. Gasless fund is for EVM-sourced swaps.",
+  ];
+  for (const fundError of clear) {
+    const m = mockClient({ fundError });
+    await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
+    let r = await sw.swapFund(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1");
+    assert.equal(r.fundFailed, true); assert.match(r.note, /Funding was refused before anything was locked/);
+    r = await sw.swapFund(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1");
+    assert.equal(m.calls.fund.length, 2, fundError);
+  }
+  const uncertain = [
+    "Funding outcome unknown for 0xabc; retry later to check it. No new funding was submitted.",
+    "Sponsored funding UserOp 0xabc for swap rv-1 returned no transaction hash",
+    "Cannot fund swap rv-1: sponsored funding submitted but receipt unavailable",
+    "Submitted UserOp but failed to read locks on chain 42161",
+    "The swap locks on chain 42161, not the settlement chain 1",
+    "UserOp 0xabc submitted; Sponsored funding requires swap storage",
+    "submitted UserOp, then Previous funding operation reverted; retry funding again.",
+    "Funding outcome unknown; Cannot fund swap rv-1 sponsored: its depositor 0xabc is not an SDK-controlled account. Fund it from that wallet with fundSwap.",
+    "RPC after submit: Failed to get Permit2 funding data: 500 boom",
+    "later the swap was not found in local storage. Cannot sign without the secret key.",
+    "Expected an EVM-sourced swap, got lightning_to_evm. Gasless fund is for EVM-sourced swaps. submitted",
+  ];
+  for (const fundError of uncertain) {
+    const m = mockClient({ fundError });
+    await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
+    let r = await sw.swapFund(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1");
+    assert.equal(r.fundFailed, true); assert.match(r.note, /may already have been submitted/);
+    r = await sw.swapFund(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1");
+    assert.match(r.note, /already submitted|never signs/); assert.equal(m.calls.fund.length, 1, fundError);
+  }
+});
+
 test("deposit lock: a stale lock of a dead process is taken over; a lock is released only by its owner; a 408 from the relay stays uncertain", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mark-lock-")); const lock = path.join(dir, "evm-deposit.lock");
   fs.writeFileSync(lock, "999999:dead"); const old = new Date(Date.now() - 10 * 60 * 1000); fs.utimesSync(lock, old, old);
@@ -430,13 +494,13 @@ test("deposit lock: a stale lock of a dead process is taken over; a lock is rele
   await p.exclusive(async () => { fs.writeFileSync(lock, "other:owner"); });
   assert.equal(fs.readFileSync(lock, "utf8"), "other:owner"); fs.rmSync(lock);
   const m = mockClient({ fundError: "Gasless fund relay failed: 408 timeout" }); await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
-  const r = await sw.swapFund(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1"); assert.match(r.note, /may still have submitted/);
+  const r = await sw.swapFund(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1"); assert.match(r.note, /may already have been submitted/);
   const r2 = await sw.swapFund(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1"); assert.match(r2.note, /already submitted/); assert.equal(m.calls.fund.length, 1);
 });
 
 test("an uncertain funding is never signed again; a corrupt funding record refuses; recover waits 30 min after a funding whatever the status; recovery prints no key", async () => {
   let m = mockClient({ fundError: "Gasless fund relay failed: 409 duplicate" }); await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: makeInvoice({ sats: 2420, expiry: 86400 }), confirm: true });
-  let r = await sw.swapFund(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1"); assert.match(r.note, /may still have submitted/);
+  let r = await sw.swapFund(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1"); assert.match(r.note, /may already have been submitted/);
   const now = Date.now; Date.now = () => now() + 11 * 60 * 1000;
   try {
     r = await sw.swapFund(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1"); assert.match(r.note, /never signs it again/);

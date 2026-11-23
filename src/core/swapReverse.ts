@@ -1,6 +1,6 @@
 /** `mark swap` from a stablecoin: USDC / USDT0 on Arbitrum -> BTC over Lightning (a BOLT11 invoice) or to
  *  an Ark address, through Satora. Gasless: the stablecoins go to this Mark home's deposit address (its own EVM key, kept in the
- *  encrypted swap storage); Mark then signs Permit2 and Satora's relay locks them into the swap. No wallet, no ETH. */
+ *  encrypted swap storage); Mark then locks them into the swap (no wallet, no ETH). */
 import { MarkError } from "../errors.js";
 import type { Ctx } from "./context.js";
 import type { ReverseSwapCreated, ReverseSwapInfo, SwapProvider } from "../swap/provider.js";
@@ -109,7 +109,7 @@ export async function reverseRun(c: Ctx, i: ReverseRunInput) {
   });
   const deposit = await depositInfo(s, created);
   const first = { swap: "created", id: created.id, status: created.status, from: p.from, to: p.to, payout: { ...target(p), sats: created.targetSats }, quote, deposit,
-    next: i.wait && i.onProgress ? "Waiting for the deposit; then Mark funds the swap (gasless) and waits for the payout." : `After the deposit, run: ${mk()} swap fund ${created.id} --wait  (signs the permits once; Satora's relay locks the deposit)` };
+    next: i.wait && i.onProgress ? "Waiting for the deposit; then Mark funds the swap (gasless) and waits for the payout." : `After the deposit, run: ${mk()} swap fund ${created.id} --wait  (Mark locks the deposit; no ETH needed)` };
   if (!i.wait || !i.onProgress) return first; // waiting only helps once the depositor has seen the address
   i.onProgress(first);
   return { ...(await waitReverse(s, created.id, { timeoutSec: i.timeoutSec, pollMs: i.pollMs })), from: p.from, to: p.to };
@@ -154,7 +154,7 @@ async function depositInfo(s: Rev, x: ReverseSwapCreated) {
   if (have === undefined) return { ...base, howToDeposit: `Send exactly ${units(need, t.decimals)} ${t.symbol} (the ERC-20 at ${t.tokenId} on ${t.network}) to ${x.depositAddress}, ONCE. No ETH needed. Mark could not read the address's balance just now: if you already sent it, do not send again; check ${mk()} swap status ${x.id}.` };
   if (have >= need) return { ...base, alreadyThere: units(have, t.decimals), howToDeposit: `The deposit address already holds ${units(have, t.decimals)} ${t.symbol}: send NOTHING. Run ${mk()} swap fund ${x.id} to lock it into this swap.` };
   return { ...base, ...(have > 0n ? { alreadyThere: units(have, t.decimals) } : {}), send: units(need - have, t.decimals), sendUnits: (need - have).toString(),
-    howToDeposit: `Send exactly ${units(need - have, t.decimals)} ${t.symbol} (the ERC-20 at ${t.tokenId} on ${t.network}, not another chain) to ${x.depositAddress}, in ONE transfer. No ETH needed: Mark signs a permit and Satora's relay locks it into the swap.` };
+    howToDeposit: `Send exactly ${units(need - have, t.decimals)} ${t.symbol} (the ERC-20 at ${t.tokenId} on ${t.network}, not another chain) to ${x.depositAddress}, in ONE transfer. No ETH needed: Mark locks it into the swap.` };
 }
 
 const tokenOf = (x: ReverseSwapCreated) => targetByContract(x.tokenContract);
@@ -185,12 +185,12 @@ export async function reverseFund(c: Ctx, id: string, o: { wait?: boolean; timeo
   return fundOut(x, await s.fundReverse(id));
 }
 function fundOut(x: ReverseSwapInfo, r: Awaited<ReturnType<Rev["fundReverse"]>>) {
-  if (r.success) return { id: x.id, status: x.status, funded: true, ...txLink(r.txHash, "fundTx"), note: `Funded through Satora's relay. ${DO_NOT_RESEND} Watch it with ${mk()} swap status ${x.id}.` };
+  if (r.success) return { id: x.id, status: x.status, funded: true, ...txLink(r.txHash, "fundTx"), note: `The deposit is locked. ${DO_NOT_RESEND} Watch it with ${mk()} swap status ${x.id}.` };
   if (r.skipped) return { id: x.id, status: x.status, funded: false, note: `${r.skipped}. ${DO_NOT_RESEND} Check ${mk()} swap status ${x.id}.` };
   if (r.stop) return { id: x.id, status: x.status, funded: false, fundFailed: true, message: r.message, note: `Nothing was signed or locked. If you sent the stablecoins, get them back with ${mk()} swap recover ${x.id} --to <your 0x address> (and start a new swap with a fresh invoice if you still want it). ${DO_NOT_RESEND}` };
   return { id: x.id, status: x.status, funded: false, fundFailed: true, message: r.message, note: r.uncertain
-    ? `The relay may still have submitted it: Mark never signs this funding again. ${DO_NOT_RESEND} Check ${mk()} swap status ${x.id}; if Satora never sees it, after 30 minutes get the stablecoins back with ${mk()} swap recover ${x.id} --to <your 0x address>.`
-    : `Satora's relay refused the funding; nothing was locked and your stablecoins are still at the deposit address. Retry ${mk()} swap fund ${x.id}, or get them back with ${mk()} swap recover ${x.id} --to <0x...>. ${DO_NOT_RESEND}` };
+    ? `A funding may already have been submitted: Mark never signs this funding again. ${DO_NOT_RESEND} Check ${mk()} swap status ${x.id}; if Satora never sees it, after 30 minutes get the stablecoins back with ${mk()} swap recover ${x.id} --to <your 0x address>.`
+    : `Funding was refused before anything was locked; your stablecoins are still at the deposit address. Retry ${mk()} swap fund ${x.id}, or get them back with ${mk()} swap recover ${x.id} --to <0x...>. ${DO_NOT_RESEND}` };
 }
 /** Every later read of a swap from a stablecoin is checked against what was confirmed at create: this Mark home's own deposit
  *  address, and the pinned payout target and deposit terms. act (fund, claim, refund, recover, wait): the swap must also be this

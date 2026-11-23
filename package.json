@@ -1,6 +1,6 @@
 {
   "name": "@yuvlero/mark",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Agent Escrow: dispute protection for agent-to-agent payments. Non-custodial 2-of-3 bitcoin escrow, Lightning in and out. MCP server + CLI. Try: npx -y @yuvlero/mark@latest demo",
   "mcpName": "to.agentescrow/mark",
   "type": "module",
@@ -59,17 +59,17 @@
   "license": "MIT",
   "author": "",
   "dependencies": {
-    "@arkade-os/sdk": "^0.5.4",
-    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@arkade-os/sdk": "^0.5.13",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@noble/curves": "^2.4.0",
     "@noble/hashes": "^2.4.0",
-    "@satora/swap": "^1.8.1",
+    "@satora/swap": "^1.11.1",
     "@scure/base": "^2.4.0",
     "@scure/bip32": "^2.4.0",
     "@scure/bip39": "^2.4.0",
     "@scure/btc-signer": "^2.4.1",
     "light-bolt11-decoder": "^3.2.0",
-    "viem": "2.52.2",
+    "viem": "2.58.4",
     "zod": "^4.6.7"
   },
   "devDependencies": {

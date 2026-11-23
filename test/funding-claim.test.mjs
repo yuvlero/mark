@@ -1,14 +1,12 @@
 // 0.3.1 funding fixes: the unpaid invoice is shown again, --wait claims clientredeeming, a failed claim stops with the real
-// error, timeouts name the swap status, --resume-claim, the Satora claim wrapper (real error + upstream resume-bug workaround),
+// error, timeouts name the swap status, --resume-claim, the Satora claim wrapper (real error when the library only said already spent),
 // and swap storage written by @satora/swap 1.7.0 still loads. All swaps are mocked: no network, no money.
 import test from "node:test"; import assert from "node:assert/strict";
 import fs from "node:fs"; import os from "node:os"; import path from "node:path"; import crypto from "node:crypto";
-import * as btc from "@scure/btc-signer"; import { schnorr } from "@noble/curves/secp256k1.js";
 import * as uc from "../dist/src/core/usecases.js";
 import { openCtx } from "../dist/src/core/context.js";
 import { checkEscrowArgs, parseArgs } from "../dist/src/cliArgs.js";
 import { SatoraProvider } from "../dist/src/swap/satora.js";
-import { libTransactionBases, withTaprootWitnessScriptFix, WORKAROUND_ID } from "../dist/src/swap/satoraWorkaround.js";
 import { encryptWith } from "../dist/src/crypto/keystore.js";
 import { tmpHome, mockFetch, arkAddr } from "./mockApi.mjs";
 
@@ -93,38 +91,7 @@ test("satora claim: library console.log goes to stderr, never stdout (CLI JSON /
   finally { process.stdout.write = w; }
   assert.equal(out, "");
 });
-test("satora claim: upstream resume bug (witnessScript without P2WSH) is retried once with the workaround and succeeds", async () => {
-  class FakeTx { getInput() { return { tapLeafScript: [[{}, new Uint8Array([1])]] }; } updateInput(_i, inp) { if (inp.witnessScript) throw new Error("checkScript: witnessScript without P2WSH"); } }
-  let calls = 0;
-  const p = provider({ claimArkade: async () => ({ success: false, message: "All VTXOs have already been spent." }),
-    continueArkadeClaimSwap: async () => { calls++; try { new FakeTx().updateInput(0, { witnessScript: new Uint8Array([1]) }); return { success: true, txId: "arktx1" }; } catch (e) { return { success: false, message: e.message }; } } });
-  p.txBases = async () => [FakeTx.prototype];
-  const r = await p.claim("sw1", "a"); assert.equal(r.success, true); assert.equal(r.txid, "arktx1"); assert.equal(r.workaround, WORKAROUND_ID); assert.equal(r.workaroundApplied, 1); assert.equal(calls, 2);
-  assert.throws(() => new FakeTx().updateInput(0, { witnessScript: 1 }), /without P2WSH/, "original method restored");
-  // no workaround possible: the real error is still surfaced
-  const q = provider({ claimArkade: async () => ({ success: false, message: "All VTXOs have already been spent." }), continueArkadeClaimSwap: async () => ({ success: false, message: "checkScript: witnessScript without P2WSH" }) });
-  q.txBases = async () => []; const r2 = await q.claim("sw1", "a"); assert.equal(r2.success, false); assert.match(r2.detail, /witnessScript without P2WSH/); assert.match(r2.detail, /upstream/);
-  // other errors: no workaround
-  let used = false; const o = provider({ claimArkade: async () => ({ success: false, message: "No VTXOs found at the VHTLC address x." }) }); o.txBases = async () => { used = true; return []; };
-  assert.equal((await o.claim("sw1", "a")).success, false); assert.equal(used, false);
-});
-test("workaround against the installed library: its bundled Transaction rejects witnessScript on a taproot input; the fix drops only that", async () => {
-  const bases = await libTransactionBases(); assert.ok(bases.length >= 1, "found the library's Transaction class");
-  const dist = path.dirname(fileURLToPathSafe(import.meta.resolve("@lendasat/lendaswap-sdk-pure")));
-  const chunk = fs.readFileSync(path.join(dist, "index.js"), "utf8").match(/Transaction as Transaction\$1[^}]*\}\s*from\s*'(\.\/chunk-[\w-]+\.js)'/)[1];
-  const { Transaction } = await import(new URL(chunk, "file://" + dist + "/").href);
-  const pk = schnorr.getPublicKey(schnorr.utils.randomSecretKey()); const leaf = btc.Script.encode([pk, "CHECKSIG"]);
-  const pay = btc.p2tr(undefined, [{ script: leaf }], undefined, true);
-  const tx = new Transaction({ allowUnknownOutputs: true });
-  tx.addInput({ txid: new Uint8Array(32).fill(1), index: 0, witnessUtxo: { script: pay.script, amount: 1000n }, tapLeafScript: pay.tapLeafScript });
-  assert.throws(() => tx.updateInput(0, { witnessScript: leaf }), /witnessScript without P2WSH/, "upstream bug still present (remove the workaround when this fails)");
-  const { dropped } = await withTaprootWitnessScriptFix(bases, async () => { tx.updateInput(0, { witnessScript: leaf, sighashType: 1 }); });
-  assert.equal(dropped, 1); assert.equal(tx.getInput(0).witnessScript, undefined); assert.equal(tx.getInput(0).sighashType, 1, "other fields of the update still applied");
-  assert.throws(() => tx.updateInput(0, { witnessScript: leaf }), /without P2WSH/, "restored after the call");
-});
-function fileURLToPathSafe(u) { return decodeURIComponent(new URL(u).pathname); }
-
-test("swap storage written by @satora/swap 1.7.0 (version 2 record) loads with 1.8.1", async () => {
+test("swap storage written by @satora/swap 1.7.0 (version 2 record) loads with 1.11.1", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mark-swaps-")); const key = crypto.randomBytes(32);
   const rec = { version: 2, swapId: "36a7c6f9-0000-4000-8000-000000000000", keyIndex: 3, publicKey: "02" + "ab".repeat(32), preimage: "cd".repeat(32), preimageHash: "ef".repeat(32), secretKey: "12".repeat(32),
     storedAt: 1, updatedAt: 1, targetAddress: "tark1x", response: { id: "36a7c6f9-0000-4000-8000-000000000000", direction: "lightning_to_arkade", status: "pending", sender_pk: "34".repeat(32), arkade_server_pk: "56".repeat(32),
@@ -162,7 +129,7 @@ test("fund: resumeClaim with wait is refused for every caller (CLI, MCP, API)", 
   const { s } = mockSwaps(); const c = await ctx(s); c.index.set("e1", { fundSwap: "sw1" });
   assert.equal((await uc.fund(c, "e1", { resumeClaim: true, wait: true }).catch((e) => e)).code, "USAGE");
 });
-test("satora claim: concurrent claims run one at a time (global console / workaround patches never overlap)", async () => {
+test("satora claim: concurrent claims run one at a time (global console redirect never overlaps)", async () => {
   let active = 0, maxActive = 0;
   const slow = async () => { active++; maxActive = Math.max(maxActive, active); await new Promise((r) => setTimeout(r, 20)); active--; return { success: true, txId: "t" }; };
   const p = provider({ claimArkade: slow }); const q = provider({ claimArkade: slow });

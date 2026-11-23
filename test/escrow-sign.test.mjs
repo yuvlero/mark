@@ -1,6 +1,7 @@
-// Escrow co-signing under the 0.3.1 dependency tree, on spend PSBTs built by the escrow server's own core (ark-rs, offline
-// VTXO): release with fee (seller+buyer), release via arbiter, refund via arbiter. @satora/swap 1.8.1 / @arkade-os/sdk 0.5.x
-// reject these ("witnessScript without P2WSH"); Mark's signer must still produce what the server accepts.
+// Escrow co-signing on spend PSBTs built by the escrow server's own core (ark-rs, offline VTXO): release with fee
+// (seller+buyer), release via arbiter, refund via arbiter. @satora/swap 1.10.1+ signs these itself (it drops the stray
+// witnessScript on taproot inputs). Mark still has a fallback if that exact error returns. Signatures must verify like
+// the server's addSig check.
 import test from "node:test"; import assert from "node:assert/strict"; import fs from "node:fs";
 import { Transaction } from "@scure/btc-signer"; import { base64, hex } from "@scure/base";
 import { schnorr } from "@noble/curves/secp256k1.js"; import { sha256 } from "@noble/hashes/sha2.js";
@@ -30,24 +31,36 @@ const shape = (b64) => { const t = parse(b64); const x = []; for (let j = 0; j <
 test("fixtures are the server's real shape: taproot inputs carrying witnessScript + tapLeafScript", () => {
   for (const c of Object.values(F.cases)) { const i = parse(c.arkTx).getInput(0); assert.ok(i.witnessScript && i.tapLeafScript?.length); assert.equal(i.witnessUtxo.script[0], 0x51); }
 });
-test("upstream regression is still there: @satora/swap's own signers reject the server's PSBTs (remove the fallback when this fails)", () => {
+test("@satora/swap 1.10.1+ signs the server's PSBTs (stray witnessScript on taproot inputs)", () => {
   const c = F.cases.release_fee;
-  assert.throws(() => libArk(c.arkTx, sk(1)), /witnessScript without P2WSH/); assert.throws(() => libCps(c.checkpoints, sk(1)), /witnessScript without P2WSH/);
+  const a = libArk(c.arkTx, sk(1)); const cps = libCps(c.checkpoints, sk(1));
+  assert.ok(hasValidSig(a.signedPsbt, pk(1))); assert.equal(a.txid, parse(c.arkTx).id);
+  assert.equal(cps.length, c.checkpoints.length); assert.ok(hasValidSig(cps[0], pk(1)));
 });
-for (const [name, c] of Object.entries(F.cases)) test(`Mark signs ${name} (${c.signerSet}) for both signers: valid sig, same txid and fields, same shape as 0.3.0`, () => {
+function sameSpend(beforeB64, afterB64) {
+  const b = parse(beforeB64).getInput(0), a = parse(afterB64).getInput(0);
+  assert.equal(hex.encode(a.witnessUtxo.script), hex.encode(b.witnessUtxo.script));
+  assert.equal(String(a.witnessUtxo.amount), String(b.witnessUtxo.amount));
+  assert.equal(shapeLeaf(a.tapLeafScript), shapeLeaf(b.tapLeafScript));
+}
+function shapeLeaf(leaves) {
+  return JSON.stringify(leaves, (_k, v) => v instanceof Uint8Array ? hex.encode(v) : v);
+}
+for (const [name, c] of Object.entries(F.cases)) test(`Mark signs ${name} (${c.signerSet}) for both signers: valid sig, same txid, leaf and prevout kept`, () => {
   for (const s of c.signers) {
     const a = signEscrowArkTx(c.arkTx, sk(s)); const cps = signEscrowCheckpoints(c.checkpoints, sk(s));
     assert.ok(hasValidSig(a.signedPsbt, pk(s)), "ark tx signature verifies like the server's addSig check");
     assert.equal(parse(a.signedPsbt).id, parse(c.arkTx).id); assert.equal(a.txid, parse(c.arkTx).id);
-    assert.equal(shape(a.signedPsbt), shape(c.arkTx), "nothing but the signature changed");
+    sameSpend(c.arkTx, a.signedPsbt);
     assert.equal(cps.length, c.checkpoints.length);
-    cps.forEach((cp, k) => { assert.ok(hasValidSig(cp, pk(s))); assert.equal(shape(cp), shape(c.checkpoints[k])); });
+    cps.forEach((cp, k) => { assert.ok(hasValidSig(cp, pk(s))); sameSpend(c.checkpoints[k], cp); });
     assert.ok(!hasValidSig(a.signedPsbt, pk(9)));
   }
   const old = F.signedBy030[name]; const s0 = c.signers[0];
   assert.ok(hasValidSig(old.arkTx, pk(s0)), "0.3.0 fixture sanity");
-  assert.equal(shape(signEscrowArkTx(c.arkTx, sk(s0)).signedPsbt), shape(old.arkTx)); assert.equal(signEscrowArkTx(c.arkTx, sk(s0)).signedPsbt.length, old.arkTx.length);
-  assert.equal(signEscrowCheckpoints(c.checkpoints, sk(s0))[0].length, old.checkpoints[0].length);
+  const now = signEscrowArkTx(c.arkTx, sk(s0));
+  assert.ok(hasValidSig(now.signedPsbt, pk(s0)));
+  assert.equal(now.txid, parse(old.arkTx).id);
 });
 test("other signing errors are not swallowed", () => {
   assert.throws(() => signEscrowArkTx("not-a-psbt", sk(1))); assert.throws(() => signEscrowCheckpoints(["%%"], sk(1)));
