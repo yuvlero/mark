@@ -1,0 +1,275 @@
+// `mark swap` from a stablecoin (USDC / USDT0 on Arbitrum -> Lightning or Arkade), gasless. The Satora SDK and the Arbitrum RPC are
+// mocked: no network in these tests. Checks: referral ID + extraFees on getQuote AND createSwap, the created swap checked before any
+// deposit address is shown, the gasless deposit flow, funding at most once, and recovery.
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { SatoraProvider } from "../dist/src/swap/satora.js";
+import { SWAP_REFERRAL_ID, SWAP_MARKUP_BPS, SWAP_TARGETS, swapRoute, tokenUnits, formatReverseQuote } from "../dist/src/swap/stable.js";
+import * as sw from "../dist/src/core/swap.js";
+import { checkSwapArgs, parseArgs } from "../dist/src/cliArgs.js";
+import { payoutArk, MOCK_SERVER_PK, tmpHome } from "./mockApi.mjs";
+import { makeInvoice } from "./helpers.mjs";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+
+const DEP = "0x" + "ab".repeat(20); // this Mark home's gasless deposit address (mock)
+const ME = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"; // a valid EIP-55 address to recover to
+const ARK = payoutArk(7, "ark"); // the user's Ark address on the (mock) Arkade server
+const USDC = SWAP_TARGETS.usdc.tokenId;
+/** Shape of a real Satora mainnet quote for 1.5 USDC -> Lightning with extraFees 50 (23 Nov 2026). */
+const RQ = { exchange_rate: "61274.5", network_fee: 4, gasless_network_fee: 0, protocol_fee: 24, protocol_fee_rate: 0.0098, min_amount: 356, max_amount: 20000000,
+  source_amount: "1500000", target_amount: "2448", net_source_amount: "1500000", net_target_amount: "2420" };
+
+function mockClient(o = {}) {
+  const calls = { getQuote: [], createSwap: [], fund: [], getSwap: [], collab: [], sponsored: [], recover: [], claimArkade: [] };
+  const stored = {}; let statuses = [...(o.statuses ?? ["pending"])];
+  const client = {
+    getEvmAddress: () => DEP,
+    getQuote: async (p) => { calls.getQuote.push(p); return o.quote ?? RQ; },
+    createSwap: async (p) => {
+      calls.createSwap.push(p);
+      const ln = p.target.chain === "Lightning"; const inv = ln && /^ln/i.test(p.targetAddress) && !p.targetAddress.includes("@");
+      const r = { id: "rv-1", status: "pending", gasless: p.gasless === true, client_evm_address: DEP, direction: ln ? "evm_to_lightning" : "evm_to_arkade",
+        source_amount: p.sourceAmount ?? "1500000", source_token: { chain: p.source.chain, token_id: p.source.tokenId, symbol: "USDC", decimals: 6 }, evm_chain_id: 42161,
+        target_token: { chain: p.target.chain, token_id: "btc", symbol: "BTC", decimals: 8 }, target_amount: inv ? "2420" : "2420",
+        ...(ln ? { client_lightning_invoice: inv ? p.targetAddress : makeInvoice({ sats: 2420 }) } : { target_arkade_address: p.targetAddress, arkade_server_pk: "02" + MOCK_SERVER_PK }), ...(o.tamper ?? {}) };
+      stored[r.id] = { swapId: r.id, response: r }; return { response: r };
+    },
+    getSwap: async (id) => { calls.getSwap.push(id); const s = statuses.length > 1 ? statuses.shift() : statuses[0]; const base = stored[id]?.response ?? o.existing ?? {};
+      const r = { ...base, id, status: s, ...(s !== "pending" ? { evm_fund_txid: "0xfund" } : {}), ...(s === "serverredeemed" && base.direction === "evm_to_lightning" ? { lightning_payment_settled: true } : {}) };
+      if (stored[id]) stored[id].response = r; return r; },
+    getStoredSwap: async (id) => stored[id] ?? (o.existing ? { swapId: id } : null),
+    swapStorage: { getAll: async () => Object.values(stored).concat(o.others ?? []) },
+    fundSwapGasless: async (id) => { calls.fund.push(id); if (o.fundError) throw new Error(o.fundError); return { txHash: "0xfund" }; },
+    collabRefundEvmSwap: async (id) => { calls.collab.push(id); if (o.collabError) throw new Error(o.collabError); return { txHash: "0xcollab" }; },
+    refundEvmSponsored: async (id) => { calls.sponsored.push(id); return { txHash: "0xsponsored", userOpHash: "0xop" }; },
+    getSwapDepositorKey: async () => ({ privateKey: "0x" + "11".repeat(32), address: DEP }),
+    recoverGaslessFunds: async (id, signer, to) => { calls.recover.push({ id, signer, to }); return { txHash: "0xrecover", amount: "1500000" }; },
+    claimArkade: async (id, opts) => { calls.claimArkade.push({ id, ...opts }); return { success: true, txId: "arkclaim1" }; },
+  };
+  return { client, calls, stored };
+}
+/** balances: token units at the deposit address, read in turn (the last one repeats). */
+function provider(client, o = {}) {
+  const p = new SatoraProvider(client, "https://swap.test", "https://ark.test", o.dir);
+  let bals = [...(o.balances ?? [0n])];
+  p.evm = { tokenBalance: async () => (bals.length > 1 ? bals.shift() : bals[0]), ethBalance: async () => o.eth ?? 0n, gasPrice: async () => 20_000_000n };
+  p.signerFor = async () => ({ address: DEP, fake: true });
+  return p;
+}
+const ctxWith = (p, network = "bitcoin") => ({ network, cfg: { arkServerUrl: "https://arkade.computer" }, swaps: async () => p });
+const INV = () => makeInvoice({ sats: 2420 });
+
+test("route: a stablecoin --from is the reverse direction (default --to lightning); forward defaults are unchanged", () => {
+  assert.deepEqual(swapRoute("usdc", undefined), { dir: "to_btc", from: "usdc", to: "lightning" });
+  assert.deepEqual(swapRoute("usdt", "arkade"), { dir: "to_btc", from: "usdt0", to: "arkade" });
+  assert.deepEqual(swapRoute(undefined, undefined), { dir: "to_stable", from: "lightning", to: "usdc" });
+  assert.deepEqual(swapRoute("arkade", "usdt0"), { dir: "to_stable", from: "arkade", to: "usdt0" });
+  assert.throws(() => swapRoute("lightning", "arkade"), /needs a stablecoin --from/);
+  assert.throws(() => swapRoute("usdc", "usdt0"), /--to must be lightning or arkade/);
+  assert.equal(tokenUnits("1.5", 6), 1500000n); assert.equal(tokenUnits("2", 6), 2000000n);
+  for (const bad of ["0", "0.0000001", "-1", "1,5", "", "abc"]) assert.throws(() => tokenUnits(bad, 6), (e) => e.code === "USAGE", bad);
+});
+
+test("quote: referral ID and the 50 bps markup on getQuote; markup shown openly in sats; nothing created", async () => {
+  const { client, calls } = mockClient(); const r = await sw.swapQuote(ctxWith(provider(client)), { from: "usdc", to: "lightning", amount: "1.5", address: "me@example.com" });
+  assert.equal(calls.getQuote.length, 1); assert.equal(calls.createSwap.length, 0);
+  const g = calls.getQuote[0];
+  assert.deepEqual({ sc: g.sourceChain, st: g.sourceToken, tc: g.targetChain, tt: g.targetToken, sa: g.sourceAmount, ref: g.referralCode, fee: g.extraFees, dest: g.lightningDestination },
+    { sc: "42161", st: USDC, tc: "Lightning", tt: "btc", sa: "1500000", ref: SWAP_REFERRAL_ID, fee: SWAP_MARKUP_BPS, dest: "me@example.com" });
+  assert.equal(r.quote.send, "1.5"); assert.equal(r.quote.receiveSats, 2420);
+  assert.equal(r.quote.fees.agentEscrowMarkup, "0.5%"); assert.equal(r.quote.fees.agentEscrowMarkupSats, 12); assert.equal(r.quote.fees.satoraFeeSats, 12); assert.equal(r.quote.fees.totalFeeSats, 28);
+  assert.match(r.quote.markupNote, /0\.5% Agent Escrow fee \(12 sats\)/); assert.equal(r.quote.referral, SWAP_REFERRAL_ID);
+  // an invoice quotes the invoice's sats (it pins the payout)
+  const inv = INV(); await sw.swapQuote(ctxWith(provider(client)), { from: "usdt0", to: "lightning", invoice: inv });
+  assert.equal(calls.getQuote[1].targetAmount, 2420); assert.equal(calls.getQuote[1].lightningDestination, inv); assert.equal(calls.getQuote[1].sourceToken, SWAP_TARGETS.usdt0.tokenId);
+  assert.equal(formatReverseQuote(RQ, { from: "usdc", to: "arkade", bps: 50 }).token.symbol, "USDC");
+});
+
+test("preview (no confirm): nothing is created, the target and the markup are spelled out", async () => {
+  const { client, calls } = mockClient();
+  const r = await sw.swapRun(ctxWith(provider(client)), { from: "usdc", to: "arkade", amount: "1.5", address: ARK });
+  assert.equal(r.swap, "preview"); assert.equal(calls.createSwap.length, 0); assert.equal(calls.fund.length, 0);
+  assert.match(r.notice, /REAL MONEY/); assert.match(r.notice, /0\.5% Agent Escrow fee/); assert.match(r.next, /--yes --wait/); assert.equal(r.deposit, undefined);
+});
+
+test("create: gasless, referral ID and the SAME markup on createSwap; deposit address, exact amount and token shown once checked", async () => {
+  const { client, calls } = mockClient(); const inv = INV();
+  const r = await sw.swapRun(ctxWith(provider(client)), { from: "usdc", to: "lightning", invoice: inv, confirm: true });
+  assert.equal(calls.createSwap.length, 1); const c = calls.createSwap[0];
+  assert.equal(c.gasless, true); assert.equal(c.userAddress, undefined); assert.equal(c.referralCode, SWAP_REFERRAL_ID); assert.equal(c.extraFees, SWAP_MARKUP_BPS);
+  assert.deepEqual(c.source, SWAP_TARGETS.usdc); assert.equal(c.target.chain, "Lightning"); assert.equal(c.targetAddress, inv); assert.equal(c.sourceAmount, undefined);
+  assert.equal(calls.getQuote[0].referralCode, SWAP_REFERRAL_ID); assert.equal(calls.getQuote[0].extraFees, c.extraFees);
+  assert.equal(r.swap, "created"); assert.equal(r.deposit.address, DEP); assert.equal(r.deposit.amount, "1.5"); assert.equal(r.deposit.token, "USDC"); assert.equal(r.deposit.contract, USDC);
+  assert.equal(r.deposit.chainId, 42161); assert.match(r.deposit.howToDeposit, /exactly 1\.5 USDC .* ONE transfer\. No ETH needed/);
+  assert.equal(calls.fund.length, 0, "nothing is funded before the deposit");
+  // amount mode passes the exact token units
+  const m = mockClient(); await sw.swapRun(ctxWith(provider(m.client)), { from: "usdt0", to: "arkade", amount: "1.5", address: ARK, confirm: true });
+  assert.equal(m.calls.createSwap[0].sourceAmount, "1500000"); assert.equal(m.calls.createSwap[0].targetAddress, ARK); assert.equal(m.calls.createSwap[0].gasless, true);
+});
+
+test("create: Satora's swap is checked before any deposit address is shown (chain, token, amount, target, status, depositor)", async () => {
+  const inv = INV();
+  const cases = [
+    [{ status: "clientfunded" }, /status clientfunded/], [{ gasless: false }, /not a gasless swap/], [{ evm_chain_id: 1 }, /chain 1/],
+    [{ source_token: { chain: "42161", token_id: SWAP_TARGETS.usdt0.tokenId } }, /token .* is not USDC/], [{ client_evm_address: "0x" + "cd".repeat(20) }, /not this Mark home's own/],
+    [{ source_amount: "1600000" }, /more than 1% above the quote/], [{ client_lightning_invoice: makeInvoice({ sats: 2420 }) }, /not the one you gave/],
+    [{ target_token: { chain: "Arkade", token_id: "btc" } }, /payout chain Arkade/], [{ target_amount: "0" }, /not a positive amount/], [{ id: undefined }, /no swap id/],
+  ];
+  for (const [tamper, why] of cases) {
+    const { client, calls } = mockClient({ tamper });
+    await assert.rejects(sw.swapRun(ctxWith(provider(client)), { from: "usdc", to: "lightning", invoice: inv, confirm: true }), (e) => e.code === "SWAP_FAILED" && why.test(e.message) && /Do NOT deposit/.test(e.message), JSON.stringify(tamper));
+    assert.equal(calls.fund.length, 0);
+  }
+  // amount mode: exact units, payout not far below the quote; a Lightning address's invoice must ask the swap's sats
+  for (const [tamper, why] of [[{ source_amount: "1500001" }, /deposit amount 1\.500001 USDC is not 1\.5/], [{ target_amount: "2000" }, /more than 1% below the quote/], [{ client_lightning_invoice: makeInvoice({ sats: 2000 }) }, /asks for 2000 sats/]]) {
+    const { client } = mockClient({ tamper });
+    await assert.rejects(sw.swapRun(ctxWith(provider(client)), { from: "usdc", to: "lightning", amount: "1.5", address: "me@example.com", confirm: true }), (e) => e.code === "SWAP_FAILED" && why.test(e.message), JSON.stringify(tamper));
+  }
+  // Ark payout: the exact address, on the swap's Arkade server
+  for (const [tamper, why] of [[{ target_arkade_address: payoutArk(8, "ark") }, /payout address/], [{ arkade_server_pk: "02" + "77".repeat(32) }, /different Ark server/]]) {
+    const { client } = mockClient({ tamper });
+    await assert.rejects(sw.swapRun(ctxWith(provider(client)), { from: "usdc", to: "arkade", amount: "1.5", address: ARK, confirm: true }), (e) => e.code === "SWAP_FAILED" && why.test(e.message), JSON.stringify(tamper));
+  }
+});
+
+test("create: bad targets are refused before Satora is asked (wrong network invoice, amountless, address types, --sats)", async () => {
+  const { client, calls } = mockClient(); const c = ctxWith(provider(client));
+  const run = (i) => sw.swapRun(c, { from: "usdc", confirm: true, ...i });
+  await assert.rejects(run({ to: "lightning", invoice: makeInvoice({ sats: 2420, network: "testnet" }) }), (e) => e.code === "BAD_INVOICE");
+  await assert.rejects(run({ to: "lightning", invoice: makeInvoice({}) }), (e) => e.code === "AMOUNTLESS_INVOICE_UNSUPPORTED");
+  await assert.rejects(run({ to: "lightning", invoice: makeInvoice({ sats: 2420, expiry: 300 }) }), (e) => e.code === "INVOICE_EXPIRED");
+  await assert.rejects(run({ to: "lightning", address: "not-an-address", amount: "1" }), (e) => e.code === "BAD_DEST");
+  await assert.rejects(run({ to: "lightning", invoice: INV(), amount: "1" }), (e) => e.code === "USAGE");
+  await assert.rejects(run({ to: "arkade", address: "me@example.com", amount: "1" }), (e) => e.code === "BAD_DEST");
+  await assert.rejects(run({ to: "arkade", address: payoutArk(7, "tark"), amount: "1" }), (e) => e.code === "BAD_DEST");
+  await assert.rejects(run({ to: "lightning", address: "me@example.com", sats: 1000 }), (e) => e.code === "USAGE" && /--sats is for swaps from BTC/.test(e.message));
+  await assert.rejects(sw.swapRun(c, { from: "lightning", to: "usdc", sats: 1000, address: ME, amount: "1" }), (e) => e.code === "USAGE");
+  await assert.rejects(sw.swapRun(ctxWith(provider(client), "mutinynet"), { from: "usdc", to: "lightning", invoice: INV() }), (e) => e.code === "SWAP_UNSUPPORTED_NETWORK");
+  assert.equal(calls.getQuote.length + calls.createSwap.length, 0);
+});
+
+test("create: the deposit address already holds the amount -> send NOTHING; another swap waiting for its deposit blocks a new one", async () => {
+  let { client, calls } = mockClient();
+  const r = await sw.swapRun(ctxWith(provider(client, { balances: [2_000_000n] })), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
+  assert.match(r.deposit.howToDeposit, /send NOTHING/); assert.equal(r.deposit.send, undefined); assert.equal(r.deposit.alreadyThere, "2");
+  const part = await sw.swapRun(ctxWith(provider(mockClient().client, { balances: [500_000n] })), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
+  assert.equal(part.deposit.send, "1"); assert.equal(part.deposit.alreadyThere, "0.5");
+  // one open deposit at a time (all swaps from a stablecoin in a Mark home share the address)
+  ({ client, calls } = mockClient({ others: [{ swapId: "old-1", response: { id: "old-1", status: "pending", gasless: true, client_evm_address: DEP, direction: "evm_to_lightning", source_token: { token_id: USDC } } }] }));
+  client.getSwap = async (id) => ({ id, status: "pending", gasless: true, client_evm_address: DEP, direction: "evm_to_lightning", source_token: { token_id: USDC } });
+  await assert.rejects(sw.swapRun(ctxWith(provider(client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true }), (e) => e.code === "SWAP_OPEN_DEPOSIT" && /old-1/.test(e.message));
+  assert.equal(calls.createSwap.length, 0);
+});
+
+test("gasless flow (--wait): watch the deposit, fund ONCE when it is there, then wait for the Lightning payout", async () => {
+  const { client, calls } = mockClient({ statuses: ["pending", "pending", "pending", "pending", "clientfunded", "serverfunded", "serverredeemed"] });
+  const progress = [];
+  const r = await sw.swapRun(ctxWith(provider(client, { balances: [0n, 0n, 0n, 1_500_000n, 0n] })), { from: "usdc", to: "lightning", invoice: INV(), confirm: true, wait: true, pollMs: 1, onProgress: (x) => progress.push(x) });
+  assert.equal(progress.length, 1); assert.equal(progress[0].deposit.address, DEP);
+  assert.equal(calls.fund.length, 1, "funded exactly once"); assert.equal(r.swap, "done"); assert.equal(r.status, "serverredeemed"); assert.match(r.note, /Lightning/);
+});
+
+test("fund: never twice. No deposit -> no signing; concurrent calls share one; a submitted funding is not signed again; a clear refusal may retry", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mark-rev-"));
+  const { client, calls } = mockClient();
+  await sw.swapRun(ctxWith(provider(client, { balances: [0n] })), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
+  // no deposit yet
+  let p = provider(client, { balances: [0n], dir });
+  let r = await sw.swapFund(ctxWith(p), "rv-1"); assert.equal(r.funded, false); assert.match(r.note, /No deposit seen/); assert.equal(calls.fund.length, 0);
+  // partial: only the missing part, never "send it again"
+  r = await sw.swapFund(ctxWith(provider(client, { balances: [400_000n], dir })), "rv-1"); assert.match(r.note, /only the missing 1\.1 completes it \(do NOT resend the full amount\)/);
+  // deposit there: two concurrent calls -> one relay call
+  p = provider(client, { balances: [1_500_000n], dir });
+  const [a, b] = await Promise.all([sw.swapFund(ctxWith(p), "rv-1"), sw.swapFund(ctxWith(p), "rv-1")]);
+  assert.equal(calls.fund.length, 1); assert.ok(a.funded && b.funded); assert.match(a.note, /Do NOT send the stablecoins again/);
+  // a second process (same Mark home), the relay's lock not yet visible and the deposit still showing: skipped, not signed again
+  r = await sw.swapFund(ctxWith(provider(client, { balances: [1_500_000n], dir })), "rv-1"); assert.equal(r.funded, false); assert.match(r.note, /already submitted/); assert.equal(calls.fund.length, 1);
+  // status after funds are seen never asks for a deposit
+  const st = await sw.swapStatus(ctxWith(provider(client, { balances: [0n], dir })), "rv-1"); assert.match(st.next, /A funding was submitted/); assert.doesNotMatch(st.next, /Waiting for the deposit/);
+  // an uncertain failure (network) keeps the record; a clear relay refusal clears it so a retry is allowed
+  const u = mockClient({ fundError: "fetch failed" }); await sw.swapRun(ctxWith(provider(u.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
+  const d2 = fs.mkdtempSync(path.join(os.tmpdir(), "mark-rev-"));
+  r = await sw.swapFund(ctxWith(provider(u.client, { balances: [1_500_000n], dir: d2 })), "rv-1"); assert.equal(r.fundFailed, true); assert.match(r.note, /may still have submitted/);
+  r = await sw.swapFund(ctxWith(provider(u.client, { balances: [1_500_000n], dir: d2 })), "rv-1"); assert.match(r.note, /already submitted/); assert.equal(u.calls.fund.length, 1);
+  const k = mockClient({ fundError: "Gasless fund relay failed: 400 insufficient balance" }); await sw.swapRun(ctxWith(provider(k.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
+  const d3 = fs.mkdtempSync(path.join(os.tmpdir(), "mark-rev-"));
+  r = await sw.swapFund(ctxWith(provider(k.client, { balances: [1_500_000n], dir: d3 })), "rv-1"); assert.match(r.note, /refused the funding; nothing was locked/);
+  await sw.swapFund(ctxWith(provider(k.client, { balances: [1_500_000n], dir: d3 })), "rv-1"); assert.equal(k.calls.fund.length, 2);
+  assert.ok(!fs.readFileSync(path.join(dir, "evm-funding.json"), "utf8").includes("0x11"), "no key material in the funding record");
+});
+
+test("fund: already past funding or done -> no signing", async () => {
+  const { client, calls } = mockClient({ statuses: ["clientfunded"] });
+  await sw.swapRun(ctxWith(provider(client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
+  const r = await sw.swapFund(ctxWith(provider(client, { balances: [1_500_000n] })), "rv-1");
+  assert.equal(r.funded, false); assert.match(r.note, /Already past funding \(clientfunded\)/); assert.match(r.note, /Do NOT send the stablecoins again/); assert.equal(calls.fund.length, 0);
+  const d = mockClient({ statuses: ["serverredeemed"] }); await sw.swapRun(ctxWith(provider(d.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
+  const x = await sw.swapFund(ctxWith(provider(d.client, { balances: [1_500_000n] })), "rv-1"); assert.equal(x.swap, "done"); assert.equal(d.calls.fund.length, 0);
+});
+
+test("Ark payout: claimed to the user's Ark address once Satora funds it", async () => {
+  const { client, calls } = mockClient({ statuses: ["pending", "pending", "clientfunded", "serverfunded", "clientredeemed"] });
+  const r = await sw.swapRun(ctxWith(provider(client, { balances: [1_500_000n] })), { from: "usdc", to: "arkade", amount: "1.5", address: ARK, confirm: true, wait: true, pollMs: 1, onProgress: () => {} });
+  assert.equal(calls.fund.length, 1); assert.equal(calls.claimArkade.length, 1); assert.equal(calls.claimArkade[0].destinationAddress, ARK); assert.equal(r.swap, "done");
+});
+
+test("recovery: refund (collaborative, else sponsored timelock) back to the deposit address; recover sends it on, needing a little ETH", async () => {
+  let m = mockClient({ statuses: ["pending", "clientfundedserverrefunded"] });
+  await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
+  const st = await sw.swapStatus(ctxWith(provider(m.client)), "rv-1"); assert.match(st.next, /swap refund rv-1 .*swap recover rv-1/);
+  let r = await sw.swapRefund(ctxWith(provider(m.client)), "rv-1"); assert.equal(r.refunded, true); assert.equal(r.how, "collaborative (gasless)"); assert.equal(m.calls.sponsored.length, 0);
+  await assert.rejects(sw.swapRefund(ctxWith(provider(m.client)), "rv-1", "0xabc"), (e) => e.code === "USAGE" && /no --to/.test(e.message));
+  m = mockClient({ statuses: ["pending", "clientfunded"], collabError: "server may still fund" });
+  await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
+  r = await sw.swapRefund(ctxWith(provider(m.client)), "rv-1"); assert.equal(r.how, "timelock (sponsored, gasless)"); assert.equal(m.calls.collab.length, 1); assert.equal(m.calls.sponsored.length, 1);
+  // recover: no ETH for gas -> says how much, moves nothing; with ETH -> sweeps to the given address
+  m = mockClient({ statuses: ["pending", "expired"] });
+  await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
+  r = await sw.swapRecover(ctxWith(provider(m.client, { balances: [1_500_000n], eth: 0n })), "rv-1", ME);
+  assert.equal(r.recovered, false); assert.match(r.note, /send about 0\.0000048 ETH \(Arbitrum One\) to 0xabab/); assert.equal(m.calls.recover.length, 0);
+  r = await sw.swapRecover(ctxWith(provider(m.client, { balances: [1_500_000n], eth: 10n ** 15n })), "rv-1", ME);
+  assert.equal(r.recovered, true); assert.equal(r.amount, "1.5"); assert.equal(m.calls.recover.length, 1); assert.equal(m.calls.recover[0].to, ME); assert.equal(m.calls.recover[0].signer.fake, true);
+  assert.equal(JSON.stringify(r).includes("11".repeat(32)), false, "the depositor key is never in the output");
+  r = await sw.swapRecover(ctxWith(provider(m.client, { balances: [0n], eth: 10n ** 15n })), "rv-1", ME); assert.equal(r.recovered, false); assert.match(r.note, /holds no USDC/);
+  await assert.rejects(sw.swapRecover(ctxWith(provider(m.client)), "rv-1", "0x123"), (e) => e.code === "BAD_DEST" && /--to/.test(e.message));
+});
+
+test("CLI: mark swap from a stablecoin, usage checks before any key or network access", () => {
+  const chk = (argv) => { const { pos, f } = parseArgs(argv); return checkSwapArgs(pos[1], pos[2], f); };
+  assert.equal(chk(["swap", "--from", "usdc", "--to", "lightning", "--invoice", "lnbc1x", "--yes", "--wait"]), null);
+  assert.equal(chk(["swap", "--from", "usdt0", "--to", "arkade", "--address", "ark1x", "--amount", "1.5", "--yes"]), null);
+  assert.equal(chk(["swap", "quote", "--from", "usdc", "--amount", "2"]), null);
+  assert.equal(chk(["swap", "fund", "rv-1", "--wait", "--timeout", "60"]), null); assert.equal(chk(["swap", "recover", "rv-1", "--to", ME]), null);
+  assert.match(chk(["swap", "--from", "usdc", "--to", "usdt0", "--amount", "1"]).message, /--to must be lightning or arkade/);
+  assert.match(chk(["swap", "--from", "usdc", "--sats", "1000"]).message, /--sats is for swaps from BTC/);
+  assert.match(chk(["swap", "--from", "usdc", "--invoice", "lnbc1x", "--amount", "1"]).message, /--invoice fixes the payout/);
+  assert.match(chk(["swap", "--from", "usdc", "--to", "arkade", "--invoice", "lnbc1x"]).message, /--invoice is only for --to lightning/);
+  assert.match(chk(["swap", "--from", "usdc", "--amount", "1"]).message, /--address/);
+  assert.match(chk(["swap", "--from", "usdc", "--amount", "1,5", "--address", "a@b.co"]).message, /token amount/);
+  assert.match(chk(["swap", "--sats", "1000", "--address", ME, "--amount", "1"]).message, /--amount is only for swaps from a stablecoin/);
+  assert.match(chk(["swap", "--sats", "1000", "--address", ME, "--to", "lightning"]).message, /needs --from usdc or usdt0/);
+  assert.match(chk(["swap", "recover", "rv-1"]).message, /--to/); assert.match(chk(["swap", "fund"]).message, /swap id required/);
+  assert.match(chk(["swap", "fund", "rv-1", "--amount", "1"]).message, /only for mark swap and mark swap quote/);
+});
+
+test("MCP: the reverse tools are listed; create needs confirm, fund / recover / refund cover swaps from a stablecoin", async () => {
+  tmpHome(); const CLI = new URL("../dist/src/cli.js", import.meta.url).pathname;
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("npm_")));
+  const t = new StdioClientTransport({ command: process.execPath, args: [CLI, "mcp", "--network", "mutinynet", "--escrow-url", "http://127.0.0.1:9"], env, stderr: "ignore" });
+  const cl = new Client({ name: "swap-rev-test", version: "0" }); await cl.connect(t);
+  try {
+    const tools = Object.fromEntries((await cl.listTools()).tools.map((x) => [x.name, x]));
+    for (const n of ["swap_to_btc_quote", "swap_to_btc_create", "swap_fund", "swap_recover"]) assert.ok(tools[n], n);
+    assert.deepEqual(Object.keys(tools.swap_to_btc_create.inputSchema.properties).sort(), ["address", "amount", "confirm", "from", "invoice", "to"]);
+    assert.match(tools.swap_to_btc_create.inputSchema.properties.confirm.description, /must be true to create/); assert.match(tools.swap_to_btc_create.description, /Gasless/);
+    assert.deepEqual(tools.swap_to_btc_create.inputSchema.properties.from.enum, Object.keys(SWAP_TARGETS));
+    assert.deepEqual(tools.swap_recover.inputSchema.required.sort(), ["id", "to"]); assert.deepEqual(tools.swap_refund.inputSchema.required, ["id"]);
+    // without confirm nothing is created; mutinynet has no stablecoin routes, so it stops before Satora
+    const r = JSON.parse((await cl.callTool({ name: "swap_to_btc_create", arguments: { from: "usdc", to: "lightning", invoice: "lnbc1x" } })).content[0].text);
+    assert.equal(r.error?.code ?? r.code, "SWAP_UNSUPPORTED_NETWORK");
+  } finally { await cl.close(); }
+});

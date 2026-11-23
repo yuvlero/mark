@@ -8,7 +8,7 @@ import { openCtx, type Ctx, type CtxOptions } from "./core/context.js";
 import { updateNotice } from "./core/clientVersion.js";
 import * as uc from "./core/usecases.js";
 import * as sw from "./core/swap.js";
-import { SWAP_MARKUP_BPS, pct } from "./swap/stable.js";
+import { SWAP_MARKUP_BPS, SWAP_SOURCES, SWAP_TARGETS, pct, type SwapSource, type SwapTarget } from "./swap/stable.js";
 import { MARK_VERSION } from "./version.js";
 import { mk, DEMO_SATS, WALLET_DOCS } from "./invocation.js";
 import os from "node:os";
@@ -94,13 +94,28 @@ export async function runMcp(network: NetworkName, o: CtxOptions = {}) {
   const swapIn = { from: z.enum(["lightning", "arkade"]).optional().describe("where the BTC comes from (default lightning)"), to: z.enum(["usdc", "usdt0"]).optional().describe("stablecoin on Arbitrum (default usdc)"), sats: z.number().int().positive() };
   s.tool("swap_quote", `Quote a swap of BTC (Lightning or Arkade) into USDC or USDT0 on Arbitrum through Satora: rate, what you receive, Satora fee, the ${pct(SWAP_MARKUP_BPS)} Agent Escrow markup, network fee and total. Nothing is created`, swapIn,
     (a) => wrap(() => sw.swapQuote(c, a)));
-  s.tool("swap_routes", `Every swap route Mark supports (BTC from Lightning or Arkade into USDC or USDT0 on Arbitrum) with Satora's live min/max sats and the ${pct(SWAP_MARKUP_BPS)} Agent Escrow fee note. Read-only: nothing is created. Limits are "unavailable" if Satora cannot be reached`, {},
+  s.tool("swap_routes", `Every swap route Mark supports, both directions (BTC from Lightning or Arkade into USDC or USDT0 on Arbitrum, and USDC or USDT0 on Arbitrum to BTC over Lightning or to Arkade) with Satora's live min/max sats and the ${pct(SWAP_MARKUP_BPS)} Agent Escrow fee note. Read-only: nothing is created. Limits are "unavailable" if Satora cannot be reached`, {},
     () => wrap(() => sw.swapRoutes(c)));
   s.tool("swap_create", `Swap BTC into USDC or USDT0 on Arbitrum (Satora; includes a ${pct(SWAP_MARKUP_BPS)} Agent Escrow fee). REAL MONEY on mainnet. Without confirm: preview only. With confirm: creates the swap and returns a Lightning invoice (from lightning) or an Ark address + exact sats (from arkade) to pay once; after paying, call swap_claim with wait=true. Non-custodial: the claim key stays in this Mark home`,
     { ...swapIn, address: z.string().describe("your EVM address on Arbitrum (0x...) that receives the stablecoins; a wrong address cannot be undone"), confirm: z.boolean().optional().describe("must be true to create the real swap; omit to preview") },
     ({ confirm, ...a }) => wrap(() => sw.swapRun(c, { ...a, confirm: confirm === true })));
-  s.tool("swap_status", "Status of a swap_create swap (read-only), with the payout tx once claimed", { id: z.string() }, ({ id }) => wrap(() => sw.swapStatus(c, id)));
-  s.tool("swap_claim", "Claim a paid swap's stablecoins to the address set at create and return payoutTx (safe to repeat; never pays anything). wait=true: first wait (up to 15 min) until Satora funds its side", { id: z.string(), wait: z.boolean().optional() }, ({ id, wait }) => wrap(() => sw.swapClaim(c, id, { wait })));
-  s.tool("swap_refund", "Refund an Arkade-funded swap that did not pay out (after its timelock) to an Ark address from an Arkade wallet on https://arkade.computer. Lightning swaps need no refund", { id: z.string(), to: z.string() }, ({ id, to }) => wrap(() => sw.swapRefund(c, id, to)));
+  // the reverse direction: a stablecoin on Arbitrum -> BTC, gasless (the stablecoins go to this Mark home's deposit address)
+  const stables = Object.keys(SWAP_TARGETS) as [SwapTarget, ...SwapTarget[]], rails = Object.keys(SWAP_SOURCES) as [SwapSource, ...SwapSource[]];
+  const toBtcIn = { from: z.enum(stables).describe("the stablecoin you send, on Arbitrum One"), to: z.enum(rails).optional().describe("how the BTC is paid out (default lightning)"),
+    amount: z.string().regex(/^\d+(\.\d+)?$/).optional().describe("token amount to send, like \"1.5\" (fees come out of it); not with invoice"),
+    invoice: z.string().optional().describe("to=lightning: a BOLT11 invoice with an amount; Satora pays exactly it (no amount, no address)"),
+    address: z.string().optional().describe("to=lightning: a Lightning address user@domain (with amount); to=arkade: an Ark address from an Arkade wallet on https://arkade.computer (with amount)") };
+  s.tool("swap_to_btc_quote", `Quote a swap of USDC or USDT0 on Arbitrum into BTC over Lightning or to an Ark address (Satora): what you send, the sats you receive, Satora fee, the ${pct(SWAP_MARKUP_BPS)} Agent Escrow markup, network fee and total. Nothing is created`, toBtcIn,
+    (a) => wrap(() => sw.swapQuote(c, a)));
+  s.tool("swap_to_btc_create", `Swap USDC or USDT0 on Arbitrum into BTC over Lightning or to an Ark address (Satora; includes a ${pct(SWAP_MARKUP_BPS)} Agent Escrow fee). REAL MONEY. Gasless: no wallet or ETH needed. Without confirm: preview only. With confirm: creates the swap, checks it, and returns deposit.address, the exact amount and the token: send that once (one ERC-20 transfer on Arbitrum One), then call swap_fund with wait=true. Never send twice`,
+    { ...toBtcIn, confirm: z.boolean().optional().describe("must be true to create the real swap; omit to preview") },
+    ({ confirm, ...a }) => wrap(() => sw.swapRun(c, { ...a, confirm: confirm === true })));
+  s.tool("swap_fund", "Swap from a stablecoin: once the deposit is at its deposit address, sign the permits so Satora's relay locks it into the swap (gasless; at most once). wait=true: wait (up to 30 min) for the deposit, fund, then wait for the payout. Never asks for a second deposit", { id: z.string(), wait: z.boolean().optional() },
+    ({ id, wait }) => wrap(() => sw.swapFund(c, id, { wait })));
+  s.tool("swap_status", "Status of a swap_create or swap_to_btc_create swap (read-only): the payout tx once claimed; for a swap from a stablecoin, the deposit seen so far and what to do next", { id: z.string() }, ({ id }) => wrap(() => sw.swapStatus(c, id)));
+  s.tool("swap_claim", "Claim a paid swap's stablecoins to the address set at create and return payoutTx, or a swap from a stablecoin's Ark payout (safe to repeat; never pays anything). wait=true: first wait (up to 15 min) until Satora funds its side", { id: z.string(), wait: z.boolean().optional() }, ({ id, wait }) => wrap(() => sw.swapClaim(c, id, { wait })));
+  s.tool("swap_refund", "Refund a swap that did not pay out. Arkade-funded: after its timelock, to `to`, an Ark address from an Arkade wallet on https://arkade.computer (Lightning swaps need no refund). From a stablecoin: omit `to`; the locked deposit goes back to the deposit address (gasless), then use swap_recover", { id: z.string(), to: z.string().optional() }, ({ id, to }) => wrap(() => sw.swapRefund(c, id, to)));
+  s.tool("swap_recover", "Swap from a stablecoin: send the stablecoins sitting at its deposit address (unfunded, failed or refunded swap) to your own 0x address on Arbitrum. Needs a little Arbitrum ETH at the deposit address for gas (it says how much)", { id: z.string(), to: z.string().describe("your 0x address on Arbitrum") },
+    ({ id, to }) => wrap(() => sw.swapRecover(c, id, to)));
   await s.connect(new StdioServerTransport());
 }

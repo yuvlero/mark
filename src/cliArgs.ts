@@ -1,7 +1,7 @@
 /** CLI usage checks (pure; tested without spawning). */
 import { str as s } from "./util.js";
 import { MarkError } from "./errors.js";
-import { SWAP_MARKUP_BPS, pct } from "./swap/stable.js";
+import { SWAP_MARKUP_BPS, SWAP_SOURCES, SWAP_TARGETS, pct } from "./swap/stable.js";
 export function parseArgs(argv: string[]) {
   const pos: string[] = []; const f: Record<string, string | boolean> = {};
   for (let i = 0; i < argv.length; i++) {
@@ -35,33 +35,51 @@ export function checkDemoArgs(f: Record<string, string | boolean>) {
   for (const k of ["expect-sats", "timeout"]) if (f[k] !== undefined && !/^\d+$/.test(String(f[k]))) return usage(`--${k} must be a whole number`);
   return null;
 }
-/** `mark swap` (BTC -> USDC / USDT0 on Arbitrum via Satora; standalone, not tied to a deal). Key "create" is plain `mark swap` (`mark swap create` is the same). */
+/** `mark swap` (BTC <-> USDC / USDT0 on Arbitrum via Satora; standalone, not tied to a deal). Key "create" is plain `mark swap` (`mark swap create` is the same). */
 export const SWAP_USAGE: Record<string, string> = {
-  quote: `mark swap quote [--from lightning|arkade] [--to usdc|usdt0] --sats N   (rate, Satora fee, the ${pct(SWAP_MARKUP_BPS)} Agent Escrow markup, network fee, total; nothing is created)`,
-  create: `mark swap [--from lightning|arkade] [--to usdc|usdt0] --sats N --address <0x... on Arbitrum> [--yes] [--wait] [--timeout <sec>]   (no --yes: preview only, nothing is created. Includes a ${pct(SWAP_MARKUP_BPS)} Agent Escrow fee)`,
+  quote: `mark swap quote [--from lightning|arkade] [--to usdc|usdt0] --sats N | mark swap quote --from usdc|usdt0 --to lightning|arkade (--amount <tokens> [--address <target>] | --invoice <bolt11>)   (rate, Satora fee, the ${pct(SWAP_MARKUP_BPS)} Agent Escrow markup, network fee, total; nothing is created)`,
+  create: `mark swap [--from lightning|arkade] [--to usdc|usdt0] --sats N --address <0x... on Arbitrum> [--yes] [--wait] [--timeout <sec>] | mark swap --from usdc|usdt0 --to lightning (--invoice <bolt11> | --address <user@domain> --amount <tokens>) [--yes] [--wait] | mark swap --from usdc|usdt0 --to arkade --address <ark address on https://arkade.computer> --amount <tokens> [--yes] [--wait]   (no --yes: preview only, nothing is created. From a stablecoin: gasless, Mark shows a deposit address, the exact amount and the token. Includes a ${pct(SWAP_MARKUP_BPS)} Agent Escrow fee)`,
   status: "mark swap status <id>",
-  claim: "mark swap claim <id> [--wait] [--timeout <sec>]   (claim a paid swap's stablecoins to its address; --wait first waits for Satora to fund its side; safe to repeat)",
-  routes: `mark swap routes   (every route Mark supports with Satora's live min/max sats; read-only, nothing is created. Includes the ${pct(SWAP_MARKUP_BPS)} Agent Escrow fee note)`,
-  refund: "mark swap refund <id> --to <ark address from an Arkade wallet on https://arkade.computer>   (Arkade-funded swap that did not pay out, after its timelock)",
+  claim: "mark swap claim <id> [--wait] [--timeout <sec>]   (claim a paid swap's stablecoins to its address, or a swap's Ark payout; --wait first waits for Satora to fund its side; safe to repeat)",
+  fund: "mark swap fund <id> [--wait] [--timeout <sec>]   (swap from a stablecoin: once the deposit is at the deposit address, sign the permits so Satora's relay locks it, once, gasless; --wait waits for the deposit, then the payout)",
+  routes: `mark swap routes   (every route Mark supports, both directions, with Satora's live min/max sats; read-only, nothing is created. Includes the ${pct(SWAP_MARKUP_BPS)} Agent Escrow fee note)`,
+  refund: "mark swap refund <id> --to <ark address from an Arkade wallet on https://arkade.computer>   (Arkade-funded swap that did not pay out, after its timelock) | mark swap refund <id>   (swap from a stablecoin whose locked deposit did not pay out: back to the deposit address, gasless)",
+  recover: "mark swap recover <id> --to <your 0x address on Arbitrum>   (swap from a stablecoin: send the stablecoins at the deposit address to your address; needs a little Arbitrum ETH there for gas)",
 };
-const SWAP_SUBS = ["quote", "create", "status", "claim", "refund", "routes"];
+const SWAP_SUBS = ["quote", "create", "status", "claim", "fund", "refund", "recover", "routes"];
+const SWAP_BTC = Object.keys(SWAP_SOURCES), SWAP_STABLE = [...Object.keys(SWAP_TARGETS), "usdt"];
 /** `mark swap ...` usage checks before any key or network access. */
 export function checkSwapArgs(sub: string | undefined, id: string | undefined, f: Record<string, string | boolean>) {
   const key = sub ?? "create";
   const usage = (msg: string) => new MarkError("USAGE", `${msg}. usage: ${SWAP_USAGE[key] ?? Object.values(SWAP_USAGE).join(" | ")}`, { usage: SWAP_USAGE[key] ?? SWAP_USAGE });
   if (sub !== undefined && !SWAP_SUBS.includes(sub)) return usage(`unknown swap subcommand '${sub}' (one of: ${SWAP_SUBS.join(", ")}; none = create)`);
-  for (const k of ["yes", "wait"]) { if (f[k] !== undefined && f[k] !== true) return usage(`--${k} takes no value`); if (f[k] !== undefined && !(key === "create" || (k === "wait" && key === "claim"))) return usage(k === "wait" ? "--wait is only for mark swap (create) and mark swap claim" : "--yes is only for mark swap (create)"); }
+  const waits = ["create", "claim", "fund"];
+  for (const k of ["yes", "wait"]) { if (f[k] !== undefined && f[k] !== true) return usage(`--${k} takes no value`); if (f[k] !== undefined && !(key === "create" || (k === "wait" && waits.includes(key)))) return usage(k === "wait" ? "--wait is only for mark swap (create), mark swap claim and mark swap fund" : "--yes is only for mark swap (create)"); }
   for (const [k, v] of Object.entries(f)) if (v === true && !["yes", "wait", "json"].includes(k)) return usage(`--${k} needs a value`);
-  if ((key === "create" || key === "quote") && f.sats === undefined) return usage("--sats is required");
-  if (f.sats !== undefined && !/^\d+$/.test(String(f.sats))) return usage("--sats must be a whole number of sats");
   if (f.timeout !== undefined && !/^\d+$/.test(String(f.timeout))) return usage("--timeout must be a whole number of seconds");
-  if (f.timeout !== undefined && !(key === "create" || key === "claim")) return usage("--timeout is only for mark swap (create) and mark swap claim");
-  if (key !== "create" && key !== "quote") for (const k of ["from", "address", "sats", ...(key === "refund" ? [] : ["to"])]) if (f[k] !== undefined) return usage(`--${k} is only for mark swap and mark swap quote`);
-  if (f.from !== undefined && !["lightning", "arkade"].includes(String(f.from).toLowerCase())) return usage("--from must be lightning or arkade");
-  if (key !== "refund" && f.to !== undefined && !["usdc", "usdt0", "usdt"].includes(String(f.to).toLowerCase())) return usage("--to must be usdc or usdt0");
-  if (key === "create" && !s(f.address)) return usage("--address <your 0x address on Arbitrum> is required");
-  if (["status", "claim", "refund"].includes(key) && !id) return usage("swap id required");
-  if (key === "refund" && !s(f.to)) return usage("--to <ark address> is required");
+  if (f.timeout !== undefined && !waits.includes(key)) return usage("--timeout is only for mark swap (create), mark swap claim and mark swap fund");
+  const priced = key === "create" || key === "quote";
+  if (!priced) for (const k of ["from", "address", "sats", "amount", "invoice", ...(key === "refund" || key === "recover" ? [] : ["to"])]) if (f[k] !== undefined) return usage(`--${k} is only for mark swap and mark swap quote`);
+  if (f.from !== undefined && ![...SWAP_BTC, ...SWAP_STABLE].includes(String(f.from).toLowerCase())) return usage(`--from must be ${[...SWAP_BTC, ...Object.keys(SWAP_TARGETS)].join(", ")}`);
+  const rev = priced && SWAP_STABLE.includes(String(f.from ?? "").toLowerCase());
+  if (priced && rev) {
+    if (f.to !== undefined && !SWAP_BTC.includes(String(f.to).toLowerCase())) return usage(`--to must be ${SWAP_BTC.join(" or ")} when --from is a stablecoin`);
+    if (f.sats !== undefined) return usage("--sats is for swaps from BTC; from a stablecoin use --amount <tokens> (or --invoice for a Lightning payout)");
+    if (f.amount !== undefined && !/^\d+(\.\d+)?$/.test(String(f.amount))) return usage("--amount must be a token amount like 1.5");
+    const ln = String(f.to ?? "lightning").toLowerCase() === "lightning";
+    if (f.invoice !== undefined && !ln) return usage("--invoice is only for --to lightning");
+    if (f.invoice !== undefined && (f.amount !== undefined || f.address !== undefined)) return usage("--invoice fixes the payout: do not add --amount or --address");
+    if (f.invoice === undefined && f.amount === undefined) return usage(ln ? "--invoice <bolt11> or --amount <tokens> is required" : "--amount <tokens> is required");
+    if (key === "create" && f.invoice === undefined && !s(f.address)) return usage(ln ? "--address <lightning address> (with --amount) or --invoice <bolt11> is required" : "--address <ark address> is required");
+  } else if (priced) {
+    if (f.to !== undefined && !SWAP_STABLE.includes(String(f.to).toLowerCase())) return usage(SWAP_BTC.includes(String(f.to).toLowerCase()) ? `--to ${String(f.to).toLowerCase()} needs --from usdc or usdt0` : "--to must be usdc or usdt0");
+    for (const k of ["amount", "invoice"]) if (f[k] !== undefined) return usage(`--${k} is only for swaps from a stablecoin (--from usdc|usdt0)`);
+    if (f.sats === undefined) return usage("--sats is required");
+    if (!/^\d+$/.test(String(f.sats))) return usage("--sats must be a whole number of sats");
+    if (key === "create" && !s(f.address)) return usage("--address <your 0x address on Arbitrum> is required");
+  }
+  if (["status", "claim", "fund", "refund", "recover"].includes(key) && !id) return usage("swap id required");
+  if (key === "recover" && !s(f.to)) return usage("--to <your 0x address on Arbitrum> is required");
   return null;
 }
 const NEEDS_ID = new Set(["show", "accept", "evidence", "fund", "status", "quote", "approve", "dispute", "refund", "refund-payout", "messages", "message"]);

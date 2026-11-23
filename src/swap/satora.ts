@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { Client } from "@satora/swap";
-import type { SwapProvider, SwapInfo, ClaimResult, StableSwapCreated, StableSwapInfo } from "./provider.js";
+import type { SwapProvider, SwapInfo, ClaimResult, StableSwapCreated, StableSwapInfo, ReverseQuoteInput, ReverseCreateInput, ReverseSwapCreated, ReverseSwapInfo, FundResult } from "./provider.js";
+import { arbitrumReader, viemSigner, type EvmReader } from "./evm.js";
 import { SWAP_REFERRAL_ID, SWAP_SOURCES, SWAP_TARGETS, checkMarkupBps, type SatoraQuote, type SwapSource, type SwapTarget } from "./stable.js";
 import { encryptWith, decryptWith } from "../crypto/keystore.js";
 import { MarkError } from "../errors.js";
@@ -64,7 +65,10 @@ function dirOf(s: any): SwapInfo["direction"] {
 
 export class SatoraProvider implements SwapProvider {
   readonly name = "satora";
-  private constructor(private c: Client, private baseUrl: string, private arkUrl: string) {}
+  /** dir: where the funding-attempt record lives (none: in memory only, tests). */
+  private constructor(private c: Client, private baseUrl: string, private arkUrl: string, private dir?: string) {}
+  /** Arbitrum reads (tests replace it). */
+  evm: EvmReader = arbitrumReader();
   /** Where the library's bundled Transaction classes come from (tests replace it). */
   txBases: () => Promise<any[]> = () => libTransactionBases();
 
@@ -80,7 +84,7 @@ export class SatoraProvider implements SwapProvider {
       .withLogLevel?.("silent");
     if (opts.referralCode) b = b.withReferralCode(opts.referralCode);
     const c = await b.build();
-    return new SatoraProvider(c, opts.baseUrl, opts.arkServerUrl);
+    return new SatoraProvider(c, opts.baseUrl, opts.arkServerUrl, sdir);
   }
 
   async createReceive(amountSats: number, arkAddress: string) {
@@ -183,4 +187,101 @@ export class SatoraProvider implements SwapProvider {
       return { success: !!r?.success, txHash: r?.txHash ?? undefined, message: typeof r?.message === "string" ? r.message.slice(0, 500) : undefined };
     } catch (x) { return { success: false, message: errText(x) }; }
   }
+
+  // ---------- `mark swap` from a stablecoin: USDC / USDT0 on Arbitrum -> BTC (Lightning or Arkade), gasless ----------
+  async quoteReverse(p: ReverseQuoteInput): Promise<SatoraQuote> {
+    const extraFees = checkMarkupBps(p.bps); const s = SWAP_TARGETS[p.from], t = SWAP_SOURCES[p.to];
+    return await this.c.getQuote({ sourceChain: s.chain as any, sourceToken: s.tokenId, targetChain: t.chain as any, targetToken: t.tokenId,
+      ...(p.sourceUnits !== undefined ? { sourceAmount: p.sourceUnits.toString() as any } : { targetAmount: p.targetSats as any }),
+      ...(p.destination ? { lightningDestination: p.destination } : {}), referralCode: SWAP_REFERRAL_ID, extraFees }) as any;
+  }
+  /** Created gasless: this Mark home's EVM key is the depositor, so no wallet or ETH is needed to fund it. Same referral ID and
+   *  markup as the quote. */
+  async createReverse(p: ReverseCreateInput): Promise<ReverseSwapCreated> {
+    const extraFees = checkMarkupBps(p.bps);
+    const targetAddress = p.to === "lightning" ? (p.invoice ?? p.lnAddress) : p.arkAddress;
+    if (!targetAddress) throw new MarkError("USAGE", "a payout target is required");
+    const r: any = await stdoutToStderr(() => this.c.createSwap({ source: SWAP_TARGETS[p.from] as any, target: SWAP_SOURCES[p.to] as any, targetAddress, gasless: true,
+      ...(p.invoice ? {} : { sourceAmount: p.sourceUnits?.toString() as any }), referralCode: SWAP_REFERRAL_ID, extraFees } as any));
+    return reverseFields(r?.response ?? {});
+  }
+  async getReverse(id: string): Promise<ReverseSwapInfo> {
+    const r: any = await this.c.getSwap(id, { updateStorage: true } as any);
+    let local = false; try { local = !!(await (this.c as any).getStoredSwap?.(id)); } catch { /* unknown */ }
+    return { ...reverseFields(r), direction: r.direction, fundTx: r.evm_fund_txid ?? undefined, payoutTx: r.btc_claim_txid ?? undefined,
+      lightningSettled: r.lightning_payment_settled ?? undefined, createdAt: r.created_at ?? undefined, local };
+  }
+  depositAddress(): string { return (this.c as any).getEvmAddress(); }
+  async openReverse(): Promise<ReverseSwapInfo[]> {
+    const all: any[] = (await (this.c as any).swapStorage?.getAll?.()) ?? [];
+    const mine = all.map((x) => x?.response).filter((r) => r?.id && r.gasless && r.client_evm_address && r.status === "pending" && /^evm_to_/.test(r.direction ?? ""));
+    const out: ReverseSwapInfo[] = [];
+    for (const r of mine) { try { const x = await this.getReverse(r.id); if (x.status === "pending") out.push(x); } catch { out.push({ ...reverseFields(r), local: true }); } }
+    return out;
+  }
+  /** Funding attempts: in memory plus a file in the swaps dir, so a second process (or a restart) does not sign again while the
+   *  first relay may still land. */
+  private funding = new Map<string, Promise<FundResult>>();
+  private attempts: Record<string, number> = {};
+  private attemptsFile() { return this.dir ? path.join(this.dir, "evm-funding.json") : undefined; }
+  private readAttempts(): Record<string, number> {
+    const f = this.attemptsFile(); if (!f || !fs.existsSync(f)) return this.attempts;
+    try { return { ...JSON.parse(fs.readFileSync(f, "utf8")), ...this.attempts }; } catch { return this.attempts; }
+  }
+  private markAttempt(id: string, at: number | undefined) {
+    const a = this.readAttempts(); if (at === undefined) delete a[id]; else a[id] = at; this.attempts = a;
+    const f = this.attemptsFile(); if (f) { fs.writeFileSync(f + ".tmp", JSON.stringify(a), { mode: 0o600 }); fs.renameSync(f + ".tmp", f); }
+  }
+  fundAttemptedAt(id: string) { return this.readAttempts()[id]; }
+  fundReverse(id: string): Promise<FundResult> {
+    const running = this.funding.get(id); if (running) return running;
+    const run = this.fundOnce(id).finally(() => this.funding.delete(id));
+    this.funding.set(id, run); return run;
+  }
+  private async fundOnce(id: string): Promise<FundResult> {
+    const at = this.fundAttemptedAt(id);
+    if (at !== undefined && Date.now() - at < FUND_RETRY_AFTER_MS) return { success: false, skipped: `a funding was already submitted at ${new Date(at).toISOString()}; Mark does not sign again for ${FUND_RETRY_AFTER_MS / 60000} minutes` };
+    this.markAttempt(id, Date.now());
+    try {
+      const r: any = await stdoutToStderr(() => (this.c as any).fundSwapGasless(id));
+      return { success: true, txHash: r?.txHash ?? undefined };
+    } catch (x) {
+      const message = errText(x);
+      // a clear refusal before or by the relay: nothing was submitted, so a later retry is safe
+      if (/^(Failed to get Permit2 funding data|Gasless fund relay failed: 4\d\d)|not found in local storage|Expected an EVM-sourced swap/.test(message)) { this.markAttempt(id, undefined); return { success: false, message }; }
+      return { success: false, message, uncertain: true };
+    }
+  }
+  async refundReverse(id: string) {
+    return stdoutToStderr(async () => {
+      let collab: string;
+      try { const r: any = await (this.c as any).collabRefundEvmSwap(id); return { success: true, txHash: r?.txHash ?? undefined, how: "collaborative (gasless)" }; }
+      catch (x) { collab = errText(x); }
+      try { const r: any = await (this.c as any).refundEvmSponsored(id); return { success: true, txHash: r?.txHash ?? undefined, how: "timelock (sponsored, gasless)" }; }
+      catch (x) { return { success: false, message: `collaborative refund: ${collab}; timelock refund: ${errText(x)}`.slice(0, 900) }; }
+    });
+  }
+  async recoverReverse(id: string, to: string) {
+    return stdoutToStderr(async () => {
+      try {
+        const k: any = await (this.c as any).getSwapDepositorKey(id);
+        const signer = await this.signerFor(k.privateKey);
+        const r: any = await (this.c as any).recoverGaslessFunds(id, signer, to);
+        return { success: true, txHash: r?.txHash ?? undefined, amountUnits: r?.amount != null ? String(r.amount) : undefined };
+      } catch (x) { return { success: false, message: errText(x) }; }
+    });
+  }
+  /** The recovery signer (tests replace it). The key never leaves this call. */
+  signerFor: (privateKey: string) => Promise<any> = (k) => viemSigner(k);
+}
+
+/** After a funding attempt that may have reached the relay, wait this long before signing again (Arbitrum confirms in seconds). */
+const FUND_RETRY_AFTER_MS = 10 * 60 * 1000;
+/** Satora's EVM-sourced swap answer only (never defaulted to the request), so a missing or different value is caught. */
+function reverseFields(r: any): ReverseSwapCreated {
+  return { id: r.id, status: r.status, gasless: r.gasless ?? undefined, depositAddress: r.client_evm_address ?? undefined,
+    sourceUnits: r.source_amount != null ? String(r.source_amount) : undefined, tokenContract: r.source_token?.token_id ?? undefined,
+    sourceChain: r.source_token?.chain ?? undefined, evmChainId: r.evm_chain_id != null ? Number(r.evm_chain_id) : undefined,
+    targetChain: r.target_token?.chain ?? undefined, targetSats: r.target_amount != null ? Number(r.target_amount) : undefined,
+    invoice: r.client_lightning_invoice ?? undefined, arkAddress: r.target_arkade_address ?? undefined, raw: r };
 }

@@ -19,6 +19,7 @@
         "@scure/bip39": "^2.4.0",
         "@scure/btc-signer": "^2.4.1",
         "light-bolt11-decoder": "^3.2.0",
+        "viem": "2.52.2",
         "zod": "^4.6.7"
       },
       "bin": {

@@ -49,18 +49,18 @@ export function swapSats(v: unknown): number {
 }
 
 /** EIP-55: a mixed-case address must carry a valid checksum (catches typos); all-lowercase / all-uppercase are accepted. */
-export function checkEvmAddress(a: string | undefined): string {
+export function checkEvmAddress(a: string | undefined, flag = "--address"): string {
   const x = (a ?? "").trim();
-  if (!/^0x[0-9a-fA-F]{40}$/.test(x)) throw new MarkError("BAD_DEST", "--address must be an EVM address on Arbitrum (0x followed by 40 hex characters)");
+  if (!/^0x[0-9a-fA-F]{40}$/.test(x)) throw new MarkError("BAD_DEST", `${flag} must be an EVM address on Arbitrum (0x followed by 40 hex characters)`);
   const hex = x.slice(2);
   if (hex !== hex.toLowerCase() && hex !== hex.toUpperCase()) {
     const h = Buffer.from(keccak_256(new TextEncoder().encode(hex.toLowerCase()))).toString("hex");
     for (let i = 0; i < 40; i++) {
       const up = parseInt(h[i], 16) >= 8;
-      if (/[a-f]/i.test(hex[i]) && (hex[i] === hex[i].toUpperCase()) !== up) throw new MarkError("BAD_DEST", "--address has a bad EIP-55 checksum (mixed case does not match): check it for a typo");
+      if (/[a-f]/i.test(hex[i]) && (hex[i] === hex[i].toUpperCase()) !== up) throw new MarkError("BAD_DEST", `${flag} has a bad EIP-55 checksum (mixed case does not match): check it for a typo`);
     }
   }
-  if (/^0x0{40}$/i.test(x)) throw new MarkError("BAD_DEST", "--address is the zero address");
+  if (/^0x0{40}$/i.test(x)) throw new MarkError("BAD_DEST", `${flag} is the zero address`);
   return x;
 }
 
@@ -102,6 +102,64 @@ export function formatSwapQuote(q: SatoraQuote, o: { from: SwapSource; to: SwapT
       networkFeeSats: f.networkFeeSats, totalFeeSats: f.totalFeeSats,
     },
     markupNote: `Includes a ${pct(f.markupBps)} Agent Escrow fee (${f.markupSats} sats), on top of Satora's fee. Paid inside the swap; nothing extra to send.`,
+    limits: { minSats: q.min_amount, maxSats: q.max_amount },
+    referral: SWAP_REFERRAL_ID,
+  };
+}
+
+// ---------- the reverse direction: a stablecoin on Arbitrum -> BTC (Lightning or Arkade) ----------
+/** The same two tables, read the other way: SWAP_TARGETS are the stablecoins you send, SWAP_SOURCES the BTC rails paid out. */
+export type SwapStable = SwapTarget;
+export type SwapRail = SwapSource;
+export type SwapRoute = { dir: "to_stable"; from: SwapSource; to: SwapTarget } | { dir: "to_btc"; from: SwapStable; to: SwapRail };
+const isStable = (k: string) => Object.hasOwn(SWAP_TARGETS, k.replace(/^usdt$/, "usdt0"));
+/** --from / --to to a route. A stablecoin --from is the reverse direction (default --to lightning); anything else is the forward
+ *  direction exactly as before (default --from lightning --to usdc). */
+export function swapRoute(from: string | undefined, to: string | undefined): SwapRoute {
+  const f = (from ?? "").toLowerCase();
+  if (f && isStable(f)) {
+    const t = (to ?? "lightning").toLowerCase();
+    if (!Object.hasOwn(SWAP_SOURCES, t)) throw new MarkError("USAGE", `--to must be ${Object.keys(SWAP_SOURCES).join(" or ")} when --from is a stablecoin`);
+    return { dir: "to_btc", from: swapTarget(f), to: t as SwapRail };
+  }
+  if (to && Object.hasOwn(SWAP_SOURCES, to.toLowerCase())) throw new MarkError("USAGE", `--to ${to.toLowerCase()} needs a stablecoin --from (${Object.keys(SWAP_TARGETS).join(" or ")})`);
+  return { dir: "to_stable", from: swapSource(from), to: swapTarget(to) };
+}
+/** Every route, built from the same two tables: BTC -> stablecoin first (as before), then stablecoin -> BTC. */
+export function allSwapRoutes(): SwapRoute[] {
+  const btc = Object.keys(SWAP_SOURCES) as SwapSource[], st = Object.keys(SWAP_TARGETS) as SwapTarget[];
+  return [...btc.flatMap((from) => st.map((to) => ({ dir: "to_stable" as const, from, to }))), ...st.flatMap((from) => btc.map((to) => ({ dir: "to_btc" as const, from, to })))];
+}
+/** "1.5" USDC -> 1500000n token units (at most `decimals` decimals, more than zero). */
+export function tokenUnits(v: unknown, decimals: number, flag = "--amount"): bigint {
+  const x = typeof v === "number" ? String(v) : String(v ?? "").trim();
+  const m = /^(\d+)(?:\.(\d+))?$/.exec(x);
+  if (!m || (m[2] ?? "").length > decimals) throw new MarkError("USAGE", `${flag} must be a token amount like 1.5 (at most ${decimals} decimals)`);
+  const n = BigInt(m[1] + (m[2] ?? "").padEnd(decimals, "0"));
+  if (n <= 0n) throw new MarkError("USAGE", `${flag} must be more than zero`);
+  return n;
+}
+/** A Lightning address (user@domain), lowercased; else BAD_DEST. */
+export function checkLightningAddress(a: string | undefined): string {
+  const x = (a ?? "").trim().toLowerCase();
+  if (!/^[a-z0-9._+-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(x)) throw new MarkError("BAD_DEST", "--address for --to lightning must be a Lightning address (user@domain); or pass --invoice <bolt11>");
+  return x;
+}
+/** The quote for stablecoin -> BTC as Mark shows it. Satora charges its fee and our markup in sats, on the swap's BTC amount
+ *  (target_amount before fees); you send source_amount token units and receive net_target_amount sats. */
+export function formatReverseQuote(q: SatoraQuote, o: { from: SwapStable; to: SwapRail; bps: number }) {
+  const t = SWAP_TARGETS[o.from]; const gross = Number(q.target_amount); const f = splitSwapFees(q, Number.isSafeInteger(gross) ? gross : 0, o.bps);
+  return {
+    from: o.from, to: o.to, token: { symbol: t.symbol, network: t.network, chainId: Number(t.chain), contract: t.tokenId },
+    send: units(q.source_amount, t.decimals), sendUnits: q.source_amount,
+    rate: `${q.exchange_rate} ${t.symbol} per BTC`,
+    receiveSats: Number(q.net_target_amount),
+    fees: {
+      satoraFeeSats: f.satoraFeeSats, satoraFeeRate: f.satoraFeeRate,
+      agentEscrowMarkupSats: f.markupSats, agentEscrowMarkupBps: f.markupBps, agentEscrowMarkup: pct(f.markupBps),
+      networkFeeSats: f.networkFeeSats, totalFeeSats: f.totalFeeSats,
+    },
+    markupNote: `Includes a ${pct(f.markupBps)} Agent Escrow fee (${f.markupSats} sats), on top of Satora's fee. Taken inside the swap; nothing extra to send. No ETH needed: the deposit is gasless.`,
     limits: { minSats: q.min_amount, maxSats: q.max_amount },
     referral: SWAP_REFERRAL_ID,
   };

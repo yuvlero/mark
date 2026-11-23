@@ -351,7 +351,7 @@ mark escrow inbox                              # unread across all your deals
 
 ## 6b. Swap BTC to stablecoins: `mark swap`
 
-`mark swap` turns bitcoin (paid over **Lightning** or from an **Arkade** wallet) into **USDC** or **USDT0** on **Arbitrum One**, through [Satora](https://satora.io). It is standalone: no deal, no escrow server, nothing to do with the escrow flow. Mainnet only (Satora has no Arbitrum stablecoin route on mutinynet).
+`mark swap` turns bitcoin (paid over **Lightning** or from an **Arkade** wallet) into **USDC** or **USDT0** on **Arbitrum One**, through [Satora](https://satora.io), and back: USDC or USDT0 on Arbitrum into BTC over Lightning or to an Ark address ([below](#stablecoins-back-to-btc-gasless)). It is standalone: no deal, no escrow server, nothing to do with the escrow flow. Mainnet only (Satora has no Arbitrum stablecoin route on mutinynet).
 
 **Fee: a 0.5% Agent Escrow fee is added** on top of Satora's own fee and the network fee. It is shown openly in every quote and preview (`fees.agentEscrowMarkup`, `agentEscrowMarkupSats`) and paid inside the swap: you never send it separately. Mark passes it to Satora as `extraFees` (50 bps), the same value on the quote and on the swap, with Agent Escrow's public Satora referral ID `lnds_29617a89f8a6b5a7`. Mark refuses any markup above 100 bps.
 
@@ -375,7 +375,7 @@ Example quote (100,000 sats, Lightning → USDC; numbers move with the market):
  "limits":{"minSats":356,"maxSats":20000000},"referral":"lnds_29617a89f8a6b5a7"}}
 ```
 
-- `mark swap routes` (`swap_routes`) lists the four supported routes: `--from lightning|arkade` × `--to usdc|usdt0`, all on Arbitrum One. Each shows the token contract and Satora's live `limits` (`minSats`, `maxSats`), read from a quote per route; nothing is created. If Satora cannot be reached (or on mutinynet) the routes are still listed with `"limits": "unavailable"` and a `limitsNote`. Other Satora pairs are not supported yet.
+- `mark swap routes` (`swap_routes`) lists the eight supported routes: `--from lightning|arkade` × `--to usdc|usdt0`, then back, `--from usdc|usdt0` × `--to lightning|arkade`, all on Arbitrum One (`direction`: `btc_to_stablecoin` or `stablecoin_to_btc`). Each shows the token contract and Satora's live `limits` (`minSats`, `maxSats`), read from a quote per route; nothing is created. If Satora cannot be reached (or on mutinynet) the routes are still listed with `"limits": "unavailable"` and a `limitsNote`. Other Satora pairs are not supported yet.
 - `--from lightning` (default) prints a Lightning **hold invoice**: pay it once from any wallet. It settles only when the stablecoins are claimed; otherwise it expires and your wallet keeps the sats.
 - `--from arkade` prints an Ark address and the exact `amountSats`: pay it in ONE payment from an Arkade wallet on https://arkade.computer (not Bark / Second). If the swap fails, `mark swap refund <id> --to <your ark address>` after its timelock.
 - `--to usdc` (default) or `--to usdt0` (USDT0 on Arbitrum, the former USDT contract `0xFd08…Cbb9`).
@@ -383,9 +383,39 @@ Example quote (100,000 sats, Lightning → USDC; numbers move with the market):
 - `--wait` waits for the payment (up to `--timeout`, default 900 s), claims as soon as Satora funds its side (gasless: you need no ETH), and prints `payoutTx` with an Arbiscan link. Its `status` is the final one (`serverredeemed`) once Satora reports it within a few seconds of the claim, else the status at claim time (`serverfunded`); `mark swap status <id>` shows the latest. Without `--wait`, run `mark swap claim <id> --wait` after paying.
 - Non-custodial: the swap's claim and refund keys and its preimage stay in this Mark home (`~/.mark/bitcoin/swaps/`, encrypted, files 0600), derived from the agent key. Claim from the same Mark home. Mark holds no API secret: only the public referral ID.
 - Before showing anything to pay, Mark checks Satora's swap: it is a new unpaid swap from the source you chose to the token and chain you chose (Arbitrum One), the payout address is yours, the amount is what you asked for, the stablecoin amount it promises is at most 1% below the quote, and the invoice (this network, that amount) or Ark address is valid. Otherwise it refuses with `SWAP_FAILED`.
+- **Expected vs received.** At create Mark shows `expectedReceive`, Satora's estimate: the BTC is locked as a BTC token and swapped into the stablecoin on a DEX when it is claimed, so the amount that arrives can be a little different (a live 5,000-sat swap: 3.03146 USDC expected, 3.022431 arrived). After the payout, `received` (and `receivedUnits`) is read from the payout transaction's token transfer to your address; if the receipt cannot be read yet, `receivedNote` says so and no amount is claimed.
 - `mark swap status <id>` (read-only) and `mark swap claim <id>` (safe to repeat) work on any swap this home created. Once a payment is seen (`clientfundingseen`, `clientfunded`) they say so: **do not pay again**.
 
 **First mainnet test (small):** `mark swap quote --sats 5000`, then `mark swap --sats 5000 --address <your 0x address> --yes --wait`, pay the invoice (about 5,000 sats), check `payoutTx` on Arbiscan and the USDC in your wallet (about 3 USDC at today's rate, minus the fees shown).
+
+### Stablecoins back to BTC (gasless)
+
+`mark swap --from usdc|usdt0 --to lightning|arkade` swaps USDC or USDT0 on Arbitrum One into BTC. **Gasless: you need no EVM wallet in Mark and no ETH.** Same 0.5% Agent Escrow fee, same referral ID and `extraFees` on the quote and the swap, same 100 bps cap; the quote shows the fee in sats (`fees.agentEscrowMarkupSats`).
+
+```sh
+# quote (free): send 1.5 USDC, paid out over Lightning
+mark swap quote --from usdc --to lightning --amount 1.5
+# Lightning payout to an invoice you made (the invoice fixes the sats; no --amount)
+mark swap --from usdc --to lightning --invoice lnbc24200n1… --yes --wait
+# or to a Lightning address, sending an exact token amount (fees come out of it)
+mark swap --from usdt0 --to lightning --address you@example.com --amount 1.5 --yes --wait
+# or to an Ark address from an Arkade wallet on https://arkade.computer
+mark swap --from usdc --to arkade --address ark1… --amount 1.5 --yes --wait
+```
+
+How it works:
+
+1. Mark creates the swap with `gasless: true`. The depositor is this Mark home's own EVM key, derived from the agent key and kept in the encrypted swap storage (`~/.mark/bitcoin/swaps/`), never printed.
+2. Before showing anything, Mark checks Satora's answer: a new gasless swap on Arbitrum One (chain 42161), from the token you chose (its contract), depositing to this Mark home's own address, for exactly the `--amount` (or at most 1% above the quote for an invoice), paying out to your invoice, Lightning address (its invoice must ask the swap's sats) or Ark address (on the swap's Arkade server), with the sats at most 1% below the quote. Otherwise `SWAP_FAILED`: deposit nothing.
+3. It prints `deposit`: `address`, `amount`, `token`, `contract`, `chainId`. **Send that amount of that token on Arbitrum One to that address, in ONE transfer**, from any wallet or exchange that sends ERC-20s on Arbitrum. If the address already holds some of the token, `deposit.send` is only the missing part ("send NOTHING" if it holds enough).
+4. Once the deposit is there, Mark signs the Permit2 authorization (and an EIP-2612 permit if the token needs one) and Satora's relay submits the lock (`fundSwapGasless`). With `--wait` Mark watches the address and does this itself; else run `mark swap fund <id> [--wait]`. It funds **at most once**: concurrent calls share one funding, and after a submitted funding Mark does not sign again for 10 minutes. Once funds are seen, Mark never tells anyone to deposit again.
+5. Satora pays the invoice (Lightning) or funds the Ark payout, which Mark claims to your Ark address. `--wait` (default `--timeout` 1800 s) ends with `"swap":"done"`.
+
+All swaps from a stablecoin in one Mark home share that deposit address, so Mark allows one waiting deposit at a time (`SWAP_OPEN_DEPOSIT`).
+
+**Recovery.** If the swap ends without a payout after the deposit was locked, `mark swap refund <id>` (no `--to`) gets it back to the deposit address, gasless: Satora's collaborative refund first, else the sponsored refund after the timelock. Stablecoins sitting at the deposit address (never locked, or refunded) are sent to your own address with `mark swap recover <id> --to <your 0x address>`. That is a normal ERC-20 transfer from the deposit address, so it needs a little Arbitrum ETH there for gas; Mark says how much (about 0.00001 ETH) and moves nothing until it is there. `mark swap status <id>` shows the deposit seen so far and the next step.
+
+Not supported: funding from your own EVM wallet with a key file (the gasless path needs no wallet), and on-chain bitcoin payouts.
 
 ## 7. Command reference
 
@@ -423,7 +453,11 @@ Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL` (https; http onl
 | `mark swap [--from lightning\|arkade] [--to usdc\|usdt0] --sats N --address 0x… [--yes] [--wait] [--timeout sec]` | Preview (no `--yes`), or create the swap: prints the invoice / Ark address to pay; `--wait` claims and prints `payoutTx`. Includes a 0.5% Agent Escrow fee |
 | `mark swap status <id>` | Swap status (read-only), amount, `payoutTx` once claimed |
 | `mark swap claim <id> [--wait] [--timeout sec]` | Claim a paid swap's stablecoins to its address (safe to repeat) |
+| `mark swap --from usdc\|usdt0 --to lightning\|arkade (--invoice <bolt11> \| --address <lightning or ark address> --amount <tokens>) [--yes] [--wait] [--timeout sec]` | Stablecoin → BTC, gasless: preview (no `--yes`), or create the swap and print the deposit address, exact amount and token; `--wait` funds it once the deposit is there and waits for the payout |
+| `mark swap fund <id> [--wait] [--timeout sec]` | Swap from a stablecoin: lock the deposit into the swap (gasless, at most once) |
 | `mark swap refund <id> --to <ark address>` | Arkade-funded swap that did not pay out: refund after its timelock |
+| `mark swap refund <id>` | Swap from a stablecoin whose locked deposit did not pay out: back to the deposit address (gasless) |
+| `mark swap recover <id> --to <0x address>` | Swap from a stablecoin: send the stablecoins at the deposit address to your address (needs a little Arbitrum ETH there) |
 
 Usage mistakes return `{"code":"USAGE","error":"…","details":{"usage":…}}` before any network call.
 
@@ -452,7 +486,10 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 | `swap_quote` (from?, to?, sats) | `swap quote` |
 | `swap_routes` | `swap routes` |
 | `swap_create` (from?, to?, sats, address, confirm?) | `swap` (creates the real swap only with `confirm: true`; then pay and call `swap_claim` with `wait: true`) |
-| `swap_status` (id), `swap_claim` (id, wait?), `swap_refund` (id, to) | `swap status`, `swap claim`, `swap refund` |
+| `swap_to_btc_quote` (from, to?, amount?, invoice?, address?) | `swap quote --from usdc\|usdt0` |
+| `swap_to_btc_create` (from, to?, amount?, invoice?, address?, confirm?) | `swap --from usdc\|usdt0` (creates the real swap only with `confirm: true`; then deposit once and call `swap_fund` with `wait: true`) |
+| `swap_fund` (id, wait?), `swap_recover` (id, to) | `swap fund`, `swap recover` |
+| `swap_status` (id), `swap_claim` (id, wait?), `swap_refund` (id, to?) | `swap status`, `swap claim`, `swap refund` |
 
 ## 9. Error codes
 
@@ -498,7 +535,8 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 | `BAD_MARKUP` | `mark swap`: the markup is not a whole number of bps from 0 to 100; nothing was sent |
 | `SWAP_AMOUNT` | `mark swap`: amount outside Satora's min/max for the pair (see `details.quote.limits`) |
 | `SWAP_UNSUPPORTED_NETWORK` | `mark swap` runs on bitcoin mainnet only |
-| `SWAP_FAILED` | Satora did not create the swap, or what it created does not match what you confirmed (payout address, amount, invoice / Ark address). **Do not pay it**; an unpaid swap just expires. Retry |
+| `SWAP_OPEN_DEPOSIT` | `mark swap` from a stablecoin: another swap of this Mark home still waits for its deposit at the same address; fund it or let it expire |
+| `SWAP_FAILED` | Satora did not create the swap, or what it created does not match what you confirmed (payout address, amount, invoice / Ark address, deposit address). **Do not pay or deposit**; an unpaid swap just expires. Retry |
 
 ## 10. Security notes
 

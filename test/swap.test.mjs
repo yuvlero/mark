@@ -36,7 +36,9 @@ function mockClient(o = {}) {
   };
   return { client, calls };
 }
-const provider = (client) => new SatoraProvider(client, "https://swap.test", "https://ark.test");
+/** The payout tx moved `received` units (default: exactly the expected 60.675562 USDC) to the payout address; no RPC in tests. */
+const provider = (client, received = 60675562n) => { const p = new SatoraProvider(client, "https://swap.test", "https://ark.test");
+  p.evm = { tokenBalance: async () => 0n, ethBalance: async () => 0n, gasPrice: async () => 1n, transferredTo: async () => received }; return p; };
 const ctxWith = (p, network = "bitcoin") => ({ network, cfg: { arkServerUrl: "https://arkade.computer" }, swaps: async () => p });
 
 // ---------- constants and cap ----------
@@ -136,7 +138,7 @@ test("after a claim, the output re-reads the swap: final status (serverredeemed)
   r = await sw.swapClaim(ctxWith(provider(m.client)), "sw-1", { wait: true, pollMs: 1 });
   assert.equal(r.status, "serverredeemed"); assert.equal(r.payoutTx, "0xpayout"); assert.deepEqual(m.calls.claim, ["sw-1"]);
   // same field names as before
-  assert.deepEqual(Object.keys(r), ["id", "status", "swap", "payoutTx", "explorer", "note"]);
+  assert.deepEqual(Object.keys(r), ["id", "status", "swap", "payoutTx", "explorer", "received", "receivedUnits", "note"]);
 });
 test("after a claim, a re-read that stays in progress or fails falls back to the claim-time status without failing", async () => {
   // still serverfunded on every re-read: claim-time status, payout tx from the claim, a bounded number of re-reads
@@ -158,8 +160,22 @@ test("claim failure stops at once with the reason and says not to pay again", as
 });
 test("swap status: read-only, token amount and explorer link; never claims", async () => {
   const { client, calls } = mockClient({ statuses: ["serverredeemed"] }); const r = await sw.swapStatus(ctxWith(provider(client)), "sw-1");
-  assert.equal(r.status, "serverredeemed"); assert.equal(r.receive, "60.675562"); assert.equal(r.token, "USDC"); assert.equal(r.payoutTx, "0xpayout"); assert.equal(r.raw, undefined);
+  assert.equal(r.status, "serverredeemed"); assert.equal(r.expectedReceive, "60.675562"); assert.equal(r.received, "60.675562"); assert.equal(r.token, "USDC"); assert.equal(r.payoutTx, "0xpayout"); assert.equal(r.raw, undefined);
+  assert.equal(r.receive, undefined, "no unlabelled amount");
   assert.equal(calls.claim.length, 0);
+});
+test("received amount: read from the payout tx, never the create-time estimate (live: 3.03146 expected, 3.022431 arrived)", async () => {
+  // Satora swaps the locked BTC token on a DEX at claim: what arrives can be less than target_amount
+  let { client } = mockClient({ statuses: ["pending", "serverfunded", "serverredeemed"] }); const seen = [];
+  let r = await sw.swapRun(ctxWith(provider(client, 60500000n)), { sats: 100000, address: ADDR, confirm: true, wait: true, pollMs: 1, onProgress: (x) => seen.push(x) });
+  assert.equal(seen[0].expectedReceive, "60.675562"); assert.equal(seen[0].receive, undefined); assert.match(seen[0].receiveNote, /estimate/);
+  assert.equal(r.received, "60.5"); assert.equal(r.receivedUnits, "60500000");
+  ({ client } = mockClient({ statuses: ["serverredeemed"] }));
+  r = await sw.swapStatus(ctxWith(provider(client, 60500000n)), "sw-1"); assert.equal(r.received, "60.5"); assert.equal(r.expectedReceive, "60.675562");
+  r = await sw.swapClaim(ctxWith(provider(client, 60500000n)), "sw-1"); assert.equal(r.received, "60.5");
+  // receipt not readable: no amount is claimed, a note says so
+  const p = provider(client); p.evm.transferredTo = async () => undefined;
+  r = await sw.swapStatus(ctxWith(p), "sw-1"); assert.equal(r.received, undefined); assert.match(r.receivedNote, /could not be read/);
 });
 test("mainnet only: mutinynet refuses before any Satora call", async () => {
   const { client, calls } = mockClient();
@@ -192,7 +208,7 @@ test("CLI: mark swap usage checks before any key or network access", () => {
   assert.match(chk(["swap", "quote", "--sats", "1000", "--to", "dai"]).message, /usdc or usdt0/);
   assert.match(chk(["swap", "quote", "--sats", "1000", "--yes"]).message, /--yes is only/);
   assert.match(chk(["swap", "status"]).message, /swap id required/);
-  assert.match(chk(["swap", "refund", "id1"]).message, /--to/);
+  assert.equal(chk(["swap", "refund", "id1"]), null); // a swap from a stablecoin refunds with no --to (an Arkade one is checked after the lookup)
   assert.match(chk(["swap", "frobnicate"]).message, /unknown swap subcommand/);
   assert.deepEqual(helpFor(["swap", "quote"], { help: true }, "x"), { usage: SWAP_USAGE.quote });
   assert.deepEqual(helpFor(["swap"], { help: true }, "x"), { usage: SWAP_USAGE });
@@ -249,7 +265,7 @@ test("create: a swap that does not match what was confirmed is refused before an
   }
   // a payout within 1% of the quote is fine and shown as the actual promised amount
   const near = await sw.swapRun(ctxWith(provider(mockClient({ tamper: { target_amount: "60100000" } }).client)), { sats: 100000, address: ADDR, confirm: true });
-  assert.equal(near.receive, "60.1");
+  assert.equal(near.expectedReceive, "60.1");
   // address case differences are fine; an Arkade swap shows the Ark address and exact sats
   const ok = await sw.swapRun(ctxWith(provider(mockClient({ tamper: { target_evm_address: ADDR.toLowerCase() } }).client)), { from: "arkade", sats: 100000, address: ADDR, confirm: true });
   assert.equal(ok.arkAddress, VHTLC); assert.equal(ok.amountSats, 100000); assert.match(ok.howToPay, /swap refund sw-1/);
@@ -282,19 +298,23 @@ test("stable claims of different swaps run one at a time (same per-process seria
 });
 
 // ---------- mark swap routes (read-only) ----------
-test("swap routes: every SWAP_SOURCES x SWAP_TARGETS route with Satora's live min/max; quotes only, never creates", async () => {
+test("swap routes: every route both ways (SWAP_SOURCES x SWAP_TARGETS, then back) with Satora's live min/max; quotes only, never creates", async () => {
   const { client, calls } = mockClient(); const q = client.getQuote;
-  client.getQuote = async (p) => ({ ...(await q(p)), min_amount: p.sourceChain === "Arkade" ? 335 : 356 });
+  client.getQuote = async (p) => ({ ...(await q(p)), min_amount: p.sourceChain === "Arkade" || p.targetChain === "Arkade" ? 335 : 356 });
   const r = await sw.swapRoutes(ctxWith(provider(client)));
-  assert.deepEqual(r.routes.map((x) => `${x.from}->${x.to}`), Object.keys(SWAP_SOURCES).flatMap((f) => Object.keys(SWAP_TARGETS).map((t) => `${f}->${t}`)));
-  assert.equal(r.routes.length, 4);
+  const fwd = Object.keys(SWAP_SOURCES).flatMap((f) => Object.keys(SWAP_TARGETS).map((t) => `${f}->${t}`)), back = Object.keys(SWAP_TARGETS).flatMap((f) => Object.keys(SWAP_SOURCES).map((t) => `${f}->${t}`));
+  assert.deepEqual(r.routes.map((x) => `${x.from}->${x.to}`), [...fwd, ...back]);
+  assert.equal(r.routes.length, 8);
   for (const x of r.routes) {
-    const t = SWAP_TARGETS[x.to];
-    assert.deepEqual({ source: x.source, token: x.token, chain: x.chain, chainId: x.chainId, contract: x.contract }, { source: SWAP_SOURCES[x.from].chain, token: t.symbol, chain: t.network, chainId: Number(t.chain), contract: t.tokenId });
-    assert.deepEqual(x.limits, { minSats: x.from === "arkade" ? 335 : 356, maxSats: 20000000 }); assert.equal(x.limitsNote, undefined);
+    const fw = x.direction === "btc_to_stablecoin"; const t = SWAP_TARGETS[fw ? x.to : x.from]; const rail = fw ? x.from : x.to;
+    assert.deepEqual({ rail: fw ? x.source : x.target, token: x.token, chain: x.chain, chainId: x.chainId, contract: x.contract }, { rail: SWAP_SOURCES[rail].chain, token: t.symbol, chain: t.network, chainId: Number(t.chain), contract: t.tokenId });
+    assert.deepEqual(x.limits, { minSats: rail === "arkade" ? 335 : 356, maxSats: 20000000 }); assert.equal(x.limitsNote, undefined);
   }
-  assert.equal(calls.getQuote.length, 4); assert.equal(calls.createSwap.length, 0); assert.equal(calls.claim.length, 0);
+  assert.deepEqual(r.routes.map((x) => x.direction), [...Array(4).fill("btc_to_stablecoin"), ...Array(4).fill("stablecoin_to_btc")]);
+  assert.equal(calls.getQuote.length, 8); assert.equal(calls.createSwap.length, 0); assert.equal(calls.claim.length, 0);
   for (const g of calls.getQuote) { assert.equal(g.referralCode, SWAP_REFERRAL_ID); assert.equal(g.extraFees, SWAP_MARKUP_BPS); }
+  // the reverse probes quote a stablecoin source amount on Arbitrum
+  for (const g of calls.getQuote.slice(4)) { assert.equal(g.sourceChain, "42161"); assert.equal(g.targetToken, "btc"); assert.equal(String(g.sourceAmount), "10000000"); }
   assert.deepEqual(r.markup, { bps: 50, percent: "0.5%", note: "Every swap includes a 0.5% Agent Escrow fee, on top of Satora's fee. Paid inside the swap; nothing extra to send." });
   assert.equal(r.referral, SWAP_REFERRAL_ID);
 });
@@ -313,20 +333,20 @@ test("swap routes: a failed or incomplete limits lookup still lists every route,
     const x = await sw.swapRoutes(ctxWith(provider(m.client))); assert.ok(x.routes.every((y) => y.limits === "unavailable"), JSON.stringify(bad));
   }
   assert.equal(calls.createSwap.length, 0);
-  // the provider cannot even be opened: all four listed, all unavailable
+  // the provider cannot even be opened: all eight listed, all unavailable
   r = await sw.swapRoutes({ network: "bitcoin", cfg: {}, swaps: async () => { throw new Error("no provider"); } });
-  assert.equal(r.routes.length, 4); assert.ok(r.routes.every((x) => x.limits === "unavailable" && /no provider/.test(x.limitsNote)));
+  assert.equal(r.routes.length, 8); assert.ok(r.routes.every((x) => x.limits === "unavailable" && /no provider/.test(x.limitsNote)));
   // mutinynet: no Satora stablecoin routes, so no lookup at all
   ({ client, calls } = mockClient());
   r = await sw.swapRoutes(ctxWith(provider(client), "mutinynet"));
-  assert.equal(r.routes.length, 4); assert.ok(r.routes.every((x) => x.limits === "unavailable" && /mainnet only/.test(x.limitsNote))); assert.equal(calls.getQuote.length, 0);
+  assert.equal(r.routes.length, 8); assert.ok(r.routes.every((x) => x.limits === "unavailable" && /mainnet only/.test(x.limitsNote))); assert.equal(calls.getQuote.length, 0);
 });
 test("swap routes CLI: takes no amount / address / wait flags; --json is fine; help shows its usage", () => {
   assert.equal(checkSwapArgs("routes", undefined, {}), null); assert.equal(checkSwapArgs("routes", undefined, { json: true }), null);
   for (const f of [{ sats: "5" }, { address: ADDR }, { from: "lightning" }, { to: "usdc" }, { wait: true }, { yes: true }, { timeout: "5" }]) assert.equal(checkSwapArgs("routes", undefined, f)?.code, "USAGE", JSON.stringify(f));
   assert.match(helpFor(["swap", "routes"], { help: true }, "x").usage, /^mark swap routes/); assert.ok("routes" in SWAP_USAGE);
 });
-test("MCP swap_routes: listed with no required arguments; a call returns all four routes (mutinynet: no Satora lookup, limits unavailable)", async () => {
+test("MCP swap_routes: listed with no required arguments; a call returns all eight routes (mutinynet: no Satora lookup, limits unavailable)", async () => {
   tmpHome(); const CLI = new URL("../dist/src/cli.js", import.meta.url).pathname;
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("npm_")));
   const t = new StdioClientTransport({ command: process.execPath, args: [CLI, "mcp", "--network", "mutinynet", "--escrow-url", "http://127.0.0.1:9"], env, stderr: "ignore" });
@@ -336,7 +356,7 @@ test("MCP swap_routes: listed with no required arguments; a call returns all fou
     assert.ok(tool, "swap_routes is registered"); assert.deepEqual(tool.inputSchema.required ?? [], []); assert.deepEqual(Object.keys(tool.inputSchema.properties ?? {}), []);
     assert.match(tool.description, /Read-only: nothing is created/); assert.match(tool.description, /0\.5% Agent Escrow fee/);
     const r = JSON.parse((await cl.callTool({ name: "swap_routes", arguments: {} })).content[0].text);
-    assert.deepEqual(r.routes.map((x) => `${x.from}->${x.to}`), ["lightning->usdc", "lightning->usdt0", "arkade->usdc", "arkade->usdt0"]);
+    assert.deepEqual(r.routes.map((x) => `${x.from}->${x.to}`), ["lightning->usdc", "lightning->usdt0", "arkade->usdc", "arkade->usdt0", "usdc->lightning", "usdc->arkade", "usdt0->lightning", "usdt0->arkade"]);
     assert.ok(r.routes.every((x) => x.limits === "unavailable")); assert.equal(r.markup.percent, "0.5%"); assert.equal(r.referral, SWAP_REFERRAL_ID);
   } finally { await cl.close(); }
 });
