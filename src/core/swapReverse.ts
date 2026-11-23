@@ -195,8 +195,11 @@ function pinned(s: Rev, x: ReverseSwapInfo, mode: "show" | "act" | "return"): Re
     if (pin.depositAddress.toLowerCase() !== mine.toLowerCase()) bad(`confirmed deposit address ${pin.depositAddress} is not this Mark home's`);
     if (pin.tokenContract.toLowerCase() !== String(x.tokenContract ?? "").toLowerCase()) bad(`token ${x.tokenContract}`);
     if (pin.sourceUnits !== x.sourceUnits) bad(`deposit amount ${x.sourceUnits} units, confirmed ${pin.sourceUnits}`);
-    if (pin.arkAddress && x.arkAddress !== undefined && x.arkAddress !== pin.arkAddress) bad(`payout address ${x.arkAddress}, confirmed ${pin.arkAddress}`);
-    if (pin.invoice && x.invoice !== undefined && x.invoice.toLowerCase() !== pin.invoice.toLowerCase()) bad("the invoice Satora pays is not the confirmed one");
+    const ln = !!pin.invoice, want = ln ? SWAP_SOURCES.lightning.chain : SWAP_SOURCES.arkade.chain;
+    if (x.targetChain !== want) bad(`payout chain ${x.targetChain}, confirmed ${want}`);
+    if (x.direction !== undefined && x.direction !== (ln ? "evm_to_lightning" : "evm_to_arkade")) bad(`direction ${x.direction}`);
+    if (ln && String(x.invoice ?? "").toLowerCase() !== pin.invoice!.toLowerCase()) bad("the invoice Satora pays is not the confirmed one");
+    if (!ln && x.arkAddress !== pin.arkAddress) bad(`payout address ${x.arkAddress}, confirmed ${pin.arkAddress}`);
   } else if (mode === "act") bad("this Mark home has no record of what was confirmed at create");
   // "return" (refund, recover) works without the record: it only moves funds back through this home's own key to an address you give
   return { ...x, depositAddress: mine, ...(pin?.arkAddress ? { arkAddress: pin.arkAddress } : {}) };
@@ -237,10 +240,13 @@ export async function waitReverse(s: Rev, id: string, o: { timeoutSec?: number; 
   return { id, status: last, timeout: true, ...(fund?.txHash ? { fundTx: fund.txHash } : {}), note: `timeout at swap status ${last}. Check ${mk()} swap status ${id}; ${last === "pending" && !fund?.success ? `once the deposit is there run ${mk()} swap fund ${id}.` : "it continues without Mark."} ${DO_NOT_RESEND}` };
 }
 
+/** A swap's state without anything one could deposit to (address, amount, token): for swaps this home cannot vouch for. */
+const noDeposit = (x: ReverseSwapInfo) => ({ id: x.id, status: x.status, direction: x.direction, targetChain: x.targetChain, local: x.local,
+  ...(x.fundTx ? { fundTx: x.fundTx } : {}), ...(x.payoutTx ? { payoutTx: x.payoutTx } : {}), ...(x.lightningSettled !== undefined ? { lightningSettled: x.lightningSettled } : {}) });
 /** Status of a swap from a stablecoin (read-only), with the deposit seen so far while it waits for funding. */
 export async function reverseStatus(s: Rev, x0: ReverseSwapInfo) {
-  if (!x0.local) { notReverse(x0); const { raw: _r, ...i } = x0; return { ...i, next: "This Mark home did not create this swap: it shows no deposit instructions for it. Check it from the Mark home that created it." }; }
-  if (!s.reversePin(x0.id)) { notReverse(x0); const { raw: _r, ...i } = x0; return { ...i, next: `This Mark home has no record of what was confirmed when this swap was created, so it shows no deposit instructions. If you deposited, get it back with ${mk()} swap recover ${x0.id} --to <your 0x address>.` }; }
+  if (!x0.local) { notReverse(x0); return { ...noDeposit(x0), next: "This Mark home did not create this swap: it shows no deposit instructions for it. Check it from the Mark home that created it." }; }
+  if (!s.reversePin(x0.id)) { notReverse(x0); return { ...noDeposit(x0), next: `This Mark home has no record of what was confirmed when this swap was created, so it shows no deposit instructions. If you deposited, get it back with ${mk()} swap recover ${x0.id} --to <your 0x address>.` }; }
   const x = pinned(s, x0, "show"); const { raw: _raw, ...info } = x; const t = tokenOf(x);
   const out: any = { ...info, ...(t ? { token: t.symbol, depositAmount: units(x.sourceUnits, t.decimals) } : {}), ...(x.fundTx ? { fundExplorer: ARBISCAN_TX + x.fundTx } : {}) };
   if (x.status === "pending" && !x.fundTx) {
@@ -291,6 +297,7 @@ export async function reverseRecover(c: Ctx, id: string, to: string | undefined)
   return s.exclusive(async () => {
     // re-read under the lock: a funding that took the lock first is seen here, before anything is swept
     const x = pinned(s, await s.getReverse(id), "return"); const at = s.fundAttemptedAt(id);
+    if (String(x.tokenContract ?? "").toLowerCase() !== t.tokenId.toLowerCase()) throw new MarkError("SWAP_FAILED", `swap ${id} changed token while recovering (${x.tokenContract}); nothing was moved`);
     if (x.status === "pending" && at !== undefined && Date.now() - at < 10 * 60 * 1000) throw new MarkError("SWAP_FUNDING", "a funding of this swap was just submitted: wait for it (mark swap status) before recovering");
     const others = (await s.openReverse()).filter((o) => o.id !== id && String(o.tokenContract).toLowerCase() === t.tokenId.toLowerCase());
     if (others.length) throw new MarkError("SWAP_OPEN_DEPOSIT", `swap ${others[0].id} is waiting for a ${t.symbol} deposit at the same address: recovering now would take its deposit too. Finish it or let it expire first.`);

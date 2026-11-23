@@ -369,3 +369,16 @@ test("fund refuses without signing: invoice near expiry, no create record; a use
   e = await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true }).catch((x) => x);
   assert.equal(e.code, "SWAP_FAILED"); assert.match(e.message, /direction/); assert.ok(!JSON.stringify(e).includes(DEP));
 });
+
+test("later reads fail closed: a dropped invoice or a switch to Ark is refused; status for an unvouched swap carries no deposit fields", async () => {
+  for (const mutate of [(r) => { delete r.client_lightning_invoice; }, (r) => { r.direction = "evm_to_arkade"; r.target_token = { chain: "Arkade", token_id: "btc" }; r.target_arkade_address = payoutArk(8, "ark"); delete r.client_lightning_invoice; }]) {
+    const m = mockClient(); await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
+    mutate(m.stored["rv-1"].response);
+    const e = await sw.swapFund(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1", { wait: true, pollMs: 1, timeoutSec: 2 }).catch((x) => x);
+    assert.equal(e.code, "SWAP_FAILED"); assert.equal(m.calls.fund.length, 0);
+  }
+  const m = mockClient(); await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
+  const st = await sw.swapStatus(ctxWith(provider(m.client, { dir: fs.mkdtempSync(path.join(os.tmpdir(), "mark-rev-")) })), "rv-1");
+  for (const k of ["depositAddress", "sourceUnits", "tokenContract", "deposit", "invoice"]) assert.ok(!(k in st), k);
+  assert.ok(!JSON.stringify(st).includes(DEP));
+});
