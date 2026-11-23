@@ -480,3 +480,10 @@ test("fund re-validates every pinned term on its own read under the lock; recove
   p.getReverse = async (id) => id === "rv-other" ? { ...(await get("rv-1")), id: "rv-other", status: "pending", fundTx: undefined } : get(id);
   const e = await sw.swapRecover(ctxWith(p), "rv-1", ME).catch((x) => x); assert.equal(e.code, "SWAP_FUNDING"); assert.match(e.message, /rv-other/); assert.equal(m.calls.recover.length, 0);
 });
+
+test("a partial create record refuses with SWAP_FAILED, never a crash or a funding", async () => {
+  const m = mockClient(); await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
+  fs.writeFileSync(path.join(homeOf(m.client), "reverse-pins.json"), JSON.stringify({ "rv-1": { depositAddress: DEP } }));
+  const e = await sw.swapFund(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1").catch((x) => x);
+  assert.equal(e.code, "SWAP_FAILED"); assert.equal(m.calls.fund.length, 0);
+});

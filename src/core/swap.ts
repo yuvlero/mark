@@ -182,7 +182,7 @@ async function done(s: SwapProvider, id: string, status: string, tx?: string, x?
     const t = Object.values(SWAP_TARGETS).find((v) => v.tokenId.toLowerCase() === String(info?.tokenContract ?? "").toLowerCase());
     got = t && info?.targetAddress ? await arrived(s, tx, t.tokenId, info.targetAddress, t.decimals) : { receivedNote: "the amount that arrived could not be read: see the explorer link" };
   }
-  return { id, status, swap: "done", ...(tx ? { payoutTx: tx, explorer: ARBISCAN_TX + tx } : {}), ...got, note: got.reverted ? "The payout transaction reverted: nothing was sent from it. Check mark swap status."
+  return { id, status, swap: "done", ...(tx ? { payoutTx: tx, explorer: ARBISCAN_TX + tx } : {}), ...got, ...(got.reverted || got.receivedUnits === "0" ? { payoutFailed: true } : {}), note: got.reverted ? "The payout transaction reverted: nothing was sent from it. Check mark swap status."
     : got.receivedUnits === "0" ? "The payout transaction moved none of the token to your address: inspect it with the explorer link and mark swap status."
     : got.receivedNote ? "Satora reports the payout sent; the amount that arrived could not be read yet (explorer link)."
     : tx ? "Stablecoins sent to your address." : "Claimed; the payout tx id is not known yet: check mark swap status." };

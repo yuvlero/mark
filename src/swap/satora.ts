@@ -246,7 +246,7 @@ export class SatoraProvider implements SwapProvider {
   private pinsFile() { return this.dir ? path.join(this.dir, "reverse-pins.json") : undefined; }
   private readPins(): Record<string, ReversePin> {
     const f = this.pinsFile(); if (!f || !fs.existsSync(f)) return this.pins;
-    return { ...readRecord(f, "reverse-pins.json", (v) => !!v && typeof v === "object" && typeof (v as any).depositAddress === "string"), ...this.pins };
+    return { ...readRecord(f, "reverse-pins.json", validPin), ...this.pins };
   }
   pinReverse(id: string, pin: ReversePin) {
     const a = { ...this.readPins(), [id]: pin }; this.pins = a;
@@ -345,6 +345,12 @@ export class SatoraProvider implements SwapProvider {
 
 /** A record file in the swaps dir: missing -> empty; unreadable or malformed -> refuse (never treated as empty, which would
  *  forget a funding already submitted or the terms confirmed at create). */
+function validPin(v: unknown): boolean {
+  const p = v as any;
+  return !!p && typeof p === "object" && typeof p.depositAddress === "string" && typeof p.tokenContract === "string" && /^\d+$/.test(String(p.sourceUnits ?? ""))
+    && (typeof p.invoice === "string") !== (typeof p.arkAddress === "string")
+    && (p.targetSats === undefined || Number.isSafeInteger(p.targetSats)) && (p.evmChainId === undefined || Number.isSafeInteger(p.evmChainId));
+}
 function readRecord(f: string, name: string, ok: (v: unknown) => boolean): Record<string, any> {
   let v: any; try { v = JSON.parse(fs.readFileSync(f, "utf8")); } catch (e: any) { if (e?.code === "ENOENT") return {}; v = undefined; }
   if (!v || typeof v !== "object" || Array.isArray(v) || !Object.values(v).every(ok))
