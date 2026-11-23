@@ -52,6 +52,7 @@ function payInstructions(from: SwapSource, x: { id: string; invoice?: string; ar
 export async function swapRun(c: Ctx, i: SwapRunInput) {
   mainnetOnly(c); const p = parse(i); const address = checkEvmAddress(i.address); const t = SWAP_TARGETS[p.to]; const s = await stable(c);
   const q = await s.quoteStable(p);
+  if (!/^\d+$/.test(String(q.net_target_amount ?? "")) || BigInt(q.net_target_amount) <= 0n) throw new MarkError("QUOTE_UNAVAILABLE", "Satora's quote has no payout amount; nothing was created. Retry later.");
   const quote = formatSwapQuote(q, p);
   if (p.sats < q.min_amount || p.sats > q.max_amount) throw new MarkError("SWAP_AMOUNT", `Satora accepts ${q.min_amount}..${q.max_amount} sats for ${p.from} -> ${t.symbol}`, { quote });
   if (!i.confirm) return { swap: "preview", quote, payoutAddress: address,
@@ -81,7 +82,7 @@ function checkCreated(c: Ctx, p: { from: SwapSource; to: SwapTarget; sats: numbe
   if (!Number.isSafeInteger(x.payAmountSats) || x.payAmountSats !== p.sats) bad(`amount ${x.payAmountSats} sats is not ${p.sats}`);
   // the stablecoin amount it promises: a whole positive number of token units, at most SWAP_MAX_SLIPPAGE_BPS below the quote shown
   if (!/^\d+$/.test(String(x.receiveUnits ?? "")) || BigInt(x.receiveUnits!) <= 0n) bad(`payout amount ${x.receiveUnits} is not a positive token amount`);
-  if (/^\d+$/.test(String(quotedUnits ?? "")) && BigInt(x.receiveUnits!) * 10000n < BigInt(quotedUnits) * BigInt(10000 - SWAP_MAX_SLIPPAGE_BPS))
+  if (!/^\d+$/.test(String(quotedUnits ?? "")) || BigInt(x.receiveUnits!) * 10000n < BigInt(quotedUnits) * BigInt(10000 - SWAP_MAX_SLIPPAGE_BPS))
     bad(`payout ${units(x.receiveUnits, tgt.decimals)} ${tgt.symbol} is more than ${pct(SWAP_MAX_SLIPPAGE_BPS)} below the quote (${units(quotedUnits, tgt.decimals)})`);
   if (p.from === "lightning") {
     if (!x.invoice || !networkOk(x.invoice, c.network)) bad("no Lightning invoice for this network");

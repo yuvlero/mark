@@ -66,7 +66,7 @@ export function checkEvmAddress(a: string | undefined): string {
 
 /** "60828794" (6 decimals) -> "60.828794". */
 export function units(v: string | number | bigint | undefined, decimals: number): string | undefined {
-  if (v === undefined || v === null || v === "") return undefined;
+  if (v === undefined || v === null || !/^\d+$/.test(String(v))) return undefined;
   const s = BigInt(String(v)).toString().padStart(decimals + 1, "0");
   const i = s.slice(0, s.length - decimals), f = s.slice(s.length - decimals).replace(/0+$/, "");
   return f ? `${i}.${f}` : i;

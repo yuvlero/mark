@@ -107,6 +107,13 @@ test("mark swap quote: referral ID + extraFees sent; out-of-range amounts flagge
   assert.match((await sw.swapQuote(c, { sats: 100 })).note, /out of range/);
   await assert.rejects(sw.swapRun(c, { sats: 100, address: ADDR, confirm: true }), (e) => e.code === "SWAP_AMOUNT"); assert.equal(calls.createSwap.length, 0);
 });
+test("a quote without a payout amount stops before anything is created", async () => {
+  for (const net_target_amount of [undefined, "", "0", "x"]) {
+    const { client, calls } = mockClient({ quote: { ...Q, net_target_amount }, tamper: { target_amount: "1" } });
+    await assert.rejects(sw.swapRun(ctxWith(provider(client)), { sats: 100000, address: ADDR, confirm: true }), (e) => e.code === "QUOTE_UNAVAILABLE", String(net_target_amount));
+    assert.equal(calls.createSwap.length, 0);
+  }
+});
 test("mark swap --wait: shows the invoice first, claims when serverfunded, returns the payout tx", async () => {
   const { client, calls } = mockClient({ statuses: ["pending", "clientfunded", "serverfunded", "serverredeemed"] }); const seen = [];
   const r = await sw.swapRun(ctxWith(provider(client)), { sats: 100000, address: ADDR, confirm: true, wait: true, pollMs: 1, onProgress: (x) => seen.push(x) });

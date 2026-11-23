@@ -176,6 +176,7 @@ export class SatoraProvider implements SwapProvider {
     const run = this.claimStableOnce(id).finally(() => this.claiming.delete(id));
     this.claiming.set(id, run); return run;
   }
+  /** stdoutToStderr runs through serial(): stable claims queue behind every other claim/refund in this process. */
   private async claimStableOnce(id: string) {
     try {
       const r: any = await stdoutToStderr(() => this.c.claim(id));
