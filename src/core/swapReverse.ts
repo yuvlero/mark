@@ -223,12 +223,15 @@ function nextNote(x: ReverseSwapInfo) {
 }
 
 /** Watch the deposit, fund once, then wait for the payout (claiming an Ark payout when Satora has funded it). */
-export async function waitReverse(s: Rev, id: string, o: { timeoutSec?: number; pollMs?: number }) {
+/** noFund (claim --wait): never funds; a swap still waiting for its funding is handed back with how to fund it. */
+export async function waitReverse(s: Rev, id: string, o: { timeoutSec?: number; pollMs?: number; noFund?: boolean }) {
   const end = Date.now() + (o.timeoutSec ?? 1800) * 1000; const poll = o.pollMs ?? 5000; let last = "unknown"; let fund: any; let claimed = false;
   while (Date.now() < end) {
     let x: ReverseSwapInfo; try { x = await s.getReverse(id); } catch { await sleep(poll); continue; }
     x = pinned(s, x, "act"); last = x.status;
     if (isDone(x)) return doneOut(x);
+    if (x.status === "pending" && !x.fundTx && !fund?.success && o.noFund)
+      return { id, status: x.status, funded: false, note: `Not funded yet: claim never funds a swap. Once the deposit is there, run ${mk()} swap fund ${id} --wait. If you already sent it, do NOT send again.` };
     if (x.status === "pending" && !x.fundTx && !fund?.success) {
       const f = await fundState(s, x);
       if (f.have !== undefined && f.have >= f.need && (f.attempted === undefined || Date.now() - f.attempted > 10 * 60 * 1000)) {

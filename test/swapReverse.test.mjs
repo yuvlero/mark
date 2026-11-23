@@ -406,3 +406,9 @@ test("two creates racing in one Mark home (two processes): the first is checked 
   assert.equal(ok.length, 1); assert.equal(bad.length, 1); assert.ok(["SWAP_OPEN_DEPOSIT", "BAD_INVOICE"].includes(bad[0].reason.code), bad[0].reason.code);
   assert.equal(m.calls.createSwap.length, 1);
 });
+
+test("claim --wait never funds: a pending swap is handed back with how to fund it", async () => {
+  const m = mockClient(); await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
+  const r = await sw.swapClaim(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1", { wait: true, pollMs: 1 });
+  assert.equal(r.funded, false); assert.match(r.note, /claim never funds .*swap fund rv-1 --wait/); assert.equal(m.calls.fund.length, 0);
+});

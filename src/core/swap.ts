@@ -216,7 +216,7 @@ export async function swapClaim(c: Ctx, id: string, o: { wait?: boolean; timeout
   let x: StableSwapInfo | undefined; let err: unknown;
   for (let i = 0; i < 3 && !x; i++) { if (i) await sleep(Math.min(o.pollMs ?? 2000, 2000)); try { x = await s.getStable(id); } catch (e) { err = e; } }
   if (!x) throw err;
-  if (/^evm_to_/.test(x.direction ?? "")) { const r = await reverse(c); return o.wait ? waitReverse(r, id, { timeoutSec: o.timeoutSec ?? 900, pollMs: o.pollMs }) : reverseClaim(r, await r.getReverse(id)); }
+  if (/^evm_to_/.test(x.direction ?? "")) { const r = await reverse(c); return o.wait ? waitReverse(r, id, { timeoutSec: o.timeoutSec ?? 900, pollMs: o.pollMs, noFund: true }) : reverseClaim(r, await r.getReverse(id)); }
   if (o.wait) return waitAndClaim(s, id, o);
   if (SWAP_DONE.has(x.status)) return done(s, id, x.status, x.payoutTx, x);
   if (!SWAP_CLAIMABLE.has(x.status)) return { id, status: x.status, claimed: false, note: SWAP_PAID.has(x.status) ? `Nothing to claim yet. ${PAID_NOTE} (${mk()} swap claim ${id} --wait claims as soon as it is funded)`
