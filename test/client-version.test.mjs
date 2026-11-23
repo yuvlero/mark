@@ -7,7 +7,7 @@ import { openCtx } from "../dist/src/core/context.js";
 import { EscrowApi, upgradeRequired, UPGRADE_HINT, safeUpgrade, plainText, houseHeader } from "../dist/src/api/escrowApi.js";
 import { MARK_VERSION, MARK_USER_AGENT } from "../dist/src/version.js";
 import { compareSemver, parseSemver, semverLt } from "../dist/src/core/semver.js";
-import { rememberPolicy, cachedPolicy, noticeFor, updateNotice, VERSION_POLICY_TTL_MS, RETRY_MS, NOTICE_TIMEOUT_MS } from "../dist/src/core/clientVersion.js";
+import { rememberPolicy, cachedPolicy, noticeFor, updateNotice, VERSION_POLICY_TTL_MS, RETRY_MS, NOTICE_TIMEOUT_MS, safeHighlights, HIGHLIGHTS_MAX } from "../dist/src/core/clientVersion.js";
 import { withNotice } from "../dist/src/mcp.js";
 import { tmpHome, mockFetch } from "./mockApi.mjs";
 
@@ -91,6 +91,39 @@ test("noticeFor: below latest -> soft notice; below min -> refused wording; curr
   assert.match(noticeFor({ minMarkVersion: null, latestMarkVersion: "0.3.0" }, URL_, "0.3.0-rc.1"), /available/);
 });
 
+test("noticeFor: optional latestMarkHighlights is appended display-only; missing or invalid leaves today's notice unchanged", () => {
+  const base = { minMarkVersion: null, latestMarkVersion: "0.5.0" };
+  const today = noticeFor(base, URL_, "0.4.3");
+  assert.match(today, /^Mark 0\.5\.0 is available \(this is 0\.4\.3\); the escrow server https:\/\/escrow\.test recommends updating before older versions stop working\. Update: /);
+  assert.ok(today.includes("npx -y @yuvlero/mark@latest"));
+  // the example shape: "Mark 0.5.0 is available (this is 0.4.3): adds `mark swap`, sats to USDC/USDT. Update: …"
+  const n = noticeFor({ ...base, latestMarkHighlights: "adds `mark swap`, sats to USDC/USDT" }, URL_, "0.4.3");
+  assert.match(n, /^Mark 0\.5\.0 is available \(this is 0\.4\.3\): adds `mark swap`, sats to USDC\/USDT\. Update: /);
+  assert.ok(n.includes("npx -y @yuvlero/mark@latest"));
+  assert.ok(!n.includes("recommends updating before older versions stop working"), "highlights replace the generic middle clause");
+  assert.equal(n.slice(n.indexOf("Update:")), today.slice(today.indexOf("Update:")), "upgrade instructions stay the same");
+  // already punctuated: no double period
+  assert.match(noticeFor({ ...base, latestMarkHighlights: "adds Lightning to Arkade." }, URL_, "0.4.3"), /: adds Lightning to Arkade\. Update:/);
+  // missing / empty / non-string / too-long raw: today's notice unchanged
+  for (const bad of [undefined, null, "", 12, true, "x".repeat(501)]) {
+    assert.equal(noticeFor({ ...base, latestMarkHighlights: bad }, URL_, "0.4.3"), today, String(bad).slice(0, 40));
+  }
+  assert.equal(noticeFor({ ...base, latestMarkHighlights: "adds mark swap" }, URL_, "0.5.0"), null, "current: no notice even with highlights");
+  const refused = noticeFor({ minMarkVersion: "0.5.0", latestMarkVersion: "0.5.0", latestMarkHighlights: "adds mark swap" }, URL_, "0.4.3");
+  assert.match(refused, /below the minimum 0\.5\.0.*UPGRADE_REQUIRED/);
+  assert.ok(!refused.includes("adds mark swap"), "highlights do not change the below-min wording");
+  // control / ANSI / bidi stripped, then capped; never interpreted
+  assert.equal(safeHighlights("adds \x1b[31mswap\x1b[0m\u202e"), "adds swap");
+  assert.equal(safeHighlights("  hello \n world  "), "hello world");
+  assert.equal(safeHighlights("A".repeat(HIGHLIGHTS_MAX + 10)), "A".repeat(HIGHLIGHTS_MAX));
+  assert.equal(safeHighlights(null), null); assert.equal(safeHighlights("x".repeat(501)), null);
+  const dirty = noticeFor({ ...base, latestMarkHighlights: "adds \x1b[2K`mark swap`" }, URL_, "0.4.3");
+  assert.match(dirty, /: adds `mark swap`\. Update:/);
+  assert.ok(!/\x1b/.test(dirty), "escapes must not reach the notice");
+  // rememberPolicy persists the sanitized line; a cached policy without the field still yields today's notice
+  // (Mark 0.4.3 / 0.5.0 only copied minMarkVersion, latestMarkVersion and upgrade, so they ignore this field)
+});
+
 test("version policy cache: per escrow URL, 6 h TTL, refreshed by any /limits fetch (no extra request)", async () => {
   const latest = bump(MARK_VERSION);
   const { c, f } = await ctx({ "GET /limits": () => [200, LIMITS({ minMarkVersion: null, latestMarkVersion: latest, refuseUnversioned: false, upgrade: UPGRADE_HINT })] });
@@ -103,6 +136,26 @@ test("version policy cache: per escrow URL, 6 h TTL, refreshed by any /limits fe
   assert.equal((fs.statSync(path.join(c.dir, "version-policy.json")).mode & 0o777), 0o600);
   assert.equal(cachedPolicy(c, Date.now() + VERSION_POLICY_TTL_MS + 1), null, "expired after 6 h");
   assert.equal(cachedPolicy({ ...c, cfg: { ...c.cfg, escrowUrl: "https://other.test" } }), null, "keyed by escrow URL");
+});
+
+test("version policy cache: latestMarkHighlights is stored sanitized and used by updateNotice", async () => {
+  const latest = bump(MARK_VERSION);
+  const raw = "  adds \x1b[31m`mark swap`\x1b[0m, sats to USDC/USDT  ";
+  const { c, f } = await ctx({ "GET /limits": () => [200, LIMITS({ minMarkVersion: null, latestMarkVersion: latest, latestMarkHighlights: raw, upgrade: UPGRADE_HINT })] });
+  await uc.limits(c);
+  const cached = cachedPolicy(c);
+  assert.equal(cached.latestMarkHighlights, "adds `mark swap`, sats to USDC/USDT");
+  const file = JSON.parse(fs.readFileSync(path.join(c.dir, "version-policy.json"), "utf8"));
+  assert.equal(file[URL_].latestMarkHighlights, "adds `mark swap`, sats to USDC/USDT");
+  const n = await updateNotice(c);
+  assert.match(n, new RegExp("^Mark " + latest.replace(/\./g, "\\.") + " is available \\(this is " + MARK_VERSION.replace(/\./g, "\\.") + "\\): adds `mark swap`, sats to USDC/USDT\\. Update:"));
+  assert.equal(f.calls.length, 1);
+  // a cached policy with no highlights field (what Mark 0.4.3 / 0.5.0 stored) still yields today's wording
+  rememberPolicy(c, LIMITS({ minMarkVersion: null, latestMarkVersion: latest, upgrade: UPGRADE_HINT }));
+  assert.equal(cachedPolicy(c).latestMarkHighlights, undefined);
+  const plain = await updateNotice(c);
+  assert.match(plain, /recommends updating before older versions stop working/);
+  assert.ok(!plain.includes("adds `mark swap`"));
 });
 
 test("updateNotice: stale cache -> one /limits (5 s), retried at most every 15 min; old server (404) cached as no policy; never throws", async () => {

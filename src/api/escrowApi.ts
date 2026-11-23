@@ -9,7 +9,7 @@ import { MARK_VERSION, MARK_USER_AGENT } from "../version.js";
 import type { DeadlineCountdown } from "../core/deadline.js";
 
 /** What the server says about Mark versions (GET /limits `client`; absent on older servers). */
-export interface ClientPolicy { minMarkVersion: string | null; latestMarkVersion: string | null; refuseUnversioned?: boolean; upgrade?: { command?: string; global?: string; mcp?: string } }
+export interface ClientPolicy { minMarkVersion: string | null; latestMarkVersion: string | null; latestMarkHighlights?: string | null; refuseUnversioned?: boolean; upgrade?: { command?: string; global?: string; mcp?: string } }
 /** Built-in upgrade instructions (the server's own `client.upgrade` is shown instead only if it passes safeUpgrade()). Mark never updates itself. */
 export const UPGRADE_HINT = { command: "npx -y @yuvlero/mark@latest", global: "npm install -g @yuvlero/mark@latest",
   mcp: 'MCP: in your MCP client config set the mark server\'s args to ["-y", "@yuvlero/mark@latest", "mcp"] (a bare @yuvlero/mark can keep running an old cached copy), then restart the MCP client.' };

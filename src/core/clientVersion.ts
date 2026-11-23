@@ -6,12 +6,21 @@
 import fs from "node:fs"; import path from "node:path";
 import { MARK_VERSION } from "../version.js";
 import { parseSemver, semverLt } from "./semver.js";
-import { safeUpgrade, type ClientPolicy, type Limits } from "../api/escrowApi.js";
+import { safeUpgrade, plainText, type ClientPolicy, type Limits } from "../api/escrowApi.js";
 import type { Ctx } from "./context.js";
 
 export const VERSION_POLICY_TTL_MS = 6 * 3600_000;
 /** attemptAt: last failed extra /limits attempt (ISO); kept across processes so a failing /limits is not retried on every CLI run. */
-type Entry = { fetchedAt: string; minMarkVersion: string | null; latestMarkVersion: string | null; upgrade?: ClientPolicy["upgrade"]; attemptAt?: string };
+type Entry = { fetchedAt: string; minMarkVersion: string | null; latestMarkVersion: string | null; latestMarkHighlights?: string; upgrade?: ClientPolicy["upgrade"]; attemptAt?: string };
+/** Max length of the display-only "what's new" line (matches the server cap). */
+export const HIGHLIGHTS_MAX = 140;
+/** The server's latestMarkHighlights, display-only: control/ANSI/bidi stripped, length capped, never interpreted. Missing or invalid → null. */
+export function safeHighlights(v: unknown, max = HIGHLIGHTS_MAX): string | null {
+  if (typeof v !== "string" || v.length > 500) return null;
+  const s = plainText(v);
+  if (!s) return null;
+  return s.slice(0, max);
+}
 const file = (c: Pick<Ctx, "dir">) => path.join(c.dir, "version-policy.json");
 function readAll(c: Pick<Ctx, "dir">): Record<string, Entry> { try { const j = JSON.parse(fs.readFileSync(file(c), "utf8")); return j && typeof j === "object" && !Array.isArray(j) ? j : {}; } catch { return {}; } }
 const ver = (v: unknown) => (typeof v === "string" && parseSemver(v) ? v : null);
@@ -23,7 +32,8 @@ export function rememberPolicy(c: Pick<Ctx, "dir" | "cfg">, l: Pick<Limits, "cli
   try {
     const p: any = l?.client && typeof l.client === "object" ? l.client : {};
     const up = p.upgrade && typeof p.upgrade === "object" ? { command: str(p.upgrade.command), global: str(p.upgrade.global), mcp: str(p.upgrade.mcp) } : undefined;
-    const all = readAll(c); all[url] = { fetchedAt: new Date(now).toISOString(), minMarkVersion: ver(p.minMarkVersion), latestMarkVersion: ver(p.latestMarkVersion), ...(up ? { upgrade: up } : {}) };
+    const hl = safeHighlights(p.latestMarkHighlights);
+    const all = readAll(c); all[url] = { fetchedAt: new Date(now).toISOString(), minMarkVersion: ver(p.minMarkVersion), latestMarkVersion: ver(p.latestMarkVersion), ...(hl ? { latestMarkHighlights: hl } : {}), ...(up ? { upgrade: up } : {}) };
     writeAll(c, all);
   } catch { /* a cache only */ }
 }
@@ -49,12 +59,19 @@ export function cachedPolicy(c: Pick<Ctx, "dir" | "cfg">, now = Date.now()): Ent
 }
 
 /** The notice text for `version` under policy `p`, or null when this Mark is current (or the server has no policy). */
-export function noticeFor(p: Pick<Entry, "minMarkVersion" | "latestMarkVersion" | "upgrade"> | null, escrowUrl: string, version = MARK_VERSION): string | null {
+export function noticeFor(p: Pick<Entry, "minMarkVersion" | "latestMarkVersion" | "latestMarkHighlights" | "upgrade"> | null, escrowUrl: string, version = MARK_VERSION): string | null {
   if (!p || !parseSemver(version)) return null;
   const up = safeUpgrade(p.upgrade); // the server's text only if it is a plain @yuvlero/mark command, else the built-in one
   const how = `Update: ${up.command} (global install: ${up.global}). ${up.mcp} Mark never updates itself.`;
   if (p.minMarkVersion && semverLt(version, p.minMarkVersion)) return `Mark ${version} is below the minimum ${p.minMarkVersion} of the escrow server ${escrowUrl}: it refuses this version (UPGRADE_REQUIRED). ${how}`;
-  if (p.latestMarkVersion && semverLt(version, p.latestMarkVersion)) return `Mark ${p.latestMarkVersion} is available (this is ${version}); the escrow server ${escrowUrl} recommends updating before older versions stop working. ${how}`;
+  if (p.latestMarkVersion && semverLt(version, p.latestMarkVersion)) {
+    // display-only: safeHighlights strips control/ANSI and caps length; the text is never interpreted as a command
+    const note = safeHighlights(p.latestMarkHighlights);
+    const mid = note
+      ? `: ${note}${/[.!?]$/.test(note) ? "" : "."}`
+      : `; the escrow server ${escrowUrl} recommends updating before older versions stop working.`;
+    return `Mark ${p.latestMarkVersion} is available (this is ${version})${mid} ${how}`;
+  }
   return null;
 }
 
