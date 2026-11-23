@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { Client } from "@satora/swap";
@@ -284,7 +285,7 @@ export class SatoraProvider implements SwapProvider {
       } catch (e) {
         const message = errText(e);
         // a clear refusal before or by the relay: nothing was submitted, so a later retry is safe
-        if (/^(Failed to get Permit2 funding data|Gasless fund relay failed: 4\d\d)|not found in local storage|Expected an EVM-sourced swap/.test(message)) { this.markAttempt(id, undefined); return { success: false, message }; }
+        if (/^(Failed to get Permit2 funding data|Gasless fund relay failed: 4(?!08|99)\d\d)|not found in local storage|Expected an EVM-sourced swap/.test(message)) { this.markAttempt(id, undefined); return { success: false, message }; }
         return { success: false, message, uncertain: true };
       }
     });
@@ -297,16 +298,21 @@ export class SatoraProvider implements SwapProvider {
   private async withFileLock<T>(f: () => Promise<T>): Promise<T> {
     if (!this.dir) return f();
     const lock = path.join(this.dir, "evm-deposit.lock"); const end = Date.now() + LOCK_WAIT_MS;
+    const token = `${process.pid}:${crypto.randomBytes(8).toString("hex")}`;
     for (;;) {
-      try { fs.writeFileSync(lock, String(process.pid), { flag: "wx", mode: 0o600 }); break; }
+      try { fs.writeFileSync(lock, token, { flag: "wx", mode: 0o600 }); break; }
       catch (e: any) {
         if (e?.code !== "EEXIST") throw e;
-        try { if (Date.now() - fs.statSync(lock).mtimeMs > LOCK_STALE_MS) { fs.rmSync(lock, { force: true }); continue; } } catch { continue; }
+        if (takeStale(lock)) continue;
         if (Date.now() > end) throw new MarkError("SWAP_BUSY", "another Mark process is creating, funding or recovering a swap from a stablecoin in this Mark home; retry in a minute");
         await new Promise((r) => setTimeout(r, 250));
       }
     }
-    try { return await f(); } finally { fs.rmSync(lock, { force: true }); }
+    // heartbeat: a long create or funding keeps its lock fresh, so it is never taken as stale
+    const beat = setInterval(() => { try { if (fs.readFileSync(lock, "utf8") === token) { const t = new Date(); fs.utimesSync(lock, t, t); } } catch { /* gone */ } }, LOCK_BEAT_MS);
+    beat.unref?.();
+    try { return await f(); }
+    finally { clearInterval(beat); try { if (fs.readFileSync(lock, "utf8") === token) fs.rmSync(lock, { force: true }); } catch { /* already gone */ } }
   }
   async refundReverse(id: string) {
     return stdoutToStderr(async () => {
@@ -333,8 +339,24 @@ export class SatoraProvider implements SwapProvider {
 
 /** After a funding attempt that may have reached the relay, wait this long before signing again (Arbitrum confirms in seconds). */
 const FUND_RETRY_AFTER_MS = 10 * 60 * 1000;
-/** The deposit lock: wait this long for another process; a lock file older than LOCK_STALE_MS belongs to a dead process. */
-const LOCK_WAIT_MS = 90_000, LOCK_STALE_MS = 5 * 60 * 1000;
+/** The deposit lock: wait this long for another process; its owner refreshes it every LOCK_BEAT_MS, so a lock not refreshed for
+ *  LOCK_STALE_MS whose owner process is gone is taken over. */
+const LOCK_WAIT_MS = 90_000, LOCK_STALE_MS = 5 * 60 * 1000, LOCK_BEAT_MS = 30_000;
+/** Take over a stale lock atomically: only one process can rename it away; if what was renamed is not the stale lock it looked
+ *  at (another process took it over meanwhile), it is put back. True: retry acquiring now. */
+function takeStale(lock: string): boolean {
+  let seen: string, st: fs.Stats;
+  try { st = fs.statSync(lock); seen = fs.readFileSync(lock, "utf8"); } catch { return true; }
+  if (Date.now() - st.mtimeMs <= LOCK_STALE_MS) return false;
+  const pid = Number(seen.split(":")[0]);
+  if (Number.isSafeInteger(pid) && pid > 0 && pid !== process.pid) { try { process.kill(pid, 0); return false; } catch (e: any) { if (e?.code === "EPERM") return false; } }
+  const moved = `${lock}.stale-${process.pid}-${crypto.randomBytes(4).toString("hex")}`;
+  try { fs.renameSync(lock, moved); } catch { return true; }
+  try {
+    if (fs.readFileSync(moved, "utf8") !== seen) { try { fs.linkSync(moved, lock); } catch { /* a newer lock is there: it wins */ } }
+  } finally { fs.rmSync(moved, { force: true }); }
+  return true;
+}
 /** Satora's EVM-sourced swap answer only (never defaulted to the request), so a missing or different value is caught. */
 function reverseFields(r: any): ReverseSwapCreated {
   return { id: r.id, status: r.status, direction: r.direction ?? undefined, gasless: r.gasless ?? undefined, depositAddress: r.client_evm_address ?? undefined,

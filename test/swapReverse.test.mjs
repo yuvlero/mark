@@ -412,3 +412,17 @@ test("claim --wait never funds: a pending swap is handed back with how to fund i
   const r = await sw.swapClaim(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1", { wait: true, pollMs: 1 });
   assert.equal(r.funded, false); assert.match(r.note, /claim never funds .*swap fund rv-1 --wait/); assert.equal(m.calls.fund.length, 0);
 });
+
+test("deposit lock: a stale lock of a dead process is taken over; a lock is released only by its owner; a 408 from the relay stays uncertain", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mark-lock-")); const lock = path.join(dir, "evm-deposit.lock");
+  fs.writeFileSync(lock, "999999:dead"); const old = new Date(Date.now() - 10 * 60 * 1000); fs.utimesSync(lock, old, old);
+  const p = provider(mockClient().client, { dir });
+  assert.equal(await p.exclusive(async () => { assert.notEqual(fs.readFileSync(lock, "utf8"), "999999:dead"); return 7; }), 7);
+  assert.ok(!fs.existsSync(lock));
+  // someone else's lock replaced ours meanwhile (e.g. a takeover): our release leaves it alone
+  await p.exclusive(async () => { fs.writeFileSync(lock, "other:owner"); });
+  assert.equal(fs.readFileSync(lock, "utf8"), "other:owner"); fs.rmSync(lock);
+  const m = mockClient({ fundError: "Gasless fund relay failed: 408 timeout" }); await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
+  const r = await sw.swapFund(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1"); assert.match(r.note, /may still have submitted/);
+  const r2 = await sw.swapFund(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1"); assert.match(r2.note, /already submitted/); assert.equal(m.calls.fund.length, 1);
+});
