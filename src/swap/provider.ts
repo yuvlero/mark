@@ -21,7 +21,7 @@ export interface ReverseSwapCreated { id: string; status: string; gasless?: bool
 /** fundTx: the gasless funding (relay) tx once Satora saw it. local: this Mark home holds the swap's keys. */
 export interface ReverseSwapInfo extends ReverseSwapCreated { direction?: string; fundTx?: string; payoutTx?: string; lightningSettled?: boolean; createdAt?: string; local: boolean }
 export interface ReverseQuoteInput { from: SwapStable; to: SwapRail; bps: number; sourceUnits?: bigint; targetSats?: number; destination?: string }
-export interface ReverseCreateInput { from: SwapStable; to: SwapRail; bps: number; sourceUnits?: bigint; invoice?: string; lnAddress?: string; arkAddress?: string }
+export interface ReverseCreateInput { from: SwapStable; to: SwapRail; bps: number; sourceUnits?: bigint; invoice?: string; arkAddress?: string }
 /** A gasless funding attempt: at most one per swap. uncertain: the relay may have submitted it (no clear refusal), so Mark does not
  *  sign again for a while. */
 export interface FundResult { success: boolean; txHash?: string; message?: string; uncertain?: boolean; skipped?: string }
@@ -49,7 +49,10 @@ export interface SwapProvider {
   depositAddress?(): string;
   /** Swaps from a stablecoin in this Mark home's storage that are still waiting for their deposit (status pending). */
   openReverse?(): Promise<ReverseSwapInfo[]>;
-  /** Sign the permits and let Satora's relay lock the deposit into the swap. At most once per swap (see FundResult). Never throws. */
+  /** Run f alone among this Mark home's deposit-address actions (create, fund, recover), across processes too. */
+  exclusive?<T>(f: () => Promise<T>): Promise<T>;
+  /** Sign the permits and let Satora's relay lock the deposit into the swap. At most once per swap (see FundResult): under the
+   *  deposit lock it re-checks that the swap is unfunded, the deposit is at the address and no recent attempt exists. Never throws. */
   fundReverse?(id: string): Promise<FundResult>;
   /** When a funding was last attempted for this swap (ms epoch), if ever. */
   fundAttemptedAt?(id: string): number | undefined;

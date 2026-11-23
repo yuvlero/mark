@@ -9,15 +9,15 @@ import { checkArkadeAddress } from "./arkAddress.js";
 import { decodeInvoice, networkOk } from "../lightning/invoice.js";
 import { SWAP_DONE, SWAP_FAILED } from "../swap/states.js";
 import { sleep } from "../util.js";
-import { ARBISCAN_TX, SWAP_MARKUP_BPS, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkLightningAddress, checkMarkupBps,
+import { ARBISCAN_TX, SWAP_MARKUP_BPS, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkMarkupBps,
   formatReverseQuote, pct, tokenUnits, units, type SwapRail, type SwapStable } from "../swap/stable.js";
 
 export interface ReverseInput { from: SwapStable; to: SwapRail; amount?: string | number; invoice?: string; address?: string }
-type Rev = Required<Pick<SwapProvider, "quoteReverse" | "createReverse" | "getReverse" | "depositAddress" | "openReverse" | "fundReverse" | "fundAttemptedAt" | "refundReverse" | "recoverReverse" | "evm" | "claim">> & SwapProvider;
+type Rev = Required<Pick<SwapProvider, "quoteReverse" | "createReverse" | "getReverse" | "depositAddress" | "openReverse" | "fundReverse" | "fundAttemptedAt" | "refundReverse" | "recoverReverse" | "evm" | "claim" | "exclusive">> & SwapProvider;
 
 export async function reverse(c: Ctx): Promise<Rev> {
   const s = await c.swaps();
-  for (const k of ["quoteReverse", "createReverse", "getReverse", "depositAddress", "openReverse", "fundReverse", "fundAttemptedAt", "refundReverse", "recoverReverse", "evm"] as const)
+  for (const k of ["quoteReverse", "createReverse", "getReverse", "depositAddress", "openReverse", "fundReverse", "fundAttemptedAt", "refundReverse", "recoverReverse", "evm", "exclusive"] as const)
     if (!(s as any)[k]) throw new MarkError("BAD_CONFIG", `swap provider ${s.name} does not support mark swap from a stablecoin`);
   return s as any;
 }
@@ -25,13 +25,16 @@ export async function reverse(c: Ctx): Promise<Rev> {
 const DO_NOT_RESEND = "Do NOT send the stablecoins again.";
 
 /** The payout target and amount, checked before anything is sent to Satora:
- *  --to lightning: --invoice <bolt11> (its amount is the payout), or --address <user@domain> --amount <tokens>;
- *  --to arkade: --address <ark address on Satora's Arkade server> --amount <tokens>. */
-export function parseReverse(c: Ctx, i: ReverseInput) {
+ *  --to lightning: --invoice <bolt11> (its amount is the payout; Satora must pay exactly that invoice);
+ *  --to arkade: --address <ark address on Satora's Arkade server> --amount <tokens>.
+ *  A quote may leave the target out and give only --amount. Lightning addresses are not taken: Satora would fetch their invoice
+ *  itself, and Mark could not tell that invoice from anyone else's for the same amount. */
+export function parseReverse(c: Ctx, i: ReverseInput, mode: "quote" | "create" = "create") {
   const bps = checkMarkupBps(SWAP_MARKUP_BPS); const t = SWAP_TARGETS[i.from];
   if (i.to === "lightning") {
+    if (i.address !== undefined) throw new MarkError("USAGE", "--to lightning takes --invoice <bolt11 with an amount> (a Lightning address is not supported: Mark cannot check the invoice Satora would fetch for it)");
     if (i.invoice !== undefined) {
-      if (i.address !== undefined || i.amount !== undefined) throw new MarkError("USAGE", "--invoice fixes the payout: do not add --address or --amount");
+      if (i.amount !== undefined) throw new MarkError("USAGE", "--invoice fixes the payout: do not add --amount");
       const inv = String(i.invoice).trim().replace(/^lightning:/i, "");
       if (!networkOk(inv, c.network)) throw new MarkError("BAD_INVOICE", `--invoice is not a Lightning invoice for ${c.network}`);
       const d = decodeInvoice(inv);
@@ -39,21 +42,25 @@ export function parseReverse(c: Ctx, i: ReverseInput) {
       if (d.expiresAt - Date.now() / 1000 < 600) throw new MarkError("INVOICE_EXPIRED", "--invoice expires in under 10 minutes: make a new one");
       return { from: i.from, to: i.to, bps, invoice: inv, invoiceSats: d.sats, token: t };
     }
-    if (i.address === undefined) throw new MarkError("USAGE", "--to lightning needs --invoice <bolt11>, or --address <lightning address> --amount <tokens>");
-    const lnAddress = checkLightningAddress(i.address);
-    return { from: i.from, to: i.to, bps, lnAddress, sourceUnits: tokenUnits(i.amount, t.decimals), token: t };
+    if (mode === "create") throw new MarkError("USAGE", "--to lightning needs --invoice <bolt11 with an amount>");
+    return { from: i.from, to: i.to, bps, sourceUnits: tokenUnits(i.amount, t.decimals), token: t };
   }
   if (i.invoice !== undefined) throw new MarkError("USAGE", "--invoice is only for --to lightning");
-  if (i.address === undefined) throw new MarkError("USAGE", "--to arkade needs --address <ark address from an Arkade wallet on https://arkade.computer> --amount <tokens>");
+  const sourceUnits = tokenUnits(i.amount, t.decimals);
+  if (i.address === undefined) {
+    if (mode === "create") throw new MarkError("USAGE", "--to arkade needs --address <ark address from an Arkade wallet on https://arkade.computer> --amount <tokens>");
+    return { from: i.from, to: i.to, bps, sourceUnits, token: t };
+  }
   const arkAddress = checkArkadeAddress(i.address, { network: c.network, arkServerUrl: c.cfg.arkServerUrl, what: "--address" });
-  return { from: i.from, to: i.to, bps, arkAddress, sourceUnits: tokenUnits(i.amount, t.decimals), token: t };
+  return { from: i.from, to: i.to, bps, arkAddress, sourceUnits, token: t };
 }
 type Parsed = ReturnType<typeof parseReverse>;
-const target = (p: Parsed) => p.invoice ? { invoice: p.invoice } : p.lnAddress ? { lightningAddress: p.lnAddress } : { arkAddress: p.arkAddress };
-const flags = (p: Parsed) => `--from ${p.from} --to ${p.to} ${p.invoice ? `--invoice ${p.invoice}` : `--address ${p.lnAddress ?? p.arkAddress} --amount ${units(p.sourceUnits!, p.token.decimals)}`}`;
+const target = (p: Parsed) => p.invoice ? { invoice: p.invoice } : { arkAddress: p.arkAddress };
+/** The create command for this input; a target the quote left out is a placeholder. */
+const flags = (p: Parsed) => `--from ${p.from} --to ${p.to} ${p.invoice ? `--invoice ${p.invoice}` : p.to === "lightning" ? "--invoice <bolt11 for the sats you want>" : `--address ${p.arkAddress ?? "<ark address>"} --amount ${units(p.sourceUnits!, p.token.decimals)}`}`;
 
 async function quoteOf(s: Rev, p: Parsed) {
-  const q = await s.quoteReverse({ from: p.from, to: p.to, bps: p.bps, ...(p.invoice ? { targetSats: p.invoiceSats, destination: p.invoice } : { sourceUnits: p.sourceUnits, ...(p.lnAddress ? { destination: p.lnAddress } : {}) }) });
+  const q = await s.quoteReverse({ from: p.from, to: p.to, bps: p.bps, ...(p.invoice ? { targetSats: p.invoiceSats, destination: p.invoice } : { sourceUnits: p.sourceUnits }) });
   if (!/^\d+$/.test(String(q?.source_amount ?? "")) || BigInt(q.source_amount) <= 0n || !(Number(q?.net_target_amount) > 0))
     throw new MarkError("QUOTE_UNAVAILABLE", "Satora's quote has no amounts; nothing was created. Retry later.");
   return q;
@@ -62,7 +69,7 @@ function inRange(q: any) { const gross = Number(q.target_amount); return !(Numbe
 
 /** Quote only (nothing is created). */
 export async function reverseQuote(c: Ctx, i: ReverseInput) {
-  const p = parseReverse(c, i); const s = await reverse(c); const q = await quoteOf(s, p);
+  const p = parseReverse(c, i, "quote"); const s = await reverse(c); const q = await quoteOf(s, p);
   return { quote: formatReverseQuote(q, p), ...(inRange(q) ? {} : { note: `amount out of range: Satora accepts ${q.min_amount}..${q.max_amount} sats for this route` }),
     next: `${mk()} swap ${flags(p)} previews it; add --yes to create it` };
 }
@@ -75,14 +82,17 @@ export async function reverseRun(c: Ctx, i: ReverseRunInput) {
   const p = parseReverse(c, i); const s = await reverse(c);
   const q = await quoteOf(s, p); const quote = formatReverseQuote(q, p);
   if (!inRange(q)) throw new MarkError("SWAP_AMOUNT", `Satora accepts ${q.min_amount}..${q.max_amount} sats for ${p.token.symbol} -> ${p.to}`, { quote });
-  const payout = p.invoice ? `the Lightning invoice you gave (${p.invoiceSats} sats)` : p.lnAddress ? `the Lightning address ${p.lnAddress}` : `the Ark address ${p.arkAddress}`;
+  const payout = p.invoice ? `the Lightning invoice you gave (${p.invoiceSats} sats)` : `the Ark address ${p.arkAddress}`;
   if (!i.confirm) return { swap: "preview", quote, payout: target(p),
     notice: `REAL MONEY: this swaps about ${quote.send} ${p.token.symbol} on Arbitrum into ${quote.receiveSats} sats paid to ${payout}. Check the target: a payout to a wrong target cannot be undone. ${quote.markupNote}`,
     next: `Nothing was created. To create it: ${mk()} swap ${flags(p)} --yes --wait` };
-  // one open deposit at a time: every swap from a stablecoin in this Mark home shares the same deposit address
-  const open = await s.openReverse();
-  if (open.length) throw new MarkError("SWAP_OPEN_DEPOSIT", `swap ${open[0].id} from this Mark home is still waiting for its deposit at the same address. Finish it (${mk()} swap fund ${open[0].id}) or let it expire before creating another.`, { open: open.map((x) => x.id) });
-  const created = await s.createReverse({ from: p.from, to: p.to, bps: p.bps, ...(p.invoice ? { invoice: p.invoice } : { sourceUnits: p.sourceUnits }), ...(p.lnAddress ? { lnAddress: p.lnAddress } : {}), ...(p.arkAddress ? { arkAddress: p.arkAddress } : {}) });
+  // one open deposit at a time: every swap from a stablecoin in this Mark home shares the same deposit address. The check and the
+  // create run under the Mark home's deposit lock (other processes too), so two creates cannot both see "none open".
+  const created = await s.exclusive(async () => {
+    const open = await s.openReverse();
+    if (open.length) throw new MarkError("SWAP_OPEN_DEPOSIT", `swap ${open[0].id} from this Mark home is still waiting for its deposit at the same address. Finish it (${mk()} swap fund ${open[0].id}) or let it expire before creating another.`, { open: open.map((x) => x.id) });
+    return s.createReverse({ from: p.from, to: p.to, bps: p.bps, ...(p.invoice ? { invoice: p.invoice } : { sourceUnits: p.sourceUnits }), ...(p.arkAddress ? { arkAddress: p.arkAddress } : {}) });
+  });
   checkReverseCreated(c, p, created, q, s.depositAddress());
   const deposit = await depositInfo(s, created);
   const first = { swap: "created", id: created.id, status: created.status, from: p.from, to: p.to, payout: { ...target(p), sats: created.targetSats }, quote, deposit,
@@ -115,14 +125,9 @@ function checkReverseCreated(c: Ctx, p: Parsed, x: ReverseSwapCreated, q: any, m
     if (String(x.invoice ?? "").toLowerCase() !== p.invoice.toLowerCase()) bad("the invoice Satora will pay is not the one you gave");
   } else {
     if (x.targetSats! * 10000 < Number(q.net_target_amount) * (10000 - SWAP_MAX_SLIPPAGE_BPS)) bad(`payout ${x.targetSats} sats is more than ${pct(SWAP_MAX_SLIPPAGE_BPS)} below the quote (${q.net_target_amount})`);
-    if (p.lnAddress) {
-      if (!x.invoice || !networkOk(x.invoice, c.network)) bad("no Lightning invoice for this network from your Lightning address");
-      let sats: number | undefined; try { sats = decodeInvoice(x.invoice!).sats; } catch { bad("undecodable invoice"); }
-      if (sats !== x.targetSats) bad(`the invoice from your Lightning address asks for ${sats ?? "no amount"} sats, not the swap's ${x.targetSats}`);
-    } else {
-      if (String(x.arkAddress ?? "") !== p.arkAddress) bad(`payout address ${x.arkAddress} is not ${p.arkAddress}`);
-      try { checkArkadeAddress(x.arkAddress, { network: c.network, arkServerUrl: c.cfg.arkServerUrl, serverPubkey: (x.raw as any)?.arkade_server_pk ?? null, what: "--address" }); } catch (e: any) { bad(e?.message ?? "bad Ark address"); }
-    }
+    if (!p.arkAddress) bad("no payout target");
+    if (String(x.arkAddress ?? "") !== p.arkAddress) bad(`payout address ${x.arkAddress} is not ${p.arkAddress}`);
+    try { checkArkadeAddress(x.arkAddress, { network: c.network, arkServerUrl: c.cfg.arkServerUrl, serverPubkey: (x.raw as any)?.arkade_server_pk ?? null, what: "--address" }); } catch (e: any) { bad(e?.message ?? "bad Ark address"); }
   }
 }
 
@@ -232,10 +237,14 @@ export async function reverseClaim(s: Rev, x: ReverseSwapInfo) {
     : { id: x.id, status: x.status, claimFailed: true, claim: r, note: `Claim failed; retry later. ${DO_NOT_RESEND}` };
 }
 
+const REFUNDABLE = new Set(["clientfundingseen", "clientfunded"]);
 /** Refund a locked deposit that did not pay out, back to the deposit address (gasless), for recover to send on. */
 export async function reverseRefund(s: Rev, x: ReverseSwapInfo) {
   if (isDone(x)) throw new MarkError("SWAP_DONE", "this swap paid out: nothing to refund");
   if (x.status === "pending" && !x.fundTx) return { id: x.id, status: x.status, refunded: false, note: `Nothing is locked yet: an unfunded deposit is recovered with ${mk()} swap recover ${x.id} --to <your 0x address>.` };
+  // only while the deposit is locked and Satora is not paying out: funded-but-stuck, or ended without a payout
+  if (!REFUNDABLE.has(x.status) && !SWAP_FAILED.has(x.status)) return { id: x.id, status: x.status, refunded: false, note: `Not refundable while the payout is under way (${x.status}). ${nextNote(x)}` };
+  if (/refunded/.test(x.status) && x.status !== "clientfundedserverrefunded") return { id: x.id, status: x.status, refunded: false, note: nextNote(x) };
   const r = await s.refundReverse(x.id);
   return r.success ? { id: x.id, refunded: true, how: r.how, ...(r.txHash ? { txHash: r.txHash, explorer: ARBISCAN_TX + r.txHash } : {}), note: `Refunded to the deposit address ${x.depositAddress}. Send it to your wallet with ${mk()} swap recover ${x.id} --to <your 0x address>.` }
     : { id: x.id, status: x.status, refunded: false, message: r.message, note: "Satora would not refund it collaboratively and its timelock has not passed (or the refund failed): retry later." };
@@ -252,15 +261,18 @@ export async function reverseRecover(c: Ctx, id: string, to: string | undefined)
   const t = tokenOf(x); if (!t) throw new MarkError("SWAP_FAILED", `unknown swap token ${x.tokenContract}`);
   const at = s.fundAttemptedAt(id);
   if (x.status === "pending" && at !== undefined && Date.now() - at < 10 * 60 * 1000) throw new MarkError("SWAP_FUNDING", "a funding of this swap was just submitted: wait for it (mark swap status) before recovering");
-  const others = (await s.openReverse()).filter((o) => o.id !== id && String(o.tokenContract).toLowerCase() === t.tokenId.toLowerCase());
-  if (others.length) throw new MarkError("SWAP_OPEN_DEPOSIT", `swap ${others[0].id} is waiting for a ${t.symbol} deposit at the same address: recovering now would take its deposit too. Finish it or let it expire first.`);
-  const bal = await s.evm.tokenBalance(t.tokenId, x.depositAddress!);
-  if (bal === 0n) return { id, recovered: false, note: `The deposit address holds no ${t.symbol}. ${x.fundTx && !SWAP_FAILED.has(x.status) && !isDone(x) ? `Its deposit is locked in the swap: if it does not pay out, run ${mk()} swap refund ${id} first.` : "Nothing to recover."}` };
-  const [eth, gp] = await Promise.all([s.evm.ethBalance(x.depositAddress!), s.evm.gasPrice()]);
-  const needWei = SWEEP_GAS * gp * 2n;
-  if (eth < needWei) return { id, recovered: false, holds: `${units(bal, t.decimals)} ${t.symbol}`, depositAddress: x.depositAddress,
-    note: `Sending tokens out of the deposit address costs a little Arbitrum ETH for gas: send about ${units(needWei - eth, 18)} ETH (Arbitrum One) to ${x.depositAddress}, then run this again.` };
-  const r = await s.recoverReverse(id, dest);
-  return r.success ? { id, recovered: true, to: dest, amount: r.amountUnits ? units(r.amountUnits, t.decimals) : undefined, token: t.symbol, ...(r.txHash ? { txHash: r.txHash, explorer: ARBISCAN_TX + r.txHash } : {}) }
-    : { id, recovered: false, message: r.message, note: "Recovery failed; nothing was moved unless the explorer shows it. Retry later." };
+  // under the deposit lock: no create or funding of this home can slip in between the checks and the sweep
+  return s.exclusive(async () => {
+    const others = (await s.openReverse()).filter((o) => o.id !== id && String(o.tokenContract).toLowerCase() === t.tokenId.toLowerCase());
+    if (others.length) throw new MarkError("SWAP_OPEN_DEPOSIT", `swap ${others[0].id} is waiting for a ${t.symbol} deposit at the same address: recovering now would take its deposit too. Finish it or let it expire first.`);
+    const bal = await s.evm.tokenBalance(t.tokenId, x.depositAddress!);
+    if (bal === 0n) return { id, recovered: false, note: `The deposit address holds no ${t.symbol}. ${x.fundTx && !SWAP_FAILED.has(x.status) && !isDone(x) ? `Its deposit is locked in the swap: if it does not pay out, run ${mk()} swap refund ${id} first.` : "Nothing to recover."}` };
+    const [eth, gp] = await Promise.all([s.evm.ethBalance(x.depositAddress!), s.evm.gasPrice()]);
+    const needWei = SWEEP_GAS * gp * 2n;
+    if (eth < needWei) return { id, recovered: false, holds: `${units(bal, t.decimals)} ${t.symbol}`, depositAddress: x.depositAddress,
+      note: `Sending tokens out of the deposit address costs a little Arbitrum ETH for gas: send about ${units(needWei - eth, 18)} ETH (Arbitrum One) to ${x.depositAddress}, then run this again.` };
+    const r = await s.recoverReverse(id, dest);
+    return r.success ? { id, recovered: true, to: dest, amount: r.amountUnits ? units(r.amountUnits, t.decimals) : undefined, token: t.symbol, ...(r.txHash ? { txHash: r.txHash, explorer: ARBISCAN_TX + r.txHash } : {}) }
+      : { id, recovered: false, message: r.message, note: "Recovery failed; nothing was moved unless the explorer shows it. Retry later." };
+  });
 }

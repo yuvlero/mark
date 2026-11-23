@@ -10,7 +10,7 @@ import { decodeInvoice, networkOk } from "../lightning/invoice.js";
 import type { StableSwapCreated, StableSwapInfo } from "../swap/provider.js";
 import { SWAP_UNPAID, SWAP_PAID, SWAP_WAITING, SWAP_CLAIMABLE, SWAP_DONE } from "../swap/states.js";
 import { sleep } from "../util.js";
-import { reverse, reverseQuote, reverseRun, reverseStatus, reverseClaim, reverseRefund, reverseFund, reverseRecover } from "./swapReverse.js";
+import { reverse, waitReverse, reverseQuote, reverseRun, reverseStatus, reverseClaim, reverseRefund, reverseFund, reverseRecover } from "./swapReverse.js";
 import { ARBISCAN_TX, SWAP_MARKUP_BPS, SWAP_REFERRAL_ID, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkMarkupBps, formatSwapQuote, pct, swapSats, swapSource, swapTarget, units, swapRoute, allSwapRoutes, type SwapSource, type SwapTarget } from "../swap/stable.js";
 
 /** sats: BTC -> stablecoin. amount (token units like 1.5) / invoice: stablecoin -> BTC (address is the payout target there). */
@@ -211,12 +211,12 @@ export async function swapStatus(c: Ctx, id: string) {
 export async function swapClaim(c: Ctx, id: string, o: { wait?: boolean; timeoutSec?: number; pollMs?: number } = {}) {
   if (!id) throw new MarkError("USAGE", "mark swap claim <id>");
   const s = await stable(c);
-  if (o.wait) { // a read failure here must not stop the wait (waitAndClaim retries its reads)
-    let d: string | undefined; try { d = (await s.getStable(id)).direction; } catch { d = undefined; }
-    if (!/^evm_to_/.test(d ?? "")) return waitAndClaim(s, id, o);
-  }
-  const x = await s.getStable(id);
-  if (/^evm_to_/.test(x.direction ?? "")) { const r = await reverse(c); return reverseClaim(r, await r.getReverse(id)); }
+  // which direction decides the claim path: a few reads, never a guess (a failed read must not pick the forward claim)
+  let x: StableSwapInfo | undefined; let err: unknown;
+  for (let i = 0; i < 3 && !x; i++) { if (i) await sleep(Math.min(o.pollMs ?? 2000, 2000)); try { x = await s.getStable(id); } catch (e) { err = e; } }
+  if (!x) throw err;
+  if (/^evm_to_/.test(x.direction ?? "")) { const r = await reverse(c); return o.wait ? waitReverse(r, id, { timeoutSec: o.timeoutSec ?? 900, pollMs: o.pollMs }) : reverseClaim(r, await r.getReverse(id)); }
+  if (o.wait) return waitAndClaim(s, id, o);
   if (SWAP_DONE.has(x.status)) return done(s, id, x.status, x.payoutTx, x);
   if (!SWAP_CLAIMABLE.has(x.status)) return { id, status: x.status, claimed: false, note: SWAP_PAID.has(x.status) ? `Nothing to claim yet. ${PAID_NOTE} (${mk()} swap claim ${id} --wait claims as soon as it is funded)`
     : SWAP_UNPAID.has(x.status) ? "Not paid yet: nothing to claim. Pay the swap's invoice / Ark address once (shown when it was created)." : endedNote(x.status, id, x.direction) };

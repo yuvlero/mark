@@ -199,7 +199,7 @@ export class SatoraProvider implements SwapProvider {
    *  markup as the quote. */
   async createReverse(p: ReverseCreateInput): Promise<ReverseSwapCreated> {
     const extraFees = checkMarkupBps(p.bps);
-    const targetAddress = p.to === "lightning" ? (p.invoice ?? p.lnAddress) : p.arkAddress;
+    const targetAddress = p.to === "lightning" ? p.invoice : p.arkAddress;
     if (!targetAddress) throw new MarkError("USAGE", "a payout target is required");
     const r: any = await stdoutToStderr(() => this.c.createSwap({ source: SWAP_TARGETS[p.from] as any, target: SWAP_SOURCES[p.to] as any, targetAddress, gasless: true,
       ...(p.invoice ? {} : { sourceAmount: p.sourceUnits?.toString() as any }), referralCode: SWAP_REFERRAL_ID, extraFees } as any));
@@ -239,18 +239,44 @@ export class SatoraProvider implements SwapProvider {
     this.funding.set(id, run); return run;
   }
   private async fundOnce(id: string): Promise<FundResult> {
-    const at = this.fundAttemptedAt(id);
-    if (at !== undefined && Date.now() - at < FUND_RETRY_AFTER_MS) return { success: false, skipped: `a funding was already submitted at ${new Date(at).toISOString()}; Mark does not sign again for ${FUND_RETRY_AFTER_MS / 60000} minutes` };
-    this.markAttempt(id, Date.now());
-    try {
-      const r: any = await stdoutToStderr(() => (this.c as any).fundSwapGasless(id));
-      return { success: true, txHash: r?.txHash ?? undefined };
-    } catch (x) {
-      const message = errText(x);
-      // a clear refusal before or by the relay: nothing was submitted, so a later retry is safe
-      if (/^(Failed to get Permit2 funding data|Gasless fund relay failed: 4\d\d)|not found in local storage|Expected an EVM-sourced swap/.test(message)) { this.markAttempt(id, undefined); return { success: false, message }; }
-      return { success: false, message, uncertain: true };
+    return this.exclusive(async () => {
+      const at = this.fundAttemptedAt(id);
+      if (at !== undefined && Date.now() - at < FUND_RETRY_AFTER_MS) return { success: false, skipped: `a funding was already submitted at ${new Date(at).toISOString()}; Mark does not sign again for ${FUND_RETRY_AFTER_MS / 60000} minutes` };
+      let x: ReverseSwapInfo; try { x = await this.getReverse(id); } catch (e) { return { success: false, message: `could not read the swap: ${errText(e)}` }; }
+      if (x.status !== "pending" || x.fundTx) return { success: false, skipped: `the swap is already past funding (${x.status}${x.fundTx ? `, funding tx ${x.fundTx}` : ""})` };
+      if (!x.tokenContract || !x.depositAddress || !/^\d+$/.test(String(x.sourceUnits ?? ""))) return { success: false, message: "the swap has no deposit terms" };
+      let have: bigint; try { have = await this.evm.tokenBalance(x.tokenContract, x.depositAddress); } catch (e) { return { success: false, message: `could not read the deposit address: ${errText(e)}` }; }
+      if (have < BigInt(x.sourceUnits!)) return { success: false, skipped: `the deposit address holds ${have} of the ${x.sourceUnits} token units this swap needs` };
+      this.markAttempt(id, Date.now());
+      try {
+        const r: any = await stdoutToStderr(() => (this.c as any).fundSwapGasless(id));
+        return { success: true, txHash: r?.txHash ?? undefined };
+      } catch (e) {
+        const message = errText(e);
+        // a clear refusal before or by the relay: nothing was submitted, so a later retry is safe
+        if (/^(Failed to get Permit2 funding data|Gasless fund relay failed: 4\d\d)|not found in local storage|Expected an EVM-sourced swap/.test(message)) { this.markAttempt(id, undefined); return { success: false, message }; }
+        return { success: false, message, uncertain: true };
+      }
+    });
+  }
+  /** In-process queue plus a lock file in the swaps dir (O_EXCL create; a lock older than LOCK_STALE_MS is taken over). */
+  private lockTail: Promise<unknown> = Promise.resolve();
+  exclusive<T>(f: () => Promise<T>): Promise<T> {
+    const run = this.lockTail.then(() => this.withFileLock(f), () => this.withFileLock(f)); this.lockTail = run.catch(() => undefined); return run;
+  }
+  private async withFileLock<T>(f: () => Promise<T>): Promise<T> {
+    if (!this.dir) return f();
+    const lock = path.join(this.dir, "evm-deposit.lock"); const end = Date.now() + LOCK_WAIT_MS;
+    for (;;) {
+      try { fs.writeFileSync(lock, String(process.pid), { flag: "wx", mode: 0o600 }); break; }
+      catch (e: any) {
+        if (e?.code !== "EEXIST") throw e;
+        try { if (Date.now() - fs.statSync(lock).mtimeMs > LOCK_STALE_MS) { fs.rmSync(lock, { force: true }); continue; } } catch { continue; }
+        if (Date.now() > end) throw new MarkError("SWAP_BUSY", "another Mark process is creating, funding or recovering a swap from a stablecoin in this Mark home; retry in a minute");
+        await new Promise((r) => setTimeout(r, 250));
+      }
     }
+    try { return await f(); } finally { fs.rmSync(lock, { force: true }); }
   }
   async refundReverse(id: string) {
     return stdoutToStderr(async () => {
@@ -277,6 +303,8 @@ export class SatoraProvider implements SwapProvider {
 
 /** After a funding attempt that may have reached the relay, wait this long before signing again (Arbitrum confirms in seconds). */
 const FUND_RETRY_AFTER_MS = 10 * 60 * 1000;
+/** The deposit lock: wait this long for another process; a lock file older than LOCK_STALE_MS belongs to a dead process. */
+const LOCK_WAIT_MS = 90_000, LOCK_STALE_MS = 5 * 60 * 1000;
 /** Satora's EVM-sourced swap answer only (never defaulted to the request), so a missing or different value is caught. */
 function reverseFields(r: any): ReverseSwapCreated {
   return { id: r.id, status: r.status, gasless: r.gasless ?? undefined, depositAddress: r.client_evm_address ?? undefined,

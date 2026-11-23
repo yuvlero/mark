@@ -102,9 +102,9 @@ export async function runMcp(network: NetworkName, o: CtxOptions = {}) {
   // the reverse direction: a stablecoin on Arbitrum -> BTC, gasless (the stablecoins go to this Mark home's deposit address)
   const stables = Object.keys(SWAP_TARGETS) as [SwapTarget, ...SwapTarget[]], rails = Object.keys(SWAP_SOURCES) as [SwapSource, ...SwapSource[]];
   const toBtcIn = { from: z.enum(stables).describe("the stablecoin you send, on Arbitrum One"), to: z.enum(rails).optional().describe("how the BTC is paid out (default lightning)"),
-    amount: z.string().regex(/^\d+(\.\d+)?$/).optional().describe("token amount to send, like \"1.5\" (fees come out of it); not with invoice"),
-    invoice: z.string().optional().describe("to=lightning: a BOLT11 invoice with an amount; Satora pays exactly it (no amount, no address)"),
-    address: z.string().optional().describe("to=lightning: a Lightning address user@domain (with amount); to=arkade: an Ark address from an Arkade wallet on https://arkade.computer (with amount)") };
+    amount: z.string().regex(/^\d+(\.\d+)?$/).optional().describe("to=arkade (or a Lightning quote without an invoice): token amount to send, like \"1.5\" (fees come out of it)"),
+    invoice: z.string().optional().describe("to=lightning: a BOLT11 invoice with an amount; Satora pays exactly it (required to create; no amount)"),
+    address: z.string().optional().describe("to=arkade: an Ark address from an Arkade wallet on https://arkade.computer (with amount). Lightning addresses are not supported") };
   s.tool("swap_to_btc_quote", `Quote a swap of USDC or USDT0 on Arbitrum into BTC over Lightning or to an Ark address (Satora): what you send, the sats you receive, Satora fee, the ${pct(SWAP_MARKUP_BPS)} Agent Escrow markup, network fee and total. Nothing is created`, toBtcIn,
     (a) => wrap(() => sw.swapQuote(c, a)));
   s.tool("swap_to_btc_create", `Swap USDC or USDT0 on Arbitrum into BTC over Lightning or to an Ark address (Satora; includes a ${pct(SWAP_MARKUP_BPS)} Agent Escrow fee). REAL MONEY. Gasless: no wallet or ETH needed. Without confirm: preview only. With confirm: creates the swap, checks it, and returns deposit.address, the exact amount and the token: send that once (one ERC-20 transfer on Arbitrum One), then call swap_fund with wait=true. Never send twice`,

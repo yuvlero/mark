@@ -37,8 +37,8 @@ export function checkDemoArgs(f: Record<string, string | boolean>) {
 }
 /** `mark swap` (BTC <-> USDC / USDT0 on Arbitrum via Satora; standalone, not tied to a deal). Key "create" is plain `mark swap` (`mark swap create` is the same). */
 export const SWAP_USAGE: Record<string, string> = {
-  quote: `mark swap quote [--from lightning|arkade] [--to usdc|usdt0] --sats N | mark swap quote --from usdc|usdt0 --to lightning|arkade (--amount <tokens> [--address <target>] | --invoice <bolt11>)   (rate, Satora fee, the ${pct(SWAP_MARKUP_BPS)} Agent Escrow markup, network fee, total; nothing is created)`,
-  create: `mark swap [--from lightning|arkade] [--to usdc|usdt0] --sats N --address <0x... on Arbitrum> [--yes] [--wait] [--timeout <sec>] | mark swap --from usdc|usdt0 --to lightning (--invoice <bolt11> | --address <user@domain> --amount <tokens>) [--yes] [--wait] | mark swap --from usdc|usdt0 --to arkade --address <ark address on https://arkade.computer> --amount <tokens> [--yes] [--wait]   (no --yes: preview only, nothing is created. From a stablecoin: gasless, Mark shows a deposit address, the exact amount and the token. Includes a ${pct(SWAP_MARKUP_BPS)} Agent Escrow fee)`,
+  quote: `mark swap quote [--from lightning|arkade] [--to usdc|usdt0] --sats N | mark swap quote --from usdc|usdt0 --to lightning|arkade (--amount <tokens> | --invoice <bolt11>)   (rate, Satora fee, the ${pct(SWAP_MARKUP_BPS)} Agent Escrow markup, network fee, total; nothing is created)`,
+  create: `mark swap [--from lightning|arkade] [--to usdc|usdt0] --sats N --address <0x... on Arbitrum> [--yes] [--wait] [--timeout <sec>] | mark swap --from usdc|usdt0 --to lightning --invoice <bolt11 with an amount> [--yes] [--wait] | mark swap --from usdc|usdt0 --to arkade --address <ark address on https://arkade.computer> --amount <tokens> [--yes] [--wait]   (no --yes: preview only, nothing is created. From a stablecoin: gasless, Mark shows a deposit address, the exact amount and the token. Includes a ${pct(SWAP_MARKUP_BPS)} Agent Escrow fee)`,
   status: "mark swap status <id>",
   claim: "mark swap claim <id> [--wait] [--timeout <sec>]   (claim a paid swap's stablecoins to its address, or a swap's Ark payout; --wait first waits for Satora to fund its side; safe to repeat)",
   fund: "mark swap fund <id> [--wait] [--timeout <sec>]   (swap from a stablecoin: once the deposit is at the deposit address, sign the permits so Satora's relay locks it, once, gasless; --wait waits for the deposit, then the payout)",
@@ -68,9 +68,11 @@ export function checkSwapArgs(sub: string | undefined, id: string | undefined, f
     if (f.amount !== undefined && !/^\d+(\.\d+)?$/.test(String(f.amount))) return usage("--amount must be a token amount like 1.5");
     const ln = String(f.to ?? "lightning").toLowerCase() === "lightning";
     if (f.invoice !== undefined && !ln) return usage("--invoice is only for --to lightning");
-    if (f.invoice !== undefined && (f.amount !== undefined || f.address !== undefined)) return usage("--invoice fixes the payout: do not add --amount or --address");
-    if (f.invoice === undefined && f.amount === undefined) return usage(ln ? "--invoice <bolt11> or --amount <tokens> is required" : "--amount <tokens> is required");
-    if (key === "create" && f.invoice === undefined && !s(f.address)) return usage(ln ? "--address <lightning address> (with --amount) or --invoice <bolt11> is required" : "--address <ark address> is required");
+    if (ln && f.address !== undefined) return usage("--to lightning takes --invoice <bolt11>, not --address (Lightning addresses are not supported for this direction)");
+    if (f.invoice !== undefined && f.amount !== undefined) return usage("--invoice fixes the payout: do not add --amount");
+    if (f.invoice === undefined && f.amount === undefined) return usage(ln ? (key === "create" ? "--invoice <bolt11> is required" : "--invoice <bolt11> or --amount <tokens> is required") : "--amount <tokens> is required");
+    if (key === "create" && ln && f.invoice === undefined) return usage("--invoice <bolt11 with an amount> is required (Satora pays exactly that invoice)");
+    if (key === "create" && !ln && !s(f.address)) return usage("--address <ark address> is required");
   } else if (priced) {
     if (f.to !== undefined && !SWAP_STABLE.includes(String(f.to).toLowerCase())) return usage(SWAP_BTC.includes(String(f.to).toLowerCase()) ? `--to ${String(f.to).toLowerCase()} needs --from usdc or usdt0` : "--to must be usdc or usdt0");
     for (const k of ["amount", "invoice"]) if (f[k] !== undefined) return usage(`--${k} is only for swaps from a stablecoin (--from usdc|usdt0)`);

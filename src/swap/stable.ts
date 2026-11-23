@@ -139,12 +139,6 @@ export function tokenUnits(v: unknown, decimals: number, flag = "--amount"): big
   if (n <= 0n) throw new MarkError("USAGE", `${flag} must be more than zero`);
   return n;
 }
-/** A Lightning address (user@domain), lowercased; else BAD_DEST. */
-export function checkLightningAddress(a: string | undefined): string {
-  const x = (a ?? "").trim().toLowerCase();
-  if (!/^[a-z0-9._+-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(x)) throw new MarkError("BAD_DEST", "--address for --to lightning must be a Lightning address (user@domain); or pass --invoice <bolt11>");
-  return x;
-}
 /** The quote for stablecoin -> BTC as Mark shows it. Satora charges its fee and our markup in sats, on the swap's BTC amount
  *  (target_amount before fees); you send source_amount token units and receive net_target_amount sats. */
 export function formatReverseQuote(q: SatoraQuote, o: { from: SwapStable; to: SwapRail; bps: number }) {
