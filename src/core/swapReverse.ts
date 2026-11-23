@@ -89,7 +89,8 @@ export async function reverseRun(c: Ctx, i: ReverseRunInput) {
   // one open deposit at a time: every swap from a stablecoin in this Mark home shares the same deposit address. The check and the
   // create run under the Mark home's deposit lock (other processes too), so two creates cannot both see "none open".
   const created = await s.exclusive(async () => {
-    const open = await s.openReverse();
+    // only swaps whose deposit address was shown count (a swap refused at create was never shown and just expires)
+    const open = (await s.openReverse()).filter((o) => s.reversePin(o.id));
     if (open.length) throw new MarkError("SWAP_OPEN_DEPOSIT", `swap ${open[0].id} from this Mark home is still waiting for its deposit at the same address. Finish it (${mk()} swap fund ${open[0].id}) or let it expire before creating another.`, { open: open.map((x) => x.id) });
     const used = p.invoice ? s.invoiceUsedBy(p.invoice) : undefined;
     if (used) throw new MarkError("BAD_INVOICE", `--invoice was already used for swap ${used}: a Lightning invoice is paid once. Make a new one.`);

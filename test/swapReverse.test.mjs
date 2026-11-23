@@ -32,13 +32,15 @@ function mockClient(o = {}) {
     createSwap: async (p) => {
       calls.createSwap.push(p);
       const ln = p.target.chain === "Lightning"; const inv = ln && /^ln/i.test(p.targetAddress) && !p.targetAddress.includes("@");
-      const r = { id: "rv-1", status: "pending", gasless: p.gasless === true, client_evm_address: DEP, direction: ln ? "evm_to_lightning" : "evm_to_arkade",
+      // like Satora's live create response: no direction (its swap record has one)
+      const r = { id: "rv-1", status: "pending", gasless: p.gasless === true, client_evm_address: DEP,
         source_amount: p.sourceAmount ?? "1500000", source_token: { chain: p.source.chain, token_id: p.source.tokenId, symbol: "USDC", decimals: 6 }, evm_chain_id: 42161,
         target_token: { chain: p.target.chain, token_id: "btc", symbol: "BTC", decimals: 8 }, target_amount: inv ? "2420" : "2420",
         ...(ln ? { client_lightning_invoice: inv ? p.targetAddress : makeInvoice({ sats: 2420 }) } : { target_arkade_address: p.targetAddress, arkade_server_pk: "02" + MOCK_SERVER_PK }), ...(o.tamper ?? {}) };
-      stored[r.id] = { swapId: r.id, response: r }; return { response: r };
+      stored[r.id] = { swapId: r.id, fresh: true, response: { ...r, direction: ln ? "evm_to_lightning" : "evm_to_arkade", ...(o.tamper ?? {}) } }; return { response: r };
     },
-    getSwap: async (id) => { calls.getSwap.push(id); const s = statuses.length > 1 ? statuses.shift() : statuses[0]; const base = stored[id]?.response ?? o.existing ?? {};
+    getSwap: async (id) => { calls.getSwap.push(id); if (stored[id]?.fresh) { stored[id].fresh = false; return stored[id].response; } // the read right after create
+      const s = statuses.length > 1 ? statuses.shift() : statuses[0]; const base = stored[id]?.response ?? o.existing ?? {};
       const r = { ...base, id, status: s, ...(s !== "pending" ? { evm_fund_txid: "0xfund" } : {}), ...(s === "serverredeemed" && base.direction === "evm_to_lightning" ? { lightning_payment_settled: true } : {}) };
       if (stored[id]) stored[id].response = r; return r; },
     getStoredSwap: async (id) => stored[id] ?? (o.existing ? { swapId: id } : null),
@@ -171,6 +173,10 @@ test("create: the deposit address already holds the amount -> send NOTHING; anot
   // one open deposit at a time (all swaps from a stablecoin in a Mark home share the address)
   ({ client, calls } = mockClient({ others: [{ swapId: "old-1", response: { id: "old-1", status: "pending", gasless: true, client_evm_address: DEP, direction: "evm_to_lightning", source_token: { token_id: USDC } } }] }));
   client.getSwap = async (id) => ({ id, status: "pending", gasless: true, client_evm_address: DEP, direction: "evm_to_lightning", source_token: { token_id: USDC } });
+  // old-1 was refused at create (never shown, no record): it does not block; once shown (recorded) it does
+  const pv = provider(client); let created = 0; const cr = pv.createReverse.bind(pv); pv.createReverse = async (x) => { created++; throw new Error("stop here"); };
+  await assert.rejects(sw.swapRun(ctxWith(pv), { from: "usdc", to: "lightning", invoice: INV(), confirm: true }), /stop here/); assert.equal(created, 1); void cr;
+  provider(client).pinReverse("old-1", { invoice: INV(), depositAddress: DEP, tokenContract: USDC, sourceUnits: "1500000" });
   await assert.rejects(sw.swapRun(ctxWith(provider(client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true }), (e) => e.code === "SWAP_OPEN_DEPOSIT" && /old-1/.test(e.message));
   assert.equal(calls.createSwap.length, 0);
 });

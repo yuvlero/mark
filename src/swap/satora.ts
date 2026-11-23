@@ -206,7 +206,11 @@ export class SatoraProvider implements SwapProvider {
     if (!targetAddress) throw new MarkError("USAGE", "a payout target is required");
     const r: any = await stdoutToStderr(() => this.c.createSwap({ source: SWAP_TARGETS[p.from] as any, target: SWAP_SOURCES[p.to] as any, targetAddress, gasless: true,
       ...(p.invoice ? {} : { sourceAmount: p.sourceUnits?.toString() as any }), referralCode: SWAP_REFERRAL_ID, extraFees } as any));
-    return reverseFields(r?.response ?? {});
+    const out = reverseFields(r?.response ?? {});
+    // Satora's create response has no direction (live, 23 Nov 2026); its swap record has. Read it once, which also stores it
+    // locally, so the one-open-deposit check sees this swap. Left unset when the read fails: the create check then refuses.
+    if (out.id && out.direction === undefined) { try { const g: any = await this.c.getSwap(out.id, { updateStorage: true } as any); out.direction = g?.direction ?? undefined; } catch { /* refused below */ } }
+    return out;
   }
   async getReverse(id: string): Promise<ReverseSwapInfo> {
     const r: any = await this.c.getSwap(id, { updateStorage: true } as any);
