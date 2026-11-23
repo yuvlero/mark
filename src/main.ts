@@ -70,8 +70,9 @@ async function main(): Promise<"keep" | void> {
       // standalone: no escrow server call (openCtx_ skips the version-policy check), only Satora
       const bad = checkSwapArgs(pos[1], pos[2], f); if (bad) throw bad;
       const c = await openCtx_(network, { escrowUrl, arbiterPubkey }); const id = String(pos[2] ?? "");
+      const swapIn = { from: s(f.from), to: s(f.to), sats: s(f.sats), amount: s(f.amount), invoice: s(f.invoice), address: s(f.address) };
       switch (pos[1]) {
-        case "quote": return void out(await sw.swapQuote(c, { from: s(f.from), to: s(f.to), sats: s(f.sats), amount: s(f.amount), invoice: s(f.invoice), address: s(f.address) }));
+        case "quote": return void out(await sw.swapQuote(c, swapIn));
         case "routes": return void out(await sw.swapRoutes(c));
         case "status": return void out(await sw.swapStatus(c, id));
         case "claim": return void out(await sw.swapClaim(c, id, { wait: f.wait === true, timeoutSec: optNum(f.timeout) }));
@@ -79,7 +80,7 @@ async function main(): Promise<"keep" | void> {
         case "refund": return void out(await sw.swapRefund(c, id, s(f.to)));
         case "recover": return void out(await sw.swapRecover(c, id, s(f.to)));
       } // plain `mark swap` or `mark swap create`
-      return void out(await sw.swapRun(c, { from: s(f.from), to: s(f.to), sats: s(f.sats), amount: s(f.amount), invoice: s(f.invoice), address: s(f.address), confirm: f.yes === true, wait: f.wait === true,
+      return void out(await sw.swapRun(c, { ...swapIn, confirm: f.yes === true, wait: f.wait === true,
         timeoutSec: optNum(f.timeout), onProgress: out }));
     }
     case "mcp": { const { runMcp } = await import("./mcp.js"); await runMcp(network, { escrowUrl, arbiterPubkey }); return "keep"; }
