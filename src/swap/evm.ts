@@ -7,7 +7,8 @@ export interface EvmReader {
   ethBalance(owner: string): Promise<bigint>;
   gasPrice(): Promise<bigint>;
   /** Units of `token` transferred to `to` in tx (its ERC-20 Transfer logs); undefined while the receipt is not available. */
-  transferredTo?(txHash: string, token: string, to: string): Promise<bigint | undefined>;
+  /** undefined: no receipt yet; null: the tx reverted (nothing moved). */
+  transferredTo?(txHash: string, token: string, to: string): Promise<bigint | undefined | null>;
 }
 
 const ARBITRUM = 42161;
@@ -48,7 +49,8 @@ export function arbitrumReader(urls: readonly string[] = (DEFAULT_EVM_RPCS as Re
     async gasPrice() { return big(await rpc("eth_gasPrice", [])); },
     async transferredTo(txHash, token, to) {
       const r = await rpcAny("eth_getTransactionReceipt", [txHash], (x) => x === null || (typeof x === "object" && Array.isArray((x as any).logs)));
-      if (!r || r.status !== "0x1") return r ? 0n : undefined;
+      if (!r) return undefined;
+      if (r.status !== "0x1") return null;
       const want = "0x" + hex32(to);
       return r.logs.filter((l: any) => String(l.address).toLowerCase() === token.toLowerCase() && l.topics?.[0] === TRANSFER && String(l.topics?.[2]).toLowerCase() === want)
         .reduce((a: bigint, l: any) => a + big(l.data), 0n);

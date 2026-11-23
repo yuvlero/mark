@@ -360,3 +360,8 @@ test("MCP swap_routes: listed with no required arguments; a call returns all eig
     assert.ok(r.routes.every((x) => x.limits === "unavailable")); assert.equal(r.markup.percent, "0.5%"); assert.equal(r.referral, SWAP_REFERRAL_ID);
   } finally { await cl.close(); }
 });
+test("a reverted payout tx is never reported as received or sent", async () => {
+  const { client } = mockClient({ statuses: ["serverredeemed"] });
+  const st = await sw.swapStatus(ctxWith(provider(client, null)), "sw-1"); assert.equal(st.received, undefined); assert.match(st.receivedNote, /failed on-chain/);
+  const r = await sw.swapClaim(ctxWith(provider(client, null)), "sw-1"); assert.equal(r.received, undefined); assert.equal(r.reverted, true); assert.doesNotMatch(r.note, /sent to your address/);
+});

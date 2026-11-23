@@ -165,23 +165,24 @@ async function settled(s: Awaited<ReturnType<typeof stable>>, id: string, status
 const RECEIPT_TRIES = 3;
 /** What actually arrived at the payout address in the payout tx (the token's Transfer logs). Never throws. */
 async function arrived(s: SwapProvider, tx: string, token: string, to: string, decimals: number) {
-  let u: bigint | undefined;
+  let u: bigint | undefined | null;
   for (let i = 0; i < RECEIPT_TRIES && u === undefined && s.evm?.transferredTo; i++) { // a fresh payout tx may not be indexed yet
     if (i) await sleep(1500);
     try { u = await s.evm.transferredTo(tx, token, to); } catch { u = undefined; }
   }
+  if (u === null) return { reverted: true, receivedNote: "the payout transaction failed on-chain: nothing arrived from it. Check mark swap status and the explorer link." };
   return u === undefined ? { receivedNote: "the amount that arrived could not be read yet: see the explorer link or mark swap status" } : { received: units(u, decimals) ?? "0", receivedUnits: u.toString() };
 }
 /** settled() already tried reading the swap: done() must not read it again (a bounded number of reads). */
 const NO_REREAD = { noReread: true } as const;
 async function done(s: SwapProvider, id: string, status: string, tx?: string, x?: { targetAddress?: string; tokenContract?: string; noReread?: boolean }) {
-  let got = {};
+  let got: { reverted?: boolean } = {};
   if (tx) {
     let info = x; if (!info?.targetAddress && !info?.noReread) { try { info = await s.getStable!(id); } catch { info = undefined; } }
     const t = Object.values(SWAP_TARGETS).find((v) => v.tokenId.toLowerCase() === String(info?.tokenContract ?? "").toLowerCase());
     got = t && info?.targetAddress ? await arrived(s, tx, t.tokenId, info.targetAddress, t.decimals) : { receivedNote: "the amount that arrived could not be read: see the explorer link" };
   }
-  return { id, status, swap: "done", ...(tx ? { payoutTx: tx, explorer: ARBISCAN_TX + tx } : {}), ...got, note: tx ? "Stablecoins sent to your address." : "Claimed; the payout tx id is not known yet: check mark swap status." };
+  return { id, status, swap: "done", ...(tx ? { payoutTx: tx, explorer: ARBISCAN_TX + tx } : {}), ...got, note: got.reverted ? "The payout transaction reverted: nothing was sent from it. Check mark swap status." : tx ? "Stablecoins sent to your address." : "Claimed; the payout tx id is not known yet: check mark swap status." };
 }
 /** Ended without a payout. Never claims "unpaid" from the status alone: a Lightning hold invoice that was paid but not settled goes
  *  back to the payer's wallet by itself; Arkade sats sent to the swap address come back only with a refund after its timelock. */
