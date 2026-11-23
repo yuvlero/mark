@@ -4,6 +4,22 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-23
+
+**New: `mark swap`** turns bitcoin (Lightning or Arkade) into USDC or USDT0 on Arbitrum through Satora. It is standalone: no deal and no escrow server involved. A 0.5% Agent Escrow fee is added, and every quote shows it.
+
+### Added
+- `mark swap quote --sats N [--from lightning|arkade] [--to usdc|usdt0]`: rate, what you receive, Satora's fee, the 0.5% Agent Escrow markup, the network fee and the total. Nothing is created.
+- `mark swap --sats N --address <0x...> [--yes] [--wait] [--timeout sec]`: without `--yes` it only previews. With `--yes` it creates the swap and prints the Lightning invoice (or the Ark address and exact sats) to pay once. `--wait` claims the stablecoins to your address as soon as Satora funds its side (gasless) and prints the payout tx with an Arbiscan link.
+- `mark swap status <id>`, `mark swap claim <id> [--wait]` and `mark swap refund <id> --to <ark address>` (Arkade-funded swaps only, after the timelock).
+- MCP tools `swap_quote`, `swap_create` (needs `confirm: true` to create), `swap_status`, `swap_claim` (with `wait`) and `swap_refund`.
+- Every swap quote and every swap carries Agent Escrow's public Satora referral ID `lnds_29617a89f8a6b5a7` and the same 50 bps markup (`extraFees`). The markup is one constant. Mark refuses anything above 100 bps, and Satora caps the key at 100 bps too.
+- Payout addresses are checked: 0x plus 40 hex, and a valid EIP-55 checksum when the address is mixed case. Mainnet only (Satora has no Arbitrum stablecoin route on mutinynet).
+- New error codes: `BAD_MARKUP`, `SWAP_AMOUNT`, `SWAP_UNSUPPORTED_NETWORK`, `SWAP_FAILED`.
+
+### Changed
+- Nothing changes for escrow deals. Swap keys and preimages stay in the same encrypted swap storage in your Mark home (files 0600). Mark holds no API secret, only the public referral ID.
+
 ## [0.4.3] - 2026-11-21
 
 ### Changed

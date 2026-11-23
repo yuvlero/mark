@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { Client } from "@satora/swap";
-import type { SwapProvider, SwapInfo, ClaimResult } from "./provider.js";
+import type { SwapProvider, SwapInfo, ClaimResult, StableSwapCreated, StableSwapInfo } from "./provider.js";
+import { SWAP_REFERRAL_ID, SWAP_SOURCES, SWAP_TARGETS, checkMarkupBps, type SatoraQuote, type SwapSource, type SwapTarget } from "./stable.js";
 import { encryptWith, decryptWith } from "../crypto/keystore.js";
 import { MarkError } from "../errors.js";
 import { WITNESS_SCRIPT_BUG, WORKAROUND_ID, libTransactionBases, withTaprootWitnessScriptFix } from "./satoraWorkaround.js";
@@ -141,4 +142,34 @@ export class SatoraProvider implements SwapProvider {
     return { success: !!r.success, txid: r.txId, message: r.message };
   }
 
+  // ---------- `mark swap`: BTC (Lightning / Arkade) -> stablecoin on Arbitrum ----------
+  /** Satora getQuote with our referral ID and markup (extraFees in bps, checked against the cap before anything is sent). */
+  async quoteStable(p: { from: SwapSource; to: SwapTarget; sats: number; bps: number }): Promise<SatoraQuote> {
+    const extraFees = checkMarkupBps(p.bps); const s = SWAP_SOURCES[p.from], t = SWAP_TARGETS[p.to];
+    return await this.c.getQuote({ sourceChain: s.chain as any, sourceToken: s.tokenId, targetChain: t.chain as any, targetToken: t.tokenId, sourceAmount: p.sats,
+      referralCode: SWAP_REFERRAL_ID, extraFees }) as any;
+  }
+  /** Satora createSwap with the SAME referral ID and markup as the quote. The claim preimage and keys are kept in this Mark
+   *  home's encrypted swap storage (derived from the agent key), never sent anywhere. */
+  async createStable(p: { from: SwapSource; to: SwapTarget; sats: number; bps: number; address: string }): Promise<StableSwapCreated> {
+    const extraFees = checkMarkupBps(p.bps);
+    const r: any = await stdoutToStderr(() => this.c.createSwap({ source: SWAP_SOURCES[p.from] as any, target: SWAP_TARGETS[p.to] as any, sourceAmount: p.sats, targetAddress: p.address,
+      referralCode: SWAP_REFERRAL_ID, extraFees }));
+    const res = r?.response ?? {};
+    return { id: res.id, status: res.status, invoice: res.bolt11_invoice ?? undefined, arkAddress: res.btc_vhtlc_address ?? undefined,
+      payAmountSats: Number(res.source_amount ?? p.sats), targetAddress: res.target_evm_address ?? p.address, receiveUnits: res.target_amount != null ? String(res.target_amount) : undefined, raw: res };
+  }
+  async getStable(id: string): Promise<StableSwapInfo> {
+    const r: any = await this.c.getSwap(id, { updateStorage: true } as any);
+    let local = false; try { local = !!(await (this.c as any).getStoredSwap?.(id)); } catch { /* unknown */ }
+    return { id: r.id ?? id, status: r.status, direction: r.direction, sourceAmountSats: r.source_amount != null ? Number(r.source_amount) : undefined, targetUnits: r.target_amount != null ? String(r.target_amount) : undefined,
+      targetAddress: r.target_evm_address ?? r.client_evm_address ?? undefined, tokenContract: r.target_token?.token_id ?? undefined, tokenSymbol: r.target_token?.symbol ?? undefined, evmChainId: r.evm_chain_id ?? undefined,
+      payoutTx: r.evm_claim_txid ?? undefined, feeSats: r.fee_sats ?? undefined, createdAt: r.created_at ?? undefined, local, raw: r };
+  }
+  async claimStable(id: string) {
+    try {
+      const r: any = await stdoutToStderr(() => this.c.claim(id));
+      return { success: !!r?.success, txHash: r?.txHash ?? undefined, message: typeof r?.message === "string" ? r.message.slice(0, 500) : undefined };
+    } catch (x) { return { success: false, message: errText(x) }; }
+  }
 }

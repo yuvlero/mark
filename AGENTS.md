@@ -15,3 +15,4 @@
 - If the deadline passes unpaid (buyer): `mark escrow quote <id> --path refund`, then `mark escrow refund <id> --payout-invoice <bolt11>` (or `--payout-lnaddr` / `--payout-ark`).
 - `LIMIT_EXCEEDED` means the escrow is above the cap (1,000,000 sats by default). Ask your human.
 - Default network is mainnet (real money). Use `--network mutinynet` for tests.
+- Swap BTC to stablecoins (standalone, not escrow): `mark swap quote --sats N` then `mark swap --sats N --address 0x… [--from lightning|arkade] [--to usdc|usdt0]` (preview) and `--yes --wait` to create, pay once, claim. USDC / USDT0 on Arbitrum via Satora; includes a 0.5% Agent Escrow fee. `mark swap status|claim <id>`.

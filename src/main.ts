@@ -7,7 +7,8 @@ import { openCtx as openCtx_, type Ctx, type CtxOptions } from "./core/context.j
 import { updateNotice } from "./core/clientVersion.js";
 import type { NetworkName } from "./config.js";
 import * as uc from "./core/usecases.js";
-import { checkEscrowArgs, checkDemoArgs, parseArgs, helpFor } from "./cliArgs.js";
+import { checkEscrowArgs, checkDemoArgs, checkSwapArgs, parseArgs, helpFor } from "./cliArgs.js";
+import * as sw from "./core/swap.js";
 import { mk, firstDealNext } from "./invocation.js";
 import { walletFile } from "./crypto/keystore.js";
 import { RECOMMENDED_WALLET } from "./wallet.js";
@@ -27,7 +28,7 @@ function termsFrom(f: Record<string, string | boolean>): uc.TermsInput {
   for (const [flag, k] of [["title", "title"], ["description", "description"], ["deliverable", "deliverable"], ["acceptance", "acceptance"], ["deliverable-sha256", "deliverableSha256"]]) if (s(f[flag]) !== undefined) t[k] = s(f[flag]);
   return t;
 }
-const USAGE = "mark <init|pubkey|demo|reputation <pubkey>|backup|mcp|escrow create|show|accept|evidence|fund|limits|quote|status|pending|approve|dispute|refund|refund-payout|messages|message|inbox|invites> [--network bitcoin|mutinynet] [--escrow-url URL] [--arbiter-pubkey HEX]";
+const USAGE = "mark <init|pubkey|demo|reputation <pubkey>|backup|mcp|swap [quote|status|claim|refund]|escrow create|show|accept|evidence|fund|limits|quote|status|pending|approve|dispute|refund|refund-payout|messages|message|inbox|invites> [--network bitcoin|mutinynet] [--escrow-url URL] [--arbiter-pubkey HEX]";
 /** `mark` with no args: usage (unchanged keys) plus a short "what you can do now". */
 function quickstart(network: ReturnType<typeof normalizeNetwork>) {
   let firstRun = true; try { firstRun = !fs.existsSync(walletFile(dataDir(network))); } catch { /* keep true */ }
@@ -60,6 +61,19 @@ async function main(): Promise<"keep" | void> {
       const fields = Object.fromEntries(Object.entries(uc.DEMO_INPUT_KEYS).map(([flag, key]) => [key, s(f[flag])]));
       return void out(await uc.demo(await openCtx(network, { escrowUrl, arbiterPubkey }), { offer: s(f.offer), topic: s(f.topic), fields, confirm: f.yes === true, expectSats: f["expect-sats"] !== undefined ? Number(f["expect-sats"]) : undefined,
         wait: f.wait === true, fresh: f.new === true, timeoutSec: f.timeout !== undefined ? Number(f.timeout) : undefined, onProgress: out }));
+    }
+    case "swap": {
+      // standalone: no escrow server call (openCtx_ skips the version-policy check), only Satora
+      const bad = checkSwapArgs(pos[1], pos[2], f); if (bad) throw bad;
+      const c = await openCtx_(network, { escrowUrl, arbiterPubkey }); const id = String(pos[2] ?? "");
+      switch (pos[1]) {
+        case "quote": return void out(await sw.swapQuote(c, { from: s(f.from), to: s(f.to), sats: s(f.sats) }));
+        case "status": return void out(await sw.swapStatus(c, id));
+        case "claim": return void out(await sw.swapClaim(c, id, { wait: f.wait === true, timeoutSec: f.timeout !== undefined ? Number(f.timeout) : undefined }));
+        case "refund": return void out(await sw.swapRefund(c, id, s(f.to)));
+      } // plain `mark swap` or `mark swap create`
+      return void out(await sw.swapRun(c, { from: s(f.from), to: s(f.to), sats: s(f.sats), address: s(f.address), confirm: f.yes === true, wait: f.wait === true,
+        timeoutSec: f.timeout !== undefined ? Number(f.timeout) : undefined, onProgress: out }));
     }
     case "mcp": { const { runMcp } = await import("./mcp.js"); await runMcp(network, { escrowUrl, arbiterPubkey }); return "keep"; }
     case "escrow": {

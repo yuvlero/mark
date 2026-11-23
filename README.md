@@ -349,6 +349,40 @@ mark escrow inbox                              # unread across all your deals
   - If the operator ruled **with your payout destination**, just run `mark escrow approve <id>` (no flags).
   - Otherwise the winner runs `mark escrow approve <id> --with arbiter --payout-lnaddr …` (or `--payout-invoice` with the amount from `quote --dest`).
 
+## 6b. Swap BTC to stablecoins: `mark swap`
+
+`mark swap` turns bitcoin (paid over **Lightning** or from an **Arkade** wallet) into **USDC** or **USDT0** on **Arbitrum One**, through [Satora](https://satora.io). It is standalone: no deal, no escrow server, nothing to do with the escrow flow. Mainnet only (Satora has no Arbitrum stablecoin route on mutinynet).
+
+**Fee: a 0.5% Agent Escrow fee is added** on top of Satora's own fee and the network fee. It is shown openly in every quote and preview (`fees.agentEscrowMarkup`, `agentEscrowMarkupSats`) and paid inside the swap: you never send it separately. Mark passes it to Satora as `extraFees` (50 bps), the same value on the quote and on the swap, with Agent Escrow's public Satora referral ID `lnds_29617a89f8a6b5a7`. Mark refuses any markup above 100 bps.
+
+```sh
+# 1) quote (free, nothing is created)
+mark swap quote --from lightning --to usdc --sats 100000
+# 2) preview with your payout address (still nothing is created)
+mark swap --from lightning --to usdc --sats 100000 --address 0xYourArbitrumAddress
+# 3) create it, pay the invoice it prints, and let Mark claim the stablecoins
+mark swap --from lightning --to usdc --sats 100000 --address 0xYourArbitrumAddress --yes --wait
+```
+
+Example quote (100,000 sats, Lightning → USDC; numbers move with the market):
+
+```json
+{"quote":{"from":"lightning","to":"usdc","payAmountSats":100000,"rate":"61292.781 USDC per BTC","receive":"60.675562",
+ "fees":{"satoraFeeSats":500,"satoraFeeRate":0.005,"agentEscrowMarkupSats":500,"agentEscrowMarkupBps":50,"agentEscrowMarkup":"0.5%","networkFeeSats":7,"totalFeeSats":1007},
+ "markupNote":"Includes a 0.5% Agent Escrow fee (500 sats), on top of Satora's fee. Paid inside the swap; nothing extra to send.",
+ "limits":{"minSats":356,"maxSats":20000000},"referral":"lnds_29617a89f8a6b5a7"}}
+```
+
+- `--from lightning` (default) prints a Lightning **hold invoice**: pay it once from any wallet. It settles only when the stablecoins are claimed; otherwise it expires and your wallet keeps the sats.
+- `--from arkade` prints an Ark address and the exact `amountSats`: pay it in ONE payment from an Arkade wallet on https://arkade.computer (not Bark / Second). If the swap fails, `mark swap refund <id> --to <your ark address>` after its timelock.
+- `--to usdc` (default) or `--to usdt0` (USDT0 on Arbitrum, the former USDT contract `0xFd08…Cbb9`).
+- `--address` is your EVM address on Arbitrum. Mixed-case addresses must have a valid EIP-55 checksum. **A payout to a wrong address cannot be undone.**
+- `--wait` waits for the payment (up to `--timeout`, default 900 s), claims as soon as Satora funds its side (gasless: you need no ETH), and prints `payoutTx` with an Arbiscan link. Without `--wait`, run `mark swap claim <id> --wait` after paying.
+- Non-custodial: the swap's claim and refund keys and its preimage stay in this Mark home (`~/.mark/bitcoin/swaps/`, encrypted, files 0600), derived from the agent key. Claim from the same Mark home. Mark holds no API secret: only the public referral ID.
+- `mark swap status <id>` (read-only) and `mark swap claim <id>` (safe to repeat) work on any swap this home created.
+
+**First mainnet test (small):** `mark swap quote --sats 5000`, then `mark swap --sats 5000 --address <your 0x address> --yes --wait`, pay the invoice (about 5,000 sats), check `payoutTx` on Arbiscan and the USDC in your wallet (about 3 USDC at today's rate, minus the fees shown).
+
 ## 7. Command reference
 
 Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL` (https; http only for localhost), `--arbiter-pubkey <hex>` (explicit arbiter identity pin; env `MARK_ARBITER_PUBKEY`). Operator-only env `MARK_HOUSE_KEY`: sent as `x-escrow-house` so the escrow operator's own runs are counted as house traffic (sent only to `https://agentescrow.to`, an https origin in `MARK_HOUSE_ORIGIN`, or loopback; leave it unset).
@@ -380,6 +414,11 @@ Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL` (https; http onl
 | `mark escrow message <id> --text "..." [--kind question\|dispute\|evidence\|info] [--reply-to <msgId>]` | Post to the thread |
 | `mark escrow inbox` | Unread messages across your deals |
 | `mark escrow invites [--all] [--needs accept\|fund\|sign\|any] [--state s]` | Deals for my key: waiting for my accept (default), or all / filtered. Each item has `needs`, `awaiting`, `action_required_for`, `nextStep`. Signed request, no id needed |
+| `mark swap quote [--from lightning\|arkade] [--to usdc\|usdt0] --sats N` | Quote BTC → stablecoin on Arbitrum: rate, what you receive, Satora fee, the 0.5% Agent Escrow markup, network fee, total. Nothing is created |
+| `mark swap [--from lightning\|arkade] [--to usdc\|usdt0] --sats N --address 0x… [--yes] [--wait] [--timeout sec]` | Preview (no `--yes`), or create the swap: prints the invoice / Ark address to pay; `--wait` claims and prints `payoutTx`. Includes a 0.5% Agent Escrow fee |
+| `mark swap status <id>` | Swap status (read-only), amount, `payoutTx` once claimed |
+| `mark swap claim <id> [--wait] [--timeout sec]` | Claim a paid swap's stablecoins to its address (safe to repeat) |
+| `mark swap refund <id> --to <ark address>` | Arkade-funded swap that did not pay out: refund after its timelock |
 
 Usage mistakes return `{"code":"USAGE","error":"…","details":{"usage":…}}` before any network call.
 
@@ -405,6 +444,9 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 | `escrow_evidence` (id, text?, note?, sha256?, file?, url?) | `escrow evidence` |
 | `escrow_messages` (id, since?), `escrow_message` (id, text, kind?, replyTo?), `escrow_inbox` | messages |
 | `escrow_invites` (all?, needs?, state?) | `escrow invites` |
+| `swap_quote` (from?, to?, sats) | `swap quote` |
+| `swap_create` (from?, to?, sats, address, confirm?) | `swap` (creates the real swap only with `confirm: true`; then pay and call `swap_claim` with `wait: true`) |
+| `swap_status` (id), `swap_claim` (id, wait?), `swap_refund` (id, to) | `swap status`, `swap claim`, `swap refund` |
 
 ## 9. Error codes
 
@@ -447,6 +489,10 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 | `BAD_MESSAGE` / `BAD_EVIDENCE` | Empty, too long (4,000) or contains control characters |
 | `LOCKED` / `BAD_PASSWORD` | Wrong `MARK_PASSWORD` or password file |
 | `NOT_A_TTY` | `backup` needs an interactive terminal |
+| `BAD_MARKUP` | `mark swap`: the markup is not a whole number of bps from 0 to 100; nothing was sent |
+| `SWAP_AMOUNT` | `mark swap`: amount outside Satora's min/max for the pair (see `details.quote.limits`) |
+| `SWAP_UNSUPPORTED_NETWORK` | `mark swap` runs on bitcoin mainnet only |
+| `SWAP_FAILED` | Satora did not create the swap; nothing to pay. Retry |
 
 ## 10. Security notes
 
