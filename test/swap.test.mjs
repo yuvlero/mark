@@ -8,8 +8,10 @@ import { SWAP_REFERRAL_ID, SWAP_MARKUP_BPS, SWAP_MARKUP_CAP_BPS, SWAP_TARGETS, c
 import * as sw from "../dist/src/core/swap.js";
 import { checkSwapArgs, parseArgs, helpFor, SWAP_USAGE } from "../dist/src/cliArgs.js";
 import { openCtx } from "../dist/src/core/context.js";
-import { tmpHome } from "./mockApi.mjs";
+import { tmpHome, payoutArk } from "./mockApi.mjs";
+import { makeInvoice } from "./helpers.mjs";
 
+const VHTLC = payoutArk(3, "ark"); // a mainnet Ark address (the swap's VHTLC in these mocks)
 const ADDR = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"; // a valid EIP-55 address (USDC's contract; only its format matters here)
 /** Shape of a real Satora mainnet quote for 100,000 sats Lightning -> USDC with extraFees 50 (23 Nov 2026). */
 const Q = { exchange_rate: "61292.781", network_fee: 7, gasless_network_fee: 0, protocol_fee: 1000, protocol_fee_rate: 0.01, min_amount: 356, max_amount: 20000000,
@@ -22,11 +24,12 @@ function mockClient(o = {}) {
   const client = {
     getQuote: async (p) => { calls.getQuote.push(p); return o.quote ?? Q; },
     createSwap: async (p) => { calls.createSwap.push(p); return { response: { id: "sw-1", status: "pending", source_amount: String(p.sourceAmount), target_amount: "60675562", target_evm_address: p.targetAddress,
-      ...(p.source.chain === "Lightning" ? { bolt11_invoice: "lnbc1000u1test" } : { btc_vhtlc_address: "ark1qvhtlc" }) } }; },
-    getSwap: async (id) => { calls.getSwap.push(id); const s = statuses.length > 1 ? statuses.shift() : statuses[0]; return { id, status: s, direction: "lightning_to_evm", source_amount: "100000", target_amount: "60675562",
+      ...(p.source.chain === "Lightning" ? { bolt11_invoice: makeInvoice({ sats: p.sourceAmount }) } : { btc_vhtlc_address: VHTLC }), ...(o.tamper ?? {}) } }; },
+    getSwap: async (id) => { calls.getSwap.push(id); const s = statuses.length > 1 ? statuses.shift() : statuses[0]; return { id, status: s, direction: o.direction ?? "lightning_to_evm", arkade_server_pk: "5a".repeat(32), source_amount: "100000", target_amount: "60675562",
       target_evm_address: ADDR, target_token: { token_id: SWAP_TARGETS.usdc.tokenId, symbol: "USDC" }, evm_chain_id: 42161, ...(s === "serverredeemed" ? { evm_claim_txid: "0xpayout" } : {}) }; },
     getStoredSwap: async () => ({ swapId: "sw-1" }),
     claim: async (id) => { calls.claim.push(id); return o.claim ?? { success: true, txHash: "0xpayout", message: "ok" }; },
+    refundSwap: async (id, opts) => { calls.refund = [...(calls.refund ?? []), { id, ...opts }]; return o.refund ?? { success: true, txId: "arkrefund1" }; },
   };
   return { client, calls };
 }
@@ -81,12 +84,12 @@ test("satora: createSwap carries the SAME referralCode and extraFees as getQuote
   const { client, calls } = mockClient(); const p = provider(client);
   const r = await p.createStable({ from: "lightning", to: "usdc", sats: 100000, bps: SWAP_MARKUP_BPS, address: ADDR });
   assert.deepEqual(calls.createSwap[0], { source: { chain: "Lightning", tokenId: "btc" }, target: SWAP_TARGETS.usdc, sourceAmount: 100000, targetAddress: ADDR, referralCode: SWAP_REFERRAL_ID, extraFees: 50 });
-  assert.equal(r.id, "sw-1"); assert.equal(r.invoice, "lnbc1000u1test");
+  assert.equal(r.id, "sw-1"); assert.match(r.invoice, /^lnbc1000000n/);
 });
 test("mark swap (create): getQuote and createSwap both get referral ID + 50 bps, identical values", async () => {
   const { client, calls } = mockClient(); const c = ctxWith(provider(client));
   const r = await sw.swapRun(c, { from: "lightning", to: "usdc", sats: 100000, address: ADDR, confirm: true });
-  assert.equal(r.swap, "created"); assert.equal(r.invoice, "lnbc1000u1test"); assert.equal(r.quote.fees.agentEscrowMarkup, "0.5%");
+  assert.equal(r.swap, "created"); assert.match(r.invoice, /^lnbc/); assert.equal(r.quote.fees.agentEscrowMarkup, "0.5%");
   assert.equal(calls.getQuote.length, 1); assert.equal(calls.createSwap.length, 1);
   for (const call of [calls.getQuote[0], calls.createSwap[0]]) { assert.equal(call.referralCode, SWAP_REFERRAL_ID); assert.equal(call.extraFees, SWAP_MARKUP_BPS); }
   assert.match(r.next, /swap claim sw-1 --wait/);
@@ -106,7 +109,7 @@ test("mark swap quote: referral ID + extraFees sent; out-of-range amounts flagge
 test("mark swap --wait: shows the invoice first, claims when serverfunded, returns the payout tx", async () => {
   const { client, calls } = mockClient({ statuses: ["pending", "clientfunded", "serverfunded", "serverredeemed"] }); const seen = [];
   const r = await sw.swapRun(ctxWith(provider(client)), { sats: 100000, address: ADDR, confirm: true, wait: true, pollMs: 1, onProgress: (x) => seen.push(x) });
-  assert.equal(seen[0].invoice, "lnbc1000u1test"); assert.equal(r.swap, "done"); assert.equal(r.payoutTx, "0xpayout"); assert.equal(r.explorer, "https://arbiscan.io/tx/0xpayout");
+  assert.match(seen[0].invoice, /^lnbc1000000n/); assert.equal(r.swap, "done"); assert.equal(r.payoutTx, "0xpayout"); assert.equal(r.explorer, "https://arbiscan.io/tx/0xpayout");
   assert.deepEqual(calls.claim, ["sw-1"]);
 });
 test("claim failure stops at once with the reason and says not to pay again", async () => {
@@ -174,4 +177,45 @@ test("no API secret: swap code carries only the public referral ID, no keys or a
     const src = rd(f);
     assert.doesNotMatch(src, /api[_-]?key|apiSecret|x-api-key|authorization|bearer|withDefaultHeaders/i, f);
   }
+});
+
+// ---------- review fixes: never tell a payer to pay twice; check what Satora created before showing it ----------
+test("payment seen (clientfundingseen / clientfunded): claim and status say do NOT pay again, and never claim", async () => {
+  for (const st of ["clientfundingseen", "clientfunded"]) {
+    const { client, calls } = mockClient({ statuses: [st], direction: "arkade_to_evm" }); const c = ctxWith(provider(client));
+    const r = await sw.swapClaim(c, "sw-1"); assert.match(r.note, /Do NOT pay again/); assert.doesNotMatch(r.note, /Pay first|Not paid/);
+    assert.match((await sw.swapStatus(c, "sw-1")).next, /Do NOT pay again/); assert.equal(calls.claim.length, 0);
+  }
+});
+test("expired: no 'unpaid' claim; Arkade swaps point to the refund, Lightning to the auto-return", async () => {
+  const ark = await sw.swapStatus(ctxWith(provider(mockClient({ statuses: ["expired"], direction: "arkade_to_evm" }).client)), "sw-1");
+  assert.match(ark.next, /swap refund sw-1 --to/); assert.doesNotMatch(ark.next, /without a payment/);
+  const ln = await sw.swapStatus(ctxWith(provider(mockClient({ statuses: ["expired"] }).client)), "sw-1");
+  assert.match(ln.next, /returns to your wallet by itself/);
+});
+test("create: a swap that does not match what was confirmed is refused before anything payable is shown", async () => {
+  const other = "0x" + "1".repeat(40);
+  for (const [tamper, why, from] of [[{ target_evm_address: other }, /payout address/], [{ source_amount: "100001" }, /amount 100001/], [{ bolt11_invoice: undefined }, /no Lightning invoice/],
+    [{ bolt11_invoice: makeInvoice({ sats: 200000 }) }, /invoice asks for 200000/], [{ bolt11_invoice: makeInvoice({ sats: 100000, network: "mutinynet" }) }, /no Lightning invoice for this network/],
+    [{ id: undefined }, /no swap id/], [{ btc_vhtlc_address: payoutArk(3, "tark") }, /tark1/, "arkade"], [{ btc_vhtlc_address: undefined }, /no Ark address/, "arkade"]]) {
+    const { client } = mockClient({ tamper }); const seen = [];
+    await assert.rejects(sw.swapRun(ctxWith(provider(client)), { from: from ?? "lightning", sats: 100000, address: ADDR, confirm: true, wait: true, onProgress: (x) => seen.push(x) }),
+      (e) => e.code === "SWAP_FAILED" && why.test(e.message) && /Do NOT pay/.test(e.message), JSON.stringify(tamper));
+    assert.equal(seen.length, 0);
+  }
+  // address case differences are fine; an Arkade swap shows the Ark address and exact sats
+  const ok = await sw.swapRun(ctxWith(provider(mockClient({ tamper: { target_evm_address: ADDR.toLowerCase() } }).client)), { from: "arkade", sats: 100000, address: ADDR, confirm: true });
+  assert.equal(ok.arkAddress, VHTLC); assert.equal(ok.amountSats, 100000); assert.match(ok.howToPay, /swap refund sw-1/);
+});
+test("swap refund: Arkade swaps only, address checked against the swap's Arkade server, result passed through", async () => {
+  const mk = (o) => { const m = mockClient({ direction: "arkade_to_evm", statuses: ["expired"], ...o }); return { ...m, c: ctxWith(provider(m.client)) }; };
+  const a = mk(); const r = await sw.swapRefund(a.c, "sw-1", payoutArk(4, "ark"));
+  assert.deepEqual(r, { id: "sw-1", refunded: true, txid: "arkrefund1" }); assert.equal(a.calls.refund[0].destinationAddress, payoutArk(4, "ark"));
+  await assert.rejects(sw.swapRefund(mk({ direction: "lightning_to_evm" }).c, "sw-1", payoutArk(4, "ark")), (e) => e.code === "USAGE" && /expires/.test(e.message));
+  await assert.rejects(sw.swapRefund(mk().c, "sw-1", payoutArk(4, "tark")), (e) => e.code === "BAD_DEST");
+  const otherServer = mk({}); otherServer.client.getSwap = async (id) => ({ id, status: "expired", direction: "arkade_to_evm", arkade_server_pk: "7c".repeat(32) });
+  await assert.rejects(sw.swapRefund(otherServer.c, "sw-1", payoutArk(4, "ark")), (e) => e.code === "BAD_DEST" && /different Ark server/.test(e.message));
+  const fail = await sw.swapRefund(mk({ refund: { success: false, message: "timelock not reached" } }).c, "sw-1", payoutArk(4, "ark"));
+  assert.equal(fail.refunded, false); assert.equal(fail.message, "timelock not reached");
+  await assert.rejects(sw.swapRefund(mk().c, "sw-1", undefined), (e) => e.code === "USAGE");
 });

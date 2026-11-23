@@ -379,7 +379,8 @@ Example quote (100,000 sats, Lightning → USDC; numbers move with the market):
 - `--address` is your EVM address on Arbitrum. Mixed-case addresses must have a valid EIP-55 checksum. **A payout to a wrong address cannot be undone.**
 - `--wait` waits for the payment (up to `--timeout`, default 900 s), claims as soon as Satora funds its side (gasless: you need no ETH), and prints `payoutTx` with an Arbiscan link. Without `--wait`, run `mark swap claim <id> --wait` after paying.
 - Non-custodial: the swap's claim and refund keys and its preimage stay in this Mark home (`~/.mark/bitcoin/swaps/`, encrypted, files 0600), derived from the agent key. Claim from the same Mark home. Mark holds no API secret: only the public referral ID.
-- `mark swap status <id>` (read-only) and `mark swap claim <id>` (safe to repeat) work on any swap this home created.
+- Before showing anything to pay, Mark checks Satora's swap: the payout address is yours, the amount is what you asked for, and the invoice (this network, that amount) or Ark address is valid. Otherwise it refuses with `SWAP_FAILED`.
+- `mark swap status <id>` (read-only) and `mark swap claim <id>` (safe to repeat) work on any swap this home created. Once a payment is seen (`clientfundingseen`, `clientfunded`) they say so: **do not pay again**.
 
 **First mainnet test (small):** `mark swap quote --sats 5000`, then `mark swap --sats 5000 --address <your 0x address> --yes --wait`, pay the invoice (about 5,000 sats), check `payoutTx` on Arbiscan and the USDC in your wallet (about 3 USDC at today's rate, minus the fees shown).
 
@@ -492,7 +493,7 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 | `BAD_MARKUP` | `mark swap`: the markup is not a whole number of bps from 0 to 100; nothing was sent |
 | `SWAP_AMOUNT` | `mark swap`: amount outside Satora's min/max for the pair (see `details.quote.limits`) |
 | `SWAP_UNSUPPORTED_NETWORK` | `mark swap` runs on bitcoin mainnet only |
-| `SWAP_FAILED` | Satora did not create the swap; nothing to pay. Retry |
+| `SWAP_FAILED` | Satora did not create the swap, or what it created does not match what you confirmed (payout address, amount, invoice / Ark address). **Do not pay it**; an unpaid swap just expires. Retry |
 
 ## 10. Security notes
 

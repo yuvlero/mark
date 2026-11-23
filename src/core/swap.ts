@@ -6,13 +6,18 @@ import type { Ctx } from "./context.js";
 import type { SwapProvider } from "../swap/provider.js";
 import { mk } from "../invocation.js";
 import { checkArkadeAddress } from "./arkAddress.js";
+import { decodeInvoice, networkOk } from "../lightning/invoice.js";
+import type { StableSwapCreated } from "../swap/provider.js";
 import { ARBISCAN_TX, SWAP_MARKUP_BPS, SWAP_TARGETS, checkEvmAddress, checkMarkupBps, formatSwapQuote, swapSats, swapSource, swapTarget, units, type SwapSource } from "../swap/stable.js";
 
 export interface SwapQuoteInput { from?: string; to?: string; sats?: number | string }
 export interface SwapRunInput extends SwapQuoteInput { address?: string; confirm?: boolean; wait?: boolean; timeoutSec?: number; pollMs?: number; onProgress?: (x: unknown) => void }
 
-/** Swap statuses: waiting for the BTC payment; ready to claim; done; failed/ended without a payout. */
-const WAITING = new Set(["pending", "clientfundingseen", "clientfunded"]);
+/** Swap statuses: not paid yet; paid, waiting for Satora's side; ready to claim; done; anything else ended without a payout. */
+const UNPAID = new Set(["pending"]);
+const PAID_WAITING = new Set(["clientfundingseen", "clientfunded"]);
+const WAITING = new Set([...UNPAID, ...PAID_WAITING]);
+const PAID_NOTE = "Your payment was seen: wait for Satora to fund its side, then claim. Do NOT pay again.";
 const CLAIMABLE = new Set(["serverfunded", "clientredeeming"]);
 const DONE = new Set(["clientredeemed", "serverredeemed"]);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -53,12 +58,30 @@ export async function swapRun(c: Ctx, i: SwapRunInput) {
     notice: `REAL MONEY: this swaps ${p.sats} sats of bitcoin mainnet into about ${quote.receive} ${t.symbol} on Arbitrum, sent to ${address}. Check the address: a payout to a wrong address cannot be undone. ${quote.markupNote}`,
     next: `Nothing was created. To create it: ${mk()} swap --from ${p.from} --to ${p.to} --sats ${p.sats} --address ${address} --yes --wait` };
   const created = await s.createStable({ ...p, address });
-  if (!created.id) throw new MarkError("SWAP_FAILED", "Satora returned no swap id");
+  checkCreated(c, p, address, created);
   const first = { swap: "created", id: created.id, status: created.status, from: p.from, to: p.to, payoutAddress: created.targetAddress, quote, ...payInstructions(p.from, created),
     next: i.wait && i.onProgress ? "Waiting for your payment, then Mark claims the stablecoins to your address." : `After paying, run: ${mk()} swap claim ${created.id} --wait  (claims as soon as Satora funds its side)` };
   if (!i.wait || !i.onProgress) return first; // waiting is only useful once the payer has seen the invoice / address
   i.onProgress?.(first);
   return { ...(await waitAndClaim(s, created.id, { timeoutSec: i.timeoutSec, pollMs: i.pollMs })), from: p.from, to: p.to, payoutAddress: created.targetAddress };
+}
+
+/** Before showing anything payable: the swap must pay out to the confirmed address, ask for exactly the requested sats, and carry a
+ *  payable invoice (this network, that amount) or an Ark address for this network. Else SWAP_FAILED: do not pay (an unpaid swap
+ *  simply expires). */
+function checkCreated(c: Ctx, p: { from: SwapSource; sats: number }, address: string, x: StableSwapCreated) {
+  const bad = (why: string) => { throw new MarkError("SWAP_FAILED", `Satora's swap does not match what you confirmed (${why}). Do NOT pay it; nothing is lost while it is unpaid.`, { id: x?.id }); };
+  if (!x?.id) bad("no swap id");
+  if (String(x.targetAddress ?? "").toLowerCase() !== address.toLowerCase()) bad(`payout address ${x.targetAddress} is not ${address}`);
+  if (!Number.isSafeInteger(x.payAmountSats) || x.payAmountSats !== p.sats) bad(`amount ${x.payAmountSats} sats is not ${p.sats}`);
+  if (p.from === "lightning") {
+    if (!x.invoice || !networkOk(x.invoice, c.network)) bad("no Lightning invoice for this network");
+    let sats: number | undefined; try { sats = decodeInvoice(x.invoice!).sats; } catch { bad("undecodable invoice"); }
+    if (sats !== p.sats) bad(`invoice asks for ${sats ?? "no amount"} sats, not ${p.sats}`);
+  } else {
+    if (!x.arkAddress) bad("no Ark address to pay");
+    try { checkArkadeAddress(x.arkAddress, { network: c.network, arkServerUrl: c.cfg.arkServerUrl, what: "swap address" }); } catch (e: any) { bad(e?.message ?? "bad Ark address"); }
+  }
 }
 
 async function waitAndClaim(s: Awaited<ReturnType<typeof stable>>, id: string, o: { timeoutSec?: number; pollMs?: number }) {
@@ -71,16 +94,20 @@ async function waitAndClaim(s: Awaited<ReturnType<typeof stable>>, id: string, o
       claim = await s.claimStable(id);
       if (!claim.success) return { id, status: last, claimFailed: true, claim, note: `The swap is funded but the claim failed. Your payment is safe while status is ${last}: retry with ${mk()} swap claim ${id} (same Mark home). Do NOT pay again.` };
       if (claim.txHash) return done(id, last, claim.txHash);
-    } else if (!WAITING.has(last) && !CLAIMABLE.has(last)) return { id, status: last, ended: true, note: endedNote(last, id) };
+    } else if (!WAITING.has(last) && !CLAIMABLE.has(last)) return { id, status: last, ended: true, note: endedNote(last, id, info.direction) };
     await sleep(poll);
   }
   return { id, status: last, timeout: true, note: `timeout at swap status ${last}. Run ${mk()} swap status ${id}; once it is serverfunded run ${mk()} swap claim ${id}. Do NOT pay again.` };
 }
 const done = (id: string, status: string, tx?: string) => ({ id, status, swap: "done", ...(tx ? { payoutTx: tx, explorer: ARBISCAN_TX + tx } : {}), note: tx ? "Stablecoins sent to your address." : "Claimed; the payout tx id is not known yet: check mark swap status." });
-function endedNote(status: string, id: string) {
-  if (status === "expired") return "The swap expired without a payment. Nothing to do (a Lightning hold invoice was never settled).";
-  if (/refunded/.test(status)) return `The swap was refunded (${status}).`;
-  return `The swap ended without a payout (${status}). For an Arkade-funded swap, refund it after its timelock: ${mk()} swap refund ${id} --to <your ark address>.`;
+/** Ended without a payout. Never claims "unpaid" from the status alone: a Lightning hold invoice that was paid but not settled goes
+ *  back to the payer's wallet by itself; Arkade sats sent to the swap address come back only with a refund after its timelock. */
+function endedNote(status: string, id: string, direction?: string) {
+  const ark = `If you sent sats to its Ark address, get them back after the timelock with ${mk()} swap refund ${id} --to <your ark address>.`;
+  const ln = "A paid Lightning hold invoice that was not settled returns to your wallet by itself when it times out; nothing to do.";
+  const how = direction === "arkade_to_evm" ? ark : direction === "lightning_to_evm" ? ln : `${ln} ${ark}`;
+  if (/clientrefunded/.test(status) && !/serverfunded$/.test(status)) return `The swap was refunded to you (${status}).`;
+  return `The swap ended without a payout (${status}). ${how}`;
 }
 
 /** Status of a swap (read-only), with the payout tx once claimed. */
@@ -91,8 +118,8 @@ export async function swapStatus(c: Ctx, id: string) {
   const { raw: _raw, ...info } = x;
   return { ...info, ...(t && x.targetUnits ? { receive: units(x.targetUnits, t.decimals), token: t.symbol } : {}),
     ...(x.payoutTx ? { explorer: ARBISCAN_TX + x.payoutTx } : {}),
-    next: CLAIMABLE.has(x.status) ? (x.local ? `Funded: claim it with ${mk()} swap claim ${id}` : "Funded, but this Mark home does not hold the swap's claim key: run the claim from the Mark home that created it.")
-      : WAITING.has(x.status) ? "Waiting for the BTC payment (or for Satora to fund its side)." : DONE.has(x.status) ? "Done." : endedNote(x.status, id) };
+    next: CLAIMABLE.has(x.status) ? (x.local ? `Funded: claim it with ${mk()} swap claim ${id}` : "Funded, but this Mark home does not hold the swap's claim key: run the claim from the Mark home that created it. Do NOT pay again.")
+      : PAID_WAITING.has(x.status) ? PAID_NOTE : UNPAID.has(x.status) ? "Waiting for your payment." : DONE.has(x.status) ? "Done." : endedNote(x.status, id, x.direction) };
 }
 
 /** Claim a funded swap to the address fixed at create (gasless). Safe to repeat. wait: first wait for the payment / funding. */
@@ -102,7 +129,8 @@ export async function swapClaim(c: Ctx, id: string, o: { wait?: boolean; timeout
   if (o.wait) return waitAndClaim(s, id, o);
   const x = await s.getStable(id);
   if (DONE.has(x.status)) return done(id, x.status, x.payoutTx);
-  if (!CLAIMABLE.has(x.status)) return { id, status: x.status, claimed: false, note: WAITING.has(x.status) ? "Not funded yet: nothing to claim. Pay first, or wait for Satora to fund its side." : endedNote(x.status, id) };
+  if (!CLAIMABLE.has(x.status)) return { id, status: x.status, claimed: false, note: PAID_WAITING.has(x.status) ? `Nothing to claim yet. ${PAID_NOTE} (${mk()} swap claim ${id} --wait claims as soon as it is funded)`
+    : UNPAID.has(x.status) ? "Not paid yet: nothing to claim. Pay the swap's invoice / Ark address once (shown when it was created)." : endedNote(x.status, id, x.direction) };
   const r = await s.claimStable(id);
   if (!r.success) return { id, status: x.status, claimFailed: true, claim: r, note: "Claim failed; retry later. Do NOT pay again." };
   return done(id, x.status, r.txHash);

@@ -14,6 +14,7 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 - `mark swap status <id>`, `mark swap claim <id> [--wait]` and `mark swap refund <id> --to <ark address>` (Arkade-funded swaps only, after the timelock).
 - MCP tools `swap_quote`, `swap_create` (needs `confirm: true` to create), `swap_status`, `swap_claim` (with `wait`) and `swap_refund`.
 - Every swap quote and every swap carries Agent Escrow's public Satora referral ID `lnds_29617a89f8a6b5a7` and the same 50 bps markup (`extraFees`). The markup is one constant. Mark refuses anything above 100 bps, and Satora caps the key at 100 bps too.
+- Before showing anything to pay, Mark checks the swap Satora created: payout address, amount, and the invoice (network and amount) or Ark address. A mismatch is refused with `SWAP_FAILED`. Once a payment is seen, status and claim say not to pay again.
 - Payout addresses are checked: 0x plus 40 hex, and a valid EIP-55 checksum when the address is mixed case. Mainnet only (Satora has no Arbitrum stablecoin route on mutinynet).
 - New error codes: `BAD_MARKUP`, `SWAP_AMOUNT`, `SWAP_UNSUPPORTED_NETWORK`, `SWAP_FAILED`.
 
