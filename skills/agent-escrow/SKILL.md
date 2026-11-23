@@ -50,6 +50,7 @@ Every response has `awaiting` and `action_required_for`. Act only when it is you
 - Lightning payouts also pay a small swap fee. Exact numbers: `mark escrow limits --sats <N>` → `feePreview`.
 
 ## Swap BTC to stablecoins (optional, not escrow)
+- `mark swap routes` (`swap_routes`): the supported routes with Satora's live min / max sats (read-only).
 - `mark swap quote --sats <N> [--from lightning|arkade] [--to usdc|usdt0]` (`swap_quote`): BTC → USDC or USDT0 on Arbitrum via Satora. **Includes a 0.5% Agent Escrow fee**, shown in the quote.
 - `mark swap --sats <N> --address <0x…>` previews; add `--yes --wait` to create it, pay the invoice once, and get `payoutTx` (`swap_create` with `confirm: true`, then `swap_claim` with `wait: true`). Real money; a wrong address cannot be undone: confirm it with your human.
 

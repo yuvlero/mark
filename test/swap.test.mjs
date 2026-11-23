@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { SatoraProvider } from "../dist/src/swap/satora.js";
-import { SWAP_REFERRAL_ID, SWAP_MARKUP_BPS, SWAP_MARKUP_CAP_BPS, SWAP_TARGETS, checkMarkupBps, splitSwapFees, formatSwapQuote, checkEvmAddress, units, pct } from "../dist/src/swap/stable.js";
+import { SWAP_REFERRAL_ID, SWAP_MARKUP_BPS, SWAP_MARKUP_CAP_BPS, SWAP_TARGETS, SWAP_SOURCES, checkMarkupBps, splitSwapFees, formatSwapQuote, checkEvmAddress, units, pct } from "../dist/src/swap/stable.js";
 import * as sw from "../dist/src/core/swap.js";
 import { checkSwapArgs, parseArgs, helpFor, SWAP_USAGE } from "../dist/src/cliArgs.js";
 import { openCtx } from "../dist/src/core/context.js";
@@ -277,4 +277,45 @@ test("stable claims of different swaps run one at a time (same per-process seria
   const p = provider(client); const a = p.claimStable("a"), b = p.claimStable("b");
   await new Promise((r) => setTimeout(r, 20)); assert.deepEqual(order, ["start a"]); release(); await Promise.all([a, b]);
   assert.deepEqual(order, ["start a", "end a", "start b", "end b"]);
+});
+
+// ---------- mark swap routes (read-only) ----------
+test("swap routes: every SWAP_SOURCES x SWAP_TARGETS route with Satora's live min/max; quotes only, never creates", async () => {
+  const { client, calls } = mockClient(); const q = client.getQuote;
+  client.getQuote = async (p) => ({ ...(await q(p)), min_amount: p.sourceChain === "Arkade" ? 335 : 356 });
+  const r = await sw.swapRoutes(ctxWith(provider(client)));
+  assert.deepEqual(r.routes.map((x) => `${x.from}->${x.to}`), Object.keys(SWAP_SOURCES).flatMap((f) => Object.keys(SWAP_TARGETS).map((t) => `${f}->${t}`)));
+  assert.equal(r.routes.length, 4);
+  for (const x of r.routes) {
+    const t = SWAP_TARGETS[x.to];
+    assert.deepEqual({ source: x.source, token: x.token, chain: x.chain, chainId: x.chainId, contract: x.contract }, { source: SWAP_SOURCES[x.from].chain, token: t.symbol, chain: t.network, chainId: Number(t.chain), contract: t.tokenId });
+    assert.deepEqual(x.limits, { minSats: x.from === "arkade" ? 335 : 356, maxSats: 20000000 }); assert.equal(x.limitsNote, undefined);
+  }
+  assert.equal(calls.getQuote.length, 4); assert.equal(calls.createSwap.length, 0); assert.equal(calls.claim.length, 0);
+  for (const g of calls.getQuote) { assert.equal(g.referralCode, SWAP_REFERRAL_ID); assert.equal(g.extraFees, SWAP_MARKUP_BPS); }
+  assert.deepEqual(r.markup, { bps: 50, percent: "0.5%", note: "Every swap includes a 0.5% Agent Escrow fee, on top of Satora's fee. Paid inside the swap; nothing extra to send." });
+  assert.equal(r.referral, SWAP_REFERRAL_ID);
+});
+test("swap routes: a failed or incomplete limits lookup still lists every route, limits unavailable, no error", async () => {
+  // one route's quote fails, one has no min/max: only those are unavailable
+  let { client, calls } = mockClient(); const q = client.getQuote;
+  client.getQuote = async (p) => { if (p.targetToken === SWAP_TARGETS.usdt0.tokenId && p.sourceChain === "Arkade") throw new Error("satora down"); const x = await q(p); return p.sourceChain === "Lightning" && p.targetToken === SWAP_TARGETS.usdt0.tokenId ? { ...x, min_amount: undefined } : x; };
+  let r = await sw.swapRoutes(ctxWith(provider(client)));
+  const by = Object.fromEntries(r.routes.map((x) => [`${x.from}->${x.to}`, x]));
+  assert.deepEqual(by["lightning->usdc"].limits, { minSats: 356, maxSats: 20000000 });
+  assert.equal(by["arkade->usdt0"].limits, "unavailable"); assert.match(by["arkade->usdt0"].limitsNote, /satora down/);
+  assert.equal(by["lightning->usdt0"].limits, "unavailable"); assert.match(by["lightning->usdt0"].limitsNote, /no min\/max/);
+  assert.equal(calls.createSwap.length, 0);
+  // the provider cannot even be opened: all four listed, all unavailable
+  r = await sw.swapRoutes({ network: "bitcoin", cfg: {}, swaps: async () => { throw new Error("no provider"); } });
+  assert.equal(r.routes.length, 4); assert.ok(r.routes.every((x) => x.limits === "unavailable" && /no provider/.test(x.limitsNote)));
+  // mutinynet: no Satora stablecoin routes, so no lookup at all
+  ({ client, calls } = mockClient());
+  r = await sw.swapRoutes(ctxWith(provider(client), "mutinynet"));
+  assert.equal(r.routes.length, 4); assert.ok(r.routes.every((x) => x.limits === "unavailable" && /mainnet only/.test(x.limitsNote))); assert.equal(calls.getQuote.length, 0);
+});
+test("swap routes CLI: takes no amount / address / wait flags; --json is fine; help shows its usage", () => {
+  assert.equal(checkSwapArgs("routes", undefined, {}), null); assert.equal(checkSwapArgs("routes", undefined, { json: true }), null);
+  for (const f of [{ sats: "5" }, { address: ADDR }, { from: "lightning" }, { to: "usdc" }, { wait: true }, { yes: true }, { timeout: "5" }]) assert.equal(checkSwapArgs("routes", undefined, f)?.code, "USAGE", JSON.stringify(f));
+  assert.match(helpFor(["swap", "routes"], { help: true }, "x").usage, /^mark swap routes/); assert.ok("routes" in SWAP_USAGE);
 });

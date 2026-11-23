@@ -10,7 +10,7 @@ import { decodeInvoice, networkOk } from "../lightning/invoice.js";
 import type { StableSwapCreated } from "../swap/provider.js";
 import { SWAP_UNPAID, SWAP_PAID, SWAP_WAITING, SWAP_CLAIMABLE, SWAP_DONE } from "../swap/states.js";
 import { sleep } from "../util.js";
-import { ARBISCAN_TX, SWAP_MARKUP_BPS, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkMarkupBps, formatSwapQuote, pct, swapSats, swapSource, swapTarget, units, type SwapSource, type SwapTarget } from "../swap/stable.js";
+import { ARBISCAN_TX, SWAP_MARKUP_BPS, SWAP_REFERRAL_ID, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkMarkupBps, formatSwapQuote, pct, swapSats, swapSource, swapTarget, units, type SwapSource, type SwapTarget } from "../swap/stable.js";
 
 export interface SwapQuoteInput { from?: string; to?: string; sats?: number | string }
 export interface SwapRunInput extends SwapQuoteInput { address?: string; confirm?: boolean; wait?: boolean; timeoutSec?: number; pollMs?: number; onProgress?: (x: unknown) => void }
@@ -35,6 +35,28 @@ export async function swapQuote(c: Ctx, i: SwapQuoteInput) {
   const inRange = p.sats >= q.min_amount && p.sats <= q.max_amount;
   return { quote: out, ...(inRange ? {} : { note: `amount out of range: Satora accepts ${q.min_amount}..${q.max_amount} sats for this pair` }),
     next: `${mk()} swap --from ${p.from} --to ${p.to} --sats ${p.sats} --address <your 0x address on Arbitrum> previews it; add --yes to create it` };
+}
+
+/** Amount used only to ask Satora for each route's live min / max (a quote: nothing is created). */
+const ROUTE_PROBE_SATS = 100_000;
+/** Every route Mark supports (SWAP_SOURCES x SWAP_TARGETS), with Satora's live min / max in sats from a quote per route. Read-only:
+ *  never creates a swap. A failed lookup (or a network without Satora routes) still lists the routes, with limits unavailable. */
+export async function swapRoutes(c: Ctx) {
+  const mainnet = NETWORKS[c.network].isMainnet; const bps = checkMarkupBps(SWAP_MARKUP_BPS);
+  const pairs = (Object.keys(SWAP_SOURCES) as SwapSource[]).flatMap((from) => (Object.keys(SWAP_TARGETS) as SwapTarget[]).map((to) => ({ from, to })));
+  let quote: ((p: { from: SwapSource; to: SwapTarget }) => Promise<any>) | null = null; let why = mainnet ? "" : `mark swap runs on bitcoin mainnet only (this is ${c.network})`;
+  if (mainnet) { try { const s = await c.swaps(); if (s.quoteStable) quote = (p) => s.quoteStable!({ ...p, sats: ROUTE_PROBE_SATS, bps }); else why = `swap provider ${s.name} does not support mark swap`; } catch (e: any) { why = String(e?.message ?? e).slice(0, 200); } }
+  const live = await Promise.allSettled(pairs.map((p) => quote ? quote(p) : Promise.reject(new Error(why))));
+  const routes = pairs.map((p, i) => {
+    const t = SWAP_TARGETS[p.to]; const r = live[i]; const q: any = r.status === "fulfilled" ? r.value : null;
+    const ok = q && Number.isSafeInteger(q.min_amount) && Number.isSafeInteger(q.max_amount);
+    return { from: p.from, to: p.to, source: SWAP_SOURCES[p.from].chain, token: t.symbol, chain: t.network, chainId: Number(t.chain), contract: t.tokenId,
+      limits: ok ? { minSats: q.min_amount, maxSats: q.max_amount } : "unavailable",
+      ...(ok ? {} : { limitsNote: `live limits unavailable: ${r.status === "rejected" ? String((r.reason as any)?.message ?? r.reason).slice(0, 200) : "Satora's quote had no min/max"}` }) };
+  });
+  return { routes, markup: { bps, percent: pct(bps), note: `Every swap includes a ${pct(bps)} Agent Escrow fee, on top of Satora's fee. Paid inside the swap; nothing extra to send.` },
+    referral: SWAP_REFERRAL_ID, limitsSource: mainnet ? "Satora live quote (nothing is created)" : "none on this network",
+    next: `${mk()} swap quote --from <from> --to <to> --sats N for a priced quote` };
 }
 
 function payInstructions(from: SwapSource, x: { id: string; invoice?: string; arkAddress?: string; payAmountSats: number }) {

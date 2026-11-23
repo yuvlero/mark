@@ -94,6 +94,8 @@ export async function runMcp(network: NetworkName, o: CtxOptions = {}) {
   const swapIn = { from: z.enum(["lightning", "arkade"]).optional().describe("where the BTC comes from (default lightning)"), to: z.enum(["usdc", "usdt0"]).optional().describe("stablecoin on Arbitrum (default usdc)"), sats: z.number().int().positive() };
   s.tool("swap_quote", `Quote a swap of BTC (Lightning or Arkade) into USDC or USDT0 on Arbitrum through Satora: rate, what you receive, Satora fee, the ${pct(SWAP_MARKUP_BPS)} Agent Escrow markup, network fee and total. Nothing is created`, swapIn,
     (a) => wrap(() => sw.swapQuote(c, a)));
+  s.tool("swap_routes", `Every swap route Mark supports (BTC from Lightning or Arkade into USDC or USDT0 on Arbitrum) with Satora's live min/max sats and the ${pct(SWAP_MARKUP_BPS)} Agent Escrow fee note. Read-only: nothing is created. Limits are "unavailable" if Satora cannot be reached`, {},
+    () => wrap(() => sw.swapRoutes(c)));
   s.tool("swap_create", `Swap BTC into USDC or USDT0 on Arbitrum (Satora; includes a ${pct(SWAP_MARKUP_BPS)} Agent Escrow fee). REAL MONEY on mainnet. Without confirm: preview only. With confirm: creates the swap and returns a Lightning invoice (from lightning) or an Ark address + exact sats (from arkade) to pay once; after paying, call swap_claim with wait=true. Non-custodial: the claim key stays in this Mark home`,
     { ...swapIn, address: z.string().describe("your EVM address on Arbitrum (0x...) that receives the stablecoins; a wrong address cannot be undone"), confirm: z.boolean().optional().describe("must be true to create the real swap; omit to preview") },
     ({ confirm, ...a }) => wrap(() => sw.swapRun(c, { ...a, confirm: confirm === true })));

@@ -356,6 +356,8 @@ mark escrow inbox                              # unread across all your deals
 **Fee: a 0.5% Agent Escrow fee is added** on top of Satora's own fee and the network fee. It is shown openly in every quote and preview (`fees.agentEscrowMarkup`, `agentEscrowMarkupSats`) and paid inside the swap: you never send it separately. Mark passes it to Satora as `extraFees` (50 bps), the same value on the quote and on the swap, with Agent Escrow's public Satora referral ID `lnds_29617a89f8a6b5a7`. Mark refuses any markup above 100 bps.
 
 ```sh
+# 0) which routes, with Satora's live min / max (free, nothing is created)
+mark swap routes
 # 1) quote (free, nothing is created)
 mark swap quote --from lightning --to usdc --sats 100000
 # 2) preview with your payout address (still nothing is created)
@@ -373,6 +375,7 @@ Example quote (100,000 sats, Lightning → USDC; numbers move with the market):
  "limits":{"minSats":356,"maxSats":20000000},"referral":"lnds_29617a89f8a6b5a7"}}
 ```
 
+- `mark swap routes` (`swap_routes`) lists the four supported routes: `--from lightning|arkade` × `--to usdc|usdt0`, all on Arbitrum One. Each shows the token contract and Satora's live `limits` (`minSats`, `maxSats`), read from a quote per route; nothing is created. If Satora cannot be reached (or on mutinynet) the routes are still listed with `"limits": "unavailable"` and a `limitsNote`. Other Satora pairs are not supported yet.
 - `--from lightning` (default) prints a Lightning **hold invoice**: pay it once from any wallet. It settles only when the stablecoins are claimed; otherwise it expires and your wallet keeps the sats.
 - `--from arkade` prints an Ark address and the exact `amountSats`: pay it in ONE payment from an Arkade wallet on https://arkade.computer (not Bark / Second). If the swap fails, `mark swap refund <id> --to <your ark address>` after its timelock.
 - `--to usdc` (default) or `--to usdt0` (USDT0 on Arbitrum, the former USDT contract `0xFd08…Cbb9`).
@@ -416,6 +419,7 @@ Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL` (https; http onl
 | `mark escrow inbox` | Unread messages across your deals |
 | `mark escrow invites [--all] [--needs accept\|fund\|sign\|any] [--state s]` | Deals for my key: waiting for my accept (default), or all / filtered. Each item has `needs`, `awaiting`, `action_required_for`, `nextStep`. Signed request, no id needed |
 | `mark swap quote [--from lightning\|arkade] [--to usdc\|usdt0] --sats N` | Quote BTC → stablecoin on Arbitrum: rate, what you receive, Satora fee, the 0.5% Agent Escrow markup, network fee, total. Nothing is created |
+| `mark swap routes` | Every route Mark supports (Lightning / Arkade → USDC / USDT0 on Arbitrum): token contract, chain and Satora's live min / max sats, plus the 0.5% Agent Escrow fee note. Read-only |
 | `mark swap [--from lightning\|arkade] [--to usdc\|usdt0] --sats N --address 0x… [--yes] [--wait] [--timeout sec]` | Preview (no `--yes`), or create the swap: prints the invoice / Ark address to pay; `--wait` claims and prints `payoutTx`. Includes a 0.5% Agent Escrow fee |
 | `mark swap status <id>` | Swap status (read-only), amount, `payoutTx` once claimed |
 | `mark swap claim <id> [--wait] [--timeout sec]` | Claim a paid swap's stablecoins to its address (safe to repeat) |
@@ -446,6 +450,7 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 | `escrow_messages` (id, since?), `escrow_message` (id, text, kind?, replyTo?), `escrow_inbox` | messages |
 | `escrow_invites` (all?, needs?, state?) | `escrow invites` |
 | `swap_quote` (from?, to?, sats) | `swap quote` |
+| `swap_routes` | `swap routes` |
 | `swap_create` (from?, to?, sats, address, confirm?) | `swap` (creates the real swap only with `confirm: true`; then pay and call `swap_claim` with `wait: true`) |
 | `swap_status` (id), `swap_claim` (id, wait?), `swap_refund` (id, to) | `swap status`, `swap claim`, `swap refund` |
 

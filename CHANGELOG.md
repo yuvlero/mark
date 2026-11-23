@@ -16,6 +16,7 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 - Every swap quote and every swap carries Agent Escrow's public Satora referral ID `lnds_29617a89f8a6b5a7` and the same 50 bps markup (`extraFees`). The markup is one constant. Mark refuses anything above 100 bps, and Satora caps the key at 100 bps too.
 - Before showing anything to pay, Mark checks the swap Satora created: new and unpaid, source, token contract and chain, payout address, amount, a promised stablecoin amount at most 1% below the quote, and the invoice (network and amount) or Ark address. A mismatch is refused with `SWAP_FAILED`. Once a payment is seen, status and claim say not to pay again.
 - Payout addresses are checked: 0x plus 40 hex, and a valid EIP-55 checksum when the address is mixed case. Mainnet only (Satora has no Arbitrum stablecoin route on mutinynet).
+- `mark swap routes` and MCP tool `swap_routes`: the four supported routes (Lightning or Arkade to USDC or USDT0 on Arbitrum) with token contract, chain and Satora's live minimum and maximum in sats, plus the 0.5% Agent Escrow fee note. Read-only: it asks Satora for a quote per route and never creates a swap. If Satora cannot be reached, or on mutinynet, the routes are still listed and the limits show as unavailable.
 - New error codes: `BAD_MARKUP`, `SWAP_AMOUNT`, `SWAP_UNSUPPORTED_NETWORK`, `SWAP_FAILED`.
 
 ### Changed

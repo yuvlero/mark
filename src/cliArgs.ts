@@ -41,9 +41,10 @@ export const SWAP_USAGE: Record<string, string> = {
   create: `mark swap [--from lightning|arkade] [--to usdc|usdt0] --sats N --address <0x... on Arbitrum> [--yes] [--wait] [--timeout <sec>]   (no --yes: preview only, nothing is created. Includes a ${pct(SWAP_MARKUP_BPS)} Agent Escrow fee)`,
   status: "mark swap status <id>",
   claim: "mark swap claim <id> [--wait] [--timeout <sec>]   (claim a paid swap's stablecoins to its address; --wait first waits for Satora to fund its side; safe to repeat)",
+  routes: `mark swap routes   (every route Mark supports with Satora's live min/max sats; read-only, nothing is created. Includes the ${pct(SWAP_MARKUP_BPS)} Agent Escrow fee note)`,
   refund: "mark swap refund <id> --to <ark address from an Arkade wallet on https://arkade.computer>   (Arkade-funded swap that did not pay out, after its timelock)",
 };
-const SWAP_SUBS = ["quote", "create", "status", "claim", "refund"];
+const SWAP_SUBS = ["quote", "create", "status", "claim", "refund", "routes"];
 /** `mark swap ...` usage checks before any key or network access. */
 export function checkSwapArgs(sub: string | undefined, id: string | undefined, f: Record<string, string | boolean>) {
   const key = sub ?? "create";
