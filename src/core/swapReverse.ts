@@ -22,6 +22,7 @@ export async function reverse(c: Ctx): Promise<Rev> {
   return s as any;
 }
 
+const RECOVER_AFTER_FUND_MS = 30 * 60 * 1000;
 const DO_NOT_RESEND = "Do NOT send the stablecoins again.";
 
 /** The payout target and amount, checked before anything is sent to Satora:
@@ -182,7 +183,7 @@ function fundOut(x: ReverseSwapInfo, r: Awaited<ReturnType<Rev["fundReverse"]>>)
   if (r.skipped) return { id: x.id, status: x.status, funded: false, note: `${r.skipped}. ${DO_NOT_RESEND} Check ${mk()} swap status ${x.id}.` };
   if (r.stop) return { id: x.id, status: x.status, funded: false, fundFailed: true, message: r.message, note: `Nothing was signed or locked. If you sent the stablecoins, get them back with ${mk()} swap recover ${x.id} --to <your 0x address> (and start a new swap with a fresh invoice if you still want it). ${DO_NOT_RESEND}` };
   return { id: x.id, status: x.status, funded: false, fundFailed: true, message: r.message, note: r.uncertain
-    ? `The relay may still have submitted it: Mark will not sign again for a while. ${DO_NOT_RESEND} Check ${mk()} swap status ${x.id}.`
+    ? `The relay may still have submitted it: Mark never signs this funding again. ${DO_NOT_RESEND} Check ${mk()} swap status ${x.id}; if Satora never sees it, after 30 minutes get the stablecoins back with ${mk()} swap recover ${x.id} --to <your 0x address>.`
     : `Satora's relay refused the funding; nothing was locked and your stablecoins are still at the deposit address. Retry ${mk()} swap fund ${x.id}, or get them back with ${mk()} swap recover ${x.id} --to <0x...>. ${DO_NOT_RESEND}` };
 }
 /** Every later read of a swap from a stablecoin is checked against what was confirmed at create: this Mark home's own deposit
@@ -234,7 +235,7 @@ export async function waitReverse(s: Rev, id: string, o: { timeoutSec?: number; 
       return { id, status: x.status, funded: false, note: `Not funded yet: claim never funds a swap. Once the deposit is there, run ${mk()} swap fund ${id} --wait. If you already sent it, do NOT send again.` };
     if (x.status === "pending" && !x.fundTx && !fund?.success) {
       const f = await fundState(s, x);
-      if (f.have !== undefined && f.have >= f.need && (f.attempted === undefined || Date.now() - f.attempted > 10 * 60 * 1000)) {
+      if (f.have !== undefined && f.have >= f.need && f.attempted === undefined) {
         const r = await s.fundReverse(id); fund = r;
         if (!r.success && !r.skipped && !r.uncertain) return fundOut(x, r);
       }
@@ -305,7 +306,8 @@ export async function reverseRecover(c: Ctx, id: string, to: string | undefined)
     // re-read under the lock: a funding that took the lock first is seen here, before anything is swept
     const x = pinned(s, await s.getReverse(id), "return"); const at = s.fundAttemptedAt(id);
     if (String(x.tokenContract ?? "").toLowerCase() !== t.tokenId.toLowerCase()) throw new MarkError("SWAP_FAILED", `swap ${id} changed token while recovering (${x.tokenContract}); nothing was moved`);
-    if (x.status === "pending" && at !== undefined && Date.now() - at < 10 * 60 * 1000) throw new MarkError("SWAP_FUNDING", "a funding of this swap was just submitted: wait for it (mark swap status) before recovering");
+    // a funding submitted in the last RECOVER_AFTER_FUND_MS may still land, whatever the status says (unless the swap ended)
+    if (at !== undefined && Date.now() - at < RECOVER_AFTER_FUND_MS && !SWAP_FAILED.has(x.status) && !isDone(x)) throw new MarkError("SWAP_FUNDING", "a funding of this swap was submitted less than 30 minutes ago and may still land: wait for it (mark swap status) before recovering");
     const others = (await s.openReverse()).filter((o) => o.id !== id && String(o.tokenContract).toLowerCase() === t.tokenId.toLowerCase());
     if (others.length) throw new MarkError("SWAP_OPEN_DEPOSIT", `swap ${others[0].id} is waiting for a ${t.symbol} deposit at the same address: recovering now would take its deposit too. Finish it or let it expire first.`);
     const bal = await s.evm.tokenBalance(t.tokenId, x.depositAddress!);

@@ -426,3 +426,30 @@ test("deposit lock: a stale lock of a dead process is taken over; a lock is rele
   const r = await sw.swapFund(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1"); assert.match(r.note, /may still have submitted/);
   const r2 = await sw.swapFund(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1"); assert.match(r2.note, /already submitted/); assert.equal(m.calls.fund.length, 1);
 });
+
+test("an uncertain funding is never signed again; a corrupt funding record refuses; recover waits 30 min after a funding whatever the status; recovery prints no key", async () => {
+  let m = mockClient({ fundError: "Gasless fund relay failed: 409 duplicate" }); await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: makeInvoice({ sats: 2420, expiry: 86400 }), confirm: true });
+  let r = await sw.swapFund(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1"); assert.match(r.note, /may still have submitted/);
+  const now = Date.now; Date.now = () => now() + 11 * 60 * 1000;
+  try {
+    r = await sw.swapFund(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1"); assert.match(r.note, /never signs it again/);
+    r = await sw.swapFund(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1", { wait: true, pollMs: 1, timeoutSec: 1 });
+  } finally { Date.now = now; }
+  assert.equal(m.calls.fund.length, 1);
+  // recover: a funding 5 minutes ago, Satora already at clientfundingseen -> still refused
+  m = mockClient({ statuses: ["pending", "clientfundingseen"] }); await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
+  const p = provider(m.client, { balances: [1_500_000n], eth: 10n ** 15n }); p.fundAttemptedAt = () => Date.now() - 5 * 60 * 1000;
+  const e = await sw.swapRecover(ctxWith(p), "rv-1", ME).catch((x) => x); assert.equal(e.code, "SWAP_FUNDING"); assert.equal(m.calls.recover.length, 0);
+  // a corrupt funding record: no create, no funding
+  m = mockClient(); await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
+  fs.writeFileSync(path.join(homeOf(m.client), "evm-funding.json"), "{not json");
+  const e2 = await sw.swapFund(ctxWith(provider(m.client, { balances: [1_500_000n] })), "rv-1").catch((x) => x); assert.equal(e2.code, "SWAP_FAILED"); assert.match(e2.message, /unreadable/); assert.equal(m.calls.fund.length, 0);
+  // recovery: the depositor key never reaches stdout, stderr or the result
+  m = mockClient(); await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
+  const out = []; const ow = process.stdout.write, ew = process.stderr.write;
+  process.stdout.write = (s, ...a) => { out.push(String(s)); return true; }; process.stderr.write = (s, ...a) => { out.push(String(s)); return true; };
+  let res; try { const pr = provider(m.client, { balances: [1_500_000n], eth: 10n ** 15n }); delete pr.signerFor; res = await sw.swapRecover(ctxWith(pr), "rv-1", ME).catch((x) => x); }
+  finally { process.stdout.write = ow; process.stderr.write = ew; }
+  const all = out.join("") + JSON.stringify(res) + String(res?.stack ?? "");
+  assert.ok(!all.includes("11".repeat(32)), "no private key anywhere");
+});

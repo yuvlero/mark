@@ -234,7 +234,7 @@ export class SatoraProvider implements SwapProvider {
   private attemptsFile() { return this.dir ? path.join(this.dir, "evm-funding.json") : undefined; }
   private readAttempts(): Record<string, number> {
     const f = this.attemptsFile(); if (!f || !fs.existsSync(f)) return this.attempts;
-    try { return { ...JSON.parse(fs.readFileSync(f, "utf8")), ...this.attempts }; } catch { return this.attempts; }
+    return { ...readRecord(f, "evm-funding.json", (v) => typeof v === "number" && Number.isFinite(v)), ...this.attempts };
   }
   private markAttempt(id: string, at: number | undefined) {
     const a = this.readAttempts(); if (at === undefined) delete a[id]; else a[id] = at; this.attempts = a;
@@ -245,7 +245,7 @@ export class SatoraProvider implements SwapProvider {
   private pinsFile() { return this.dir ? path.join(this.dir, "reverse-pins.json") : undefined; }
   private readPins(): Record<string, ReversePin> {
     const f = this.pinsFile(); if (!f || !fs.existsSync(f)) return this.pins;
-    try { return { ...JSON.parse(fs.readFileSync(f, "utf8")), ...this.pins }; } catch { return this.pins; }
+    return { ...readRecord(f, "reverse-pins.json", (v) => !!v && typeof v === "object" && typeof (v as any).depositAddress === "string"), ...this.pins };
   }
   pinReverse(id: string, pin: ReversePin) {
     const a = { ...this.readPins(), [id]: pin }; this.pins = a;
@@ -261,7 +261,8 @@ export class SatoraProvider implements SwapProvider {
   private async fundOnce(id: string): Promise<FundResult> {
     return this.exclusive(async () => {
       const at = this.fundAttemptedAt(id);
-      if (at !== undefined && Date.now() - at < FUND_RETRY_AFTER_MS) return { success: false, skipped: `a funding was already submitted at ${new Date(at).toISOString()}; Mark does not sign again for ${FUND_RETRY_AFTER_MS / 60000} minutes` };
+      // a submitted or uncertain funding is never signed again (only a clear refusal clears the record)
+      if (at !== undefined) return { success: false, skipped: `a funding was already submitted at ${new Date(at).toISOString()}; Mark never signs it again` };
       let x: ReverseSwapInfo; try { x = await this.getReverse(id); } catch (e) { return { success: false, message: `could not read the swap: ${errText(e)}` }; }
       if (x.status !== "pending" || x.fundTx) return { success: false, skipped: `the swap is already past funding (${x.status}${x.fundTx ? `, funding tx ${x.fundTx}` : ""})` };
       if (!x.tokenContract || !x.depositAddress || !/^\d+$/.test(String(x.sourceUnits ?? ""))) return { success: false, message: "the swap has no deposit terms" };
@@ -285,7 +286,7 @@ export class SatoraProvider implements SwapProvider {
       } catch (e) {
         const message = errText(e);
         // a clear refusal before or by the relay: nothing was submitted, so a later retry is safe
-        if (/^(Failed to get Permit2 funding data|Gasless fund relay failed: 4(?!08|99)\d\d)|not found in local storage|Expected an EVM-sourced swap/.test(message)) { this.markAttempt(id, undefined); return { success: false, message }; }
+        if (/^(Failed to get Permit2 funding data|Gasless fund relay failed: 4(00|01|03|04|22|29)\b)|not found in local storage|Expected an EVM-sourced swap/.test(message)) { this.markAttempt(id, undefined); return { success: false, message }; }
         return { success: false, message, uncertain: true };
       }
     });
@@ -338,7 +339,14 @@ export class SatoraProvider implements SwapProvider {
 }
 
 /** After a funding attempt that may have reached the relay, wait this long before signing again (Arbitrum confirms in seconds). */
-const FUND_RETRY_AFTER_MS = 10 * 60 * 1000;
+/** A record file in the swaps dir: missing -> empty; unreadable or malformed -> refuse (never treated as empty, which would
+ *  forget a funding already submitted or the terms confirmed at create). */
+function readRecord(f: string, name: string, ok: (v: unknown) => boolean): Record<string, any> {
+  let v: any; try { v = JSON.parse(fs.readFileSync(f, "utf8")); } catch (e: any) { if (e?.code === "ENOENT") return {}; v = undefined; }
+  if (!v || typeof v !== "object" || Array.isArray(v) || !Object.values(v).every(ok))
+    throw new MarkError("SWAP_FAILED", `${name} in this Mark home's swaps folder is unreadable; Mark will not create or fund a swap from a stablecoin until it is fixed or restored`);
+  return v;
+}
 /** The deposit lock: wait this long for another process; its owner refreshes it every LOCK_BEAT_MS, so a lock not refreshed for
  *  LOCK_STALE_MS whose owner process is gone is taken over. */
 const LOCK_WAIT_MS = 90_000, LOCK_STALE_MS = 5 * 60 * 1000, LOCK_BEAT_MS = 30_000;
