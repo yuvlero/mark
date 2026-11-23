@@ -8,9 +8,10 @@ import { mk } from "../invocation.js";
 import { checkArkadeAddress } from "./arkAddress.js";
 import { decodeInvoice, networkOk } from "../lightning/invoice.js";
 import type { StableSwapCreated, StableSwapInfo } from "../swap/provider.js";
-import { SWAP_UNPAID, SWAP_PAID, SWAP_WAITING, SWAP_CLAIMABLE, SWAP_DONE, isReverseDir } from "../swap/states.js";
+import { SWAP_UNPAID, SWAP_PAID, SWAP_WAITING, SWAP_CLAIMABLE, SWAP_DONE, isReverseDir, isRailDir } from "../swap/states.js";
 import { sleep } from "../util.js";
 import { reverse, loadReverse, waitReverse, reverseQuote, reverseRun, reverseStatus, reverseClaim, reverseRefund, reverseFund, reverseRecover } from "./swapReverse.js";
+import { loadRail, railQuote, railRun, railStatus, railClaim, railRefund } from "./swapRail.js";
 import { ARBISCAN_TX, sameHex, targetByContract, txLink, SWAP_MARKUP_BPS, SWAP_REFERRAL_ID, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkMarkupBps, formatSwapQuote, pct, swapFeeRates, swapFeeSummaryNote, swapSats, swapSource, swapTarget, units, swapRoute, allSwapRoutes, type SwapSource, type SwapTarget } from "../swap/stable.js";
 
 /** sats: BTC -> stablecoin. amount (token units like 1.5) / invoice: stablecoin -> BTC (address is the payout target there). */
@@ -24,7 +25,7 @@ const EXPECTED_NOTE = "expectedReceive is Satora's estimate: the BTC is swapped 
 const PAID_NOTE = "Your payment was seen: wait for Satora to fund its side, then claim. Do NOT pay again.";
 
 function mainnetOnly(c: Ctx) {
-  if (!NETWORKS[c.network].isMainnet) throw new MarkError("SWAP_UNSUPPORTED_NETWORK", "mark swap runs on bitcoin mainnet only: Satora has no Arbitrum stablecoin route on mutinynet. Use --network bitcoin: `mark swap quote` and a preview without --yes are free and create nothing.");
+  if (!NETWORKS[c.network].isMainnet) throw new MarkError("SWAP_UNSUPPORTED_NETWORK", "mark swap runs on bitcoin mainnet only: Satora has no working swap path on mutinynet (no Arbitrum stablecoin route and no Lightning ↔ Arkade route). Use --network bitcoin: `mark swap quote` and a preview without --yes are free and create nothing.");
 }
 async function stable(c: Ctx): Promise<Required<Pick<SwapProvider, "quoteStable" | "createStable" | "getStable" | "claimStable">> & SwapProvider> {
   const s = await c.swaps();
@@ -36,6 +37,7 @@ function route(i: SwapQuoteInput) {
   const r = swapRoute(i.from, i.to);
   if (r.dir === "to_btc" && i.sats !== undefined) throw new MarkError("USAGE", "--sats is for swaps from BTC; from a stablecoin use --amount <tokens> (or --invoice for a Lightning payout)");
   if (r.dir === "to_stable") for (const k of ["amount", "invoice"] as const) if (i[k] !== undefined) throw new MarkError("USAGE", `--${k} is only for swaps from a stablecoin (--from usdc|usdt0)`);
+  if (r.dir === "rail" && i.amount !== undefined) throw new MarkError("USAGE", "--amount is only for swaps from a stablecoin (--from usdc|usdt0)");
   return r;
 }
 const revIn = (r: { from: any; to: any }, i: SwapQuoteInput) => ({ from: r.from, to: r.to, amount: i.amount, invoice: i.invoice, address: i.address });
@@ -44,6 +46,7 @@ function parse(i: SwapQuoteInput) { return { from: swapSource(i.from), to: swapT
 /** Quote only (nothing is created): rate, Satora fee, our markup, network fee, total, what you receive. */
 export async function swapQuote(c: Ctx, i: SwapQuoteInput) {
   mainnetOnly(c); const r = route(i); if (r.dir === "to_btc") return reverseQuote(c, revIn(r, i));
+  if (r.dir === "rail") return railQuote(c, { from: r.from, to: r.to, sats: i.sats, invoice: i.invoice, address: i.address });
   const p = parse(i); const s = await stable(c);
   const q = await s.quoteStable(p);
   const out = formatSwapQuote(q, p);
@@ -55,7 +58,7 @@ export async function swapQuote(c: Ctx, i: SwapQuoteInput) {
 /** Amounts used only to ask Satora for each route's live min / max (a quote: nothing is created). */
 const ROUTE_PROBE_SATS = 100_000;
 const ROUTE_PROBE_TOKEN_UNITS = 10_000_000n; // 10 USDC / USDT0
-/** Every route Mark supports (allSwapRoutes: SWAP_SOURCES x SWAP_TARGETS both ways), with Satora's live min / max in sats from a
+/** Every route Mark supports (BTC ↔ stablecoin, then Lightning ↔ Arkade), with Satora's live min / max in sats from a
  *  quote per route. Read-only: never creates a swap. A failed lookup (or a network without Satora routes) still lists the routes,
  *  with limits unavailable. */
 export async function swapRoutes(c: Ctx) {
@@ -66,27 +69,30 @@ export async function swapRoutes(c: Ctx) {
   const quote = (p: (typeof pairs)[number]): Promise<any> => {
     if (!s) return Promise.reject(new Error(why));
     if (p.dir === "to_stable") return s.quoteStable ? s.quoteStable({ from: p.from, to: p.to, sats: ROUTE_PROBE_SATS, bps }) : Promise.reject(new Error(`swap provider ${s.name} does not support mark swap`));
+    if (p.dir === "rail") return s.quoteRail ? s.quoteRail({ from: p.from, to: p.to, sats: ROUTE_PROBE_SATS, bps }) : Promise.reject(new Error(`swap provider ${s.name} does not support Lightning ↔ Arkade swaps`));
     return s.quoteReverse ? s.quoteReverse({ from: p.from, to: p.to, sourceUnits: ROUTE_PROBE_TOKEN_UNITS, bps }) : Promise.reject(new Error(`swap provider ${s.name} does not support mark swap from a stablecoin`));
   };
   const live = await Promise.allSettled(pairs.map(quote));
   const routes = pairs.map((p, i) => {
-    const t = SWAP_TARGETS[p.dir === "to_stable" ? p.to : p.from]; const rail = p.dir === "to_stable" ? p.from : p.to;
     const r = live[i]; const q: any = r.status === "fulfilled" ? r.value : null;
     const ok = q && Number.isSafeInteger(q.min_amount) && Number.isSafeInteger(q.max_amount) && q.min_amount > 0 && q.max_amount >= q.min_amount;
     const fees = q ? swapFeeRates(q, bps) : null;
+    const fail = ok ? {} : { limitsNote: `live limits unavailable: ${r.status === "rejected" ? String((r.reason as any)?.message ?? r.reason).slice(0, 200) : "Satora's quote had no valid min/max"}` };
+    if (p.dir === "rail") return { from: p.from, to: p.to, direction: p.from === "lightning" ? "lightning_to_arkade" : "arkade_to_lightning", source: SWAP_SOURCES[p.from].chain, target: SWAP_SOURCES[p.to].chain,
+      limits: ok ? { minSats: q.min_amount, maxSats: q.max_amount } : "unavailable", ...(fees ? { fees } : {}), ...fail };
+    const t = SWAP_TARGETS[p.dir === "to_stable" ? p.to : p.from]; const rail = p.dir === "to_stable" ? p.from : p.to;
     return { from: p.from, to: p.to, direction: p.dir === "to_stable" ? "btc_to_stablecoin" : "stablecoin_to_btc", ...(p.dir === "to_stable" ? { source: SWAP_SOURCES[rail].chain } : { target: SWAP_SOURCES[rail].chain }),
       token: t.symbol, chain: t.network, chainId: Number(t.chain), contract: t.tokenId,
       limits: ok ? { minSats: q.min_amount, maxSats: q.max_amount } : "unavailable",
-      ...(fees ? { fees } : {}),
-      ...(ok ? {} : { limitsNote: `live limits unavailable: ${r.status === "rejected" ? String((r.reason as any)?.message ?? r.reason).slice(0, 200) : "Satora's quote had no valid min/max"}` }) };
+      ...(fees ? { fees } : {}), ...fail };
   });
-  // one agreed live pair rate across the successful quotes, else the approximate note
+  // a single live rate is used in the summary only when every listed route returned a quote and they all agreed
   const rates = routes.map((x) => x.fees).filter((f): f is NonNullable<typeof f> => !!f);
   const key = (f: (typeof rates)[number]) => `${f.satoraFeeRate}:${f.totalFeeRate}`;
-  const agreed = rates.length > 0 && rates.every((f) => key(f) === key(rates[0])) ? rates[0] : null;
+  const agreed = rates.length === routes.length && rates.every((f) => key(f) === key(rates[0])) ? rates[0] : null;
   return { routes, markup: { bps, percent: pct(bps), note: swapFeeSummaryNote(agreed ? { satoraFeeRate: agreed.satoraFeeRate, totalFeeRate: agreed.totalFeeRate, markupBps: bps } : null) },
     referral: SWAP_REFERRAL_ID, limitsSource: mainnet ? "Satora live quote (nothing is created)" : "none on this network",
-    next: `${mk()} swap quote --from <from> --to <to> --sats N (from BTC) or --amount <tokens> (from a stablecoin) for a priced quote` };
+    next: `${mk()} swap quote --from <from> --to <to> --sats N (from BTC, or Lightning ↔ Arkade) or --amount <tokens> / --invoice (from a stablecoin) for a priced quote` };
 }
 
 function payInstructions(from: SwapSource, x: { id: string; invoice?: string; arkAddress?: string; payAmountSats: number }) {
@@ -98,6 +104,7 @@ function payInstructions(from: SwapSource, x: { id: string; invoice?: string; ar
 /** Preview (default) or create + run a swap. confirm: create it. wait: after payment, claim and wait for the payout tx. */
 export async function swapRun(c: Ctx, i: SwapRunInput) {
   mainnetOnly(c); const r = route(i); if (r.dir === "to_btc") return reverseRun(c, { ...revIn(r, i), confirm: i.confirm, wait: i.wait, timeoutSec: i.timeoutSec, pollMs: i.pollMs, onProgress: i.onProgress });
+  if (r.dir === "rail") return railRun(c, { from: r.from, to: r.to, sats: i.sats, invoice: i.invoice, address: i.address, confirm: i.confirm, wait: i.wait, timeoutSec: i.timeoutSec, pollMs: i.pollMs, onProgress: i.onProgress });
   const p = parse(i); const address = checkEvmAddress(i.address); const t = SWAP_TARGETS[p.to]; const s = await stable(c);
   const q = await s.quoteStable(p);
   if (!/^\d+$/.test(String(q.net_target_amount ?? "")) || BigInt(q.net_target_amount) <= 0n) throw new MarkError("QUOTE_UNAVAILABLE", "Satora's quote has no payout amount; nothing was created. Retry later.");
@@ -208,6 +215,7 @@ export async function swapStatus(c: Ctx, id: string) {
   if (!id) throw new MarkError("USAGE", "mark swap status <id>");
   const s = await stable(c); const x = await s.getStable(id);
   if (isReverseDir(x.direction)) { const [r, y] = await loadReverse(c, id); return reverseStatus(r, y); }
+  if (isRailDir(x.direction)) { const [r, y] = await loadRail(c, id); return railStatus(r, y); }
   const t = targetByContract(x.tokenContract);
   const { raw: _raw, ...info } = x;
   const got = x.payoutTx && t && x.targetAddress ? await arrived(s, x.payoutTx, t.tokenId, x.targetAddress, t.decimals) : {};
@@ -229,6 +237,7 @@ export async function swapClaim(c: Ctx, id: string, o: { wait?: boolean; timeout
     if (o.wait) return waitReverse(await reverse(c), id, { timeoutSec: o.timeoutSec ?? 900, pollMs: o.pollMs, noFund: true });
     const [r, y] = await loadReverse(c, id); return reverseClaim(r, y);
   }
+  if (isRailDir(x.direction)) { const [r, y] = await loadRail(c, id); return railClaim(r, y, o); }
   if (o.wait) return waitAndClaim(s, id, o);
   if (SWAP_DONE.has(x.status)) return done(s, id, x.status, x.payoutTx, x);
   if (!SWAP_CLAIMABLE.has(x.status)) return { id, status: x.status, claimed: false, note: SWAP_PAID.has(x.status) ? `Nothing to claim yet. ${PAID_NOTE} (${mk()} swap claim ${id} --wait claims as soon as it is funded)`
@@ -246,6 +255,7 @@ export async function swapRefund(c: Ctx, id: string, to?: string) {
     if (to !== undefined) throw new MarkError("USAGE", `a swap from a stablecoin refunds to its deposit address: run ${mk()} swap refund ${id} (no --to), then ${mk()} swap recover ${id} --to <your 0x address>`);
     const [r, y] = await loadReverse(c, id); return reverseRefund(r, y);
   }
+  if (isRailDir(x.direction)) { const [, y] = await loadRail(c, id); return railRefund(c, y, to); }
   if (!to) throw new MarkError("USAGE", "mark swap refund <id> --to <ark address from an Arkade wallet on https://arkade.computer>");
   if (x.direction && x.direction !== "arkade_to_evm") throw new MarkError("USAGE", "only an Arkade-funded swap is refunded with mark swap refund; a Lightning hold invoice simply expires and your wallet gets the sats back");
   // the refund address must be on the swap's Arkade server (its key is in the swap)

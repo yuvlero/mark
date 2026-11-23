@@ -8,7 +8,7 @@ import { openCtx, type Ctx, type CtxOptions } from "./core/context.js";
 import { updateNotice } from "./core/clientVersion.js";
 import * as uc from "./core/usecases.js";
 import * as sw from "./core/swap.js";
-import { SWAP_FEE_TOTAL_NOTE, SWAP_SOURCES, SWAP_TARGETS, type SwapSource, type SwapTarget } from "./swap/stable.js";
+import { SWAP_FEE_TOTAL_NOTE, SWAP_FEE_ALL_ROUTES_NOTE, SWAP_SOURCES, SWAP_TARGETS, type SwapSource, type SwapTarget } from "./swap/stable.js";
 import { MARK_VERSION } from "./version.js";
 import { mk, DEMO_SATS, WALLET_DOCS } from "./invocation.js";
 import os from "node:os";
@@ -94,13 +94,17 @@ export async function runMcp(network: NetworkName, o: CtxOptions = {}) {
   const stables = Object.keys(SWAP_TARGETS) as [SwapTarget, ...SwapTarget[]], rails = Object.keys(SWAP_SOURCES) as [SwapSource, ...SwapSource[]];
   const confirmIn = z.boolean().optional().describe("must be true to create the real swap; omit to preview");
   const runSwap = ({ confirm, ...a }: { confirm?: boolean } & Record<string, any>) => wrap(() => sw.swapRun(c, { ...(a as any), confirm: confirm === true }));
-  const swapIn = { from: z.enum(rails).optional().describe("where the BTC comes from (default lightning)"), to: z.enum(stables).optional().describe("stablecoin on Arbitrum (default usdc)"), sats: z.number().int().positive() };
-  s.tool("swap_quote", `Quote a swap of BTC (Lightning or Arkade) into USDC or USDT0 on Arbitrum through Satora: rate, what you receive, and the fees (${SWAP_FEE_TOTAL_NOTE}; live rates are in the quote). Nothing is created`, swapIn,
+  const swapTo = [...stables, ...rails] as [string, ...string[]];
+  const swapIn = { from: z.enum(rails).optional().describe("where the BTC comes from (default lightning)"), to: z.enum(swapTo as any).optional().describe("stablecoin on Arbitrum (default usdc), or lightning/arkade for a Lightning ↔ Arkade swap"),
+    sats: z.number().int().positive().optional().describe("sats to send (required for BTC → stablecoin and Lightning → Arkade; omit when an invoice pins an Arkade → Lightning payout)"),
+    invoice: z.string().optional().describe("from arkade to lightning: a BOLT11 invoice with an amount"),
+    address: z.string().optional().describe("payout destination: 0x on Arbitrum (to a stablecoin) or an Ark address on https://arkade.computer (to arkade)") };
+  s.tool("swap_quote", `Quote a swap of BTC through Satora: Lightning or Arkade into USDC or USDT0 on Arbitrum, or Lightning ↔ Arkade. Fees depend on the route and are shown on the live quote (${SWAP_FEE_ALL_ROUTES_NOTE}). Nothing is created`, swapIn,
     (a) => wrap(() => sw.swapQuote(c, a)));
-  s.tool("swap_routes", `Every swap route Mark supports, both directions (BTC from Lightning or Arkade into USDC or USDT0 on Arbitrum, and USDC or USDT0 on Arbitrum to BTC over Lightning or to Arkade) with Satora's live min/max sats and the fee note (${SWAP_FEE_TOTAL_NOTE}). When Satora can be reached each route also shows the live pair rate. Read-only: nothing is created. Limits are "unavailable" if Satora cannot be reached`, {},
+  s.tool("swap_routes", `Every swap route Mark supports (BTC from Lightning or Arkade into USDC or USDT0 on Arbitrum and back, plus Lightning ↔ Arkade) with Satora's live min/max sats. ${SWAP_FEE_ALL_ROUTES_NOTE}. When Satora can be reached each route also shows the live pair rate. Read-only: nothing is created. Limits are "unavailable" if Satora cannot be reached`, {},
     () => wrap(() => sw.swapRoutes(c)));
-  s.tool("swap_create", `Swap BTC into USDC or USDT0 on Arbitrum (Satora; ${SWAP_FEE_TOTAL_NOTE}, shown in the quote). REAL MONEY on mainnet. Without confirm: preview only. With confirm: creates the swap and returns a Lightning invoice (from lightning) or an Ark address + exact sats (from arkade) to pay once; after paying, call swap_claim with wait=true. Non-custodial: the claim key stays in this Mark home`,
-    { ...swapIn, address: z.string().describe("your EVM address on Arbitrum (0x...) that receives the stablecoins; a wrong address cannot be undone"), confirm: confirmIn },
+  s.tool("swap_create", `Swap BTC through Satora: Lightning or Arkade into USDC or USDT0 on Arbitrum, or Lightning ↔ Arkade. Fees are shown in the quote (${SWAP_FEE_ALL_ROUTES_NOTE}). REAL MONEY on mainnet. Without confirm: preview only. With confirm: creates the swap and returns what to pay once (a Lightning invoice, an Ark address + exact sats, or both for the rail). After paying a Lightning- or Arkade-to-stablecoin swap, or a Lightning-to-Arkade swap, call swap_claim with wait=true. After paying an Arkade-to-Lightning swap, call swap_status (or swap_claim with wait=true) to wait for Satora to pay the invoice; there is nothing for you to claim. Non-custodial: the claim key stays in this Mark home`,
+    { ...swapIn, confirm: confirmIn },
     runSwap);
   // the reverse direction: a stablecoin on Arbitrum -> BTC, gasless (the stablecoins go to this Mark home's deposit address)
   const toBtcIn = { from: z.enum(stables).describe("the stablecoin you send, on Arbitrum One"), to: z.enum(rails).optional().describe("how the BTC is paid out (default lightning)"),

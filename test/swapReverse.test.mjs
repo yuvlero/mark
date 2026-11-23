@@ -74,7 +74,10 @@ test("route: a stablecoin --from is the reverse direction (default --to lightnin
   assert.deepEqual(swapRoute("usdt", "arkade"), { dir: "to_btc", from: "usdt0", to: "arkade" });
   assert.deepEqual(swapRoute(undefined, undefined), { dir: "to_stable", from: "lightning", to: "usdc" });
   assert.deepEqual(swapRoute("arkade", "usdt0"), { dir: "to_stable", from: "arkade", to: "usdt0" });
-  assert.throws(() => swapRoute("lightning", "arkade"), /needs a stablecoin --from/);
+  assert.deepEqual(swapRoute("lightning", "arkade"), { dir: "rail", from: "lightning", to: "arkade" });
+  assert.deepEqual(swapRoute("arkade", "lightning"), { dir: "rail", from: "arkade", to: "lightning" });
+  assert.throws(() => swapRoute("lightning", "lightning"), /cannot both be lightning/);
+  assert.throws(() => swapRoute(undefined, "arkade"), /needs --from lightning or arkade/);
   assert.throws(() => swapRoute("usdc", "usdt0"), /--to must be lightning or arkade/);
   assert.equal(tokenUnits("1.5", 6), 1500000n); assert.equal(tokenUnits("2", 6), 2000000n);
   for (const bad of ["0", "0.0000001", "-1", "1,5", "", "abc"]) assert.throws(() => tokenUnits(bad, 6), (e) => e.code === "USAGE", bad);
@@ -271,7 +274,7 @@ test("CLI: mark swap from a stablecoin, usage checks before any key or network a
   assert.match(chk(["swap", "--from", "usdc", "--to", "lightning", "--address", "a@b.co", "--amount", "1"]).message, /not supported/);
   assert.match(chk(["swap", "--from", "usdc", "--to", "arkade", "--amount", "1,5", "--address", "ark1x"]).message, /token amount/);
   assert.match(chk(["swap", "--sats", "1000", "--address", ME, "--amount", "1"]).message, /--amount is only for swaps from a stablecoin/);
-  assert.match(chk(["swap", "--sats", "1000", "--address", ME, "--to", "lightning"]).message, /needs --from usdc or usdt0/);
+  assert.match(chk(["swap", "--sats", "1000", "--address", ME, "--to", "lightning"]).message, /needs --from lightning or arkade.*or --from usdc or usdt0/s);
   assert.match(chk(["swap", "recover", "rv-1"]).message, /--to/); assert.match(chk(["swap", "fund"]).message, /swap id required/);
   assert.match(chk(["swap", "fund", "rv-1", "--amount", "1"]).message, /only for mark swap and mark swap quote/);
 });

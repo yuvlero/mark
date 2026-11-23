@@ -12,5 +12,9 @@ export const SWAP_DONE = new Set(["clientredeemed", "serverredeemed"]);
 export const isReverseDir = (d: unknown) => typeof d === "string" && d.startsWith("evm_to_");
 /** The direction Satora reports for a swap from a stablecoin paid out over this rail. */
 export const reverseDir = (rail: "lightning" | "arkade") => rail === "lightning" ? "evm_to_lightning" : "evm_to_arkade";
+/** A Lightning ↔ Arkade swap, by the direction Satora reports. */
+export const isRailDir = (d: unknown) => d === "lightning_to_arkade" || d === "arkade_to_lightning";
+/** The direction Satora reports for a Lightning ↔ Arkade swap starting on this rail. */
+export const railDir = (from: "lightning" | "arkade") => from === "lightning" ? "lightning_to_arkade" : "arkade_to_lightning";
 /** Final states in which nothing was (or will be) paid out to the target. */
 export const SWAP_FAILED = new Set(["expired", "clientrefunded", "clientfundedserverrefunded", "clientrefundedserverfunded", "clientrefundedserverrefunded", "serverwontfund", "clientinvalidfunded", "clientfundedtoolate"]);

@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { Client } from "@satora/swap";
-import type { SwapProvider, SwapInfo, ClaimResult, StableSwapCreated, StableSwapInfo, ReverseQuoteInput, ReverseCreateInput, ReverseSwapCreated, ReverseSwapInfo, FundResult, ReversePin } from "./provider.js";
+import type { SwapProvider, SwapInfo, ClaimResult, StableSwapCreated, StableSwapInfo, ReverseQuoteInput, ReverseCreateInput, ReverseSwapCreated, ReverseSwapInfo, FundResult, ReversePin, RailQuoteInput, RailCreateInput, RailSwapCreated, RailSwapInfo } from "./provider.js";
 import { validPin, pinMismatch } from "./reversePin.js";
 import { isReverseDir } from "./states.js";
 import { arbitrumReader, viemSigner, type EvmReader } from "./evm.js";
@@ -241,6 +241,28 @@ export class SatoraProvider implements SwapProvider {
   private readAttempts() { return this.attempts.read(); }
   private readPins() { return this.pins.read(); }
   private markAttempt(id: string, at: number | undefined) { this.attempts.set(id, at); }
+
+  // ---------- `mark swap` Lightning ↔ Arkade (same referral ID and markup as the quote) ----------
+  async quoteRail(p: RailQuoteInput): Promise<SatoraQuote> {
+    const extraFees = checkMarkupBps(p.bps); const s = SWAP_SOURCES[p.from], t = SWAP_SOURCES[p.to];
+    return await this.c.getQuote({ sourceChain: s.chain as any, sourceToken: s.tokenId, targetChain: t.chain as any, targetToken: t.tokenId,
+      ...(p.invoice ? { lightningDestination: p.invoice } : { sourceAmount: p.sats as any }),
+      referralCode: SWAP_REFERRAL_ID, extraFees }) as any;
+  }
+  async createRail(p: RailCreateInput): Promise<RailSwapCreated> {
+    const extraFees = checkMarkupBps(p.bps);
+    const targetAddress = p.to === "lightning" ? p.invoice : p.address;
+    if (!targetAddress) throw new MarkError("USAGE", "a payout target is required");
+    // invoice pins the Lightning payout: do not also send sourceAmount (Satora rejects the combination)
+    const r: any = await stdoutToStderr(() => this.c.createSwap({ source: SWAP_SOURCES[p.from] as any, target: SWAP_SOURCES[p.to] as any, targetAddress,
+      ...(p.to === "lightning" ? {} : { sourceAmount: p.sats }), referralCode: SWAP_REFERRAL_ID, extraFees } as any));
+    return railFields(r?.response ?? {});
+  }
+  async getRail(id: string): Promise<RailSwapInfo> {
+    const r: any = await this.c.getSwap(id, { updateStorage: true } as any);
+    let local = false; try { local = !!(await (this.c as any).getStoredSwap?.(id)); } catch { /* unknown */ }
+    return { ...railFields(r), id: r.id ?? id, local, createdAt: r.created_at ?? undefined, fundTx: r.arkade_fund_txid ?? undefined, payoutTx: r.arkade_claim_txid ?? undefined };
+  }
   fundAttemptedAt(id: string) { return this.readAttempts()[id]; }
   fundAttemptsSince(since: number) { return Object.entries(this.readAttempts()).filter(([, at]) => at >= since).map(([id]) => id); }
   pinReverse(id: string, pin: ReversePin) { this.pins.set(id, pin); }
@@ -377,6 +399,15 @@ function takeStale(lock: string): boolean {
     if (fs.readFileSync(moved, "utf8") !== seen) { try { fs.linkSync(moved, lock); } catch { /* a newer lock is there: it wins */ } }
   } finally { fs.rmSync(moved, { force: true }); }
   return true;
+}
+/** Satora's Lightning ↔ Arkade answer only (never defaulted to the request). */
+function railFields(r: any): RailSwapCreated {
+  return { id: r.id, status: r.status, direction: r.direction ?? undefined,
+    invoice: r.bolt11_invoice ?? r.client_lightning_invoice ?? undefined,
+    fundArkAddress: r.arkade_vhtlc_address ?? undefined, payoutArkAddress: r.target_arkade_address ?? undefined,
+    payAmountSats: r.source_amount != null ? Number(r.source_amount) : NaN,
+    receiveSats: r.target_amount != null ? Number(r.target_amount) : undefined,
+    sourceChain: r.source_token?.chain ?? undefined, targetChain: r.target_token?.chain ?? undefined, raw: r };
 }
 /** Satora's EVM-sourced swap answer only (never defaulted to the request), so a missing or different value is caught. */
 function reverseFields(r: any): ReverseSwapCreated {

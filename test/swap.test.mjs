@@ -219,6 +219,9 @@ test("EVM address: format and EIP-55 checksum", () => {
 test("CLI: mark swap usage checks before any key or network access", () => {
   const chk = (argv) => { const { pos, f } = parseArgs(argv); return checkSwapArgs(pos[1], pos[2], f); };
   assert.equal(chk(["swap", "quote", "--sats", "1000"]), null);
+  assert.equal(chk(["swap", "quote", "--from", "lightning", "--to", "arkade", "--sats", "1000"]), null);
+  assert.equal(chk(["swap", "--from", "lightning", "--to", "arkade", "--sats", "1000", "--address", "ark1xyz"]), null);
+  assert.equal(chk(["swap", "quote", "--from", "arkade", "--to", "lightning", "--sats", "900"]), null);
   assert.equal(chk(["swap", "--sats", "1000", "--address", ADDR, "--to", "usdt0", "--from", "arkade", "--yes", "--wait"]), null);
   assert.equal(chk(["swap", "create", "--sats", "1000", "--address", ADDR]), null);
   assert.equal(chk(["swap", "status", "id1"]), null); assert.equal(chk(["swap", "claim", "id1", "--wait"]), null);
@@ -320,26 +323,43 @@ test("stable claims of different swaps run one at a time (same per-process seria
 });
 
 // ---------- mark swap routes (read-only) ----------
-test("swap routes: every route both ways (SWAP_SOURCES x SWAP_TARGETS, then back) with Satora's live min/max; quotes only, never creates", async () => {
+test("swap routes: every route both ways (SWAP_SOURCES x SWAP_TARGETS, then back, then Lightning ↔ Arkade) with Satora's live min/max; quotes only, never creates", async () => {
   const { client, calls } = mockClient(); const q = client.getQuote;
-  client.getQuote = async (p) => ({ ...(await q(p)), min_amount: p.sourceChain === "Arkade" || p.targetChain === "Arkade" ? 335 : 356 });
+  client.getQuote = async (p) => {
+    const x = await q(p);
+    if (p.sourceChain === "Lightning" && p.targetChain === "Arkade") return { ...x, protocol_fee_rate: 0.0065, protocol_fee: 646, network_fee: 1, min_amount: 335, max_amount: 1000000, net_target_amount: "99353" };
+    if (p.sourceChain === "Arkade" && p.targetChain === "Lightning") return { ...x, protocol_fee_rate: 0.008, protocol_fee: 790, network_fee: 500, min_amount: 335, max_amount: 1000000, net_target_amount: "98710" };
+    return { ...x, min_amount: p.sourceChain === "Arkade" || p.targetChain === "Arkade" ? 335 : 356 };
+  };
   const r = await sw.swapRoutes(ctxWith(provider(client)));
   const fwd = Object.keys(SWAP_SOURCES).flatMap((f) => Object.keys(SWAP_TARGETS).map((t) => `${f}->${t}`)), back = Object.keys(SWAP_TARGETS).flatMap((f) => Object.keys(SWAP_SOURCES).map((t) => `${f}->${t}`));
-  assert.deepEqual(r.routes.map((x) => `${x.from}->${x.to}`), [...fwd, ...back]);
-  assert.equal(r.routes.length, 8);
-  for (const x of r.routes) {
+  assert.deepEqual(r.routes.map((x) => `${x.from}->${x.to}`), [...fwd, ...back, "lightning->arkade", "arkade->lightning"]);
+  assert.equal(r.routes.length, 10);
+  for (const x of r.routes.slice(0, 8)) {
     const fw = x.direction === "btc_to_stablecoin"; const t = SWAP_TARGETS[fw ? x.to : x.from]; const rail = fw ? x.from : x.to;
     assert.deepEqual({ rail: fw ? x.source : x.target, token: x.token, chain: x.chain, chainId: x.chainId, contract: x.contract }, { rail: SWAP_SOURCES[rail].chain, token: t.symbol, chain: t.network, chainId: Number(t.chain), contract: t.tokenId });
     assert.deepEqual(x.limits, { minSats: rail === "arkade" ? 335 : 356, maxSats: 20000000 }); assert.equal(x.limitsNote, undefined);
   }
-  assert.deepEqual(r.routes.map((x) => x.direction), [...Array(4).fill("btc_to_stablecoin"), ...Array(4).fill("stablecoin_to_btc")]);
-  assert.equal(calls.getQuote.length, 8); assert.equal(calls.createSwap.length, 0); assert.equal(calls.claim.length, 0);
+  const lnArk = r.routes[8], arkLn = r.routes[9];
+  assert.deepEqual({ from: lnArk.from, to: lnArk.to, direction: lnArk.direction, source: lnArk.source, target: lnArk.target, limits: lnArk.limits, token: lnArk.token },
+    { from: "lightning", to: "arkade", direction: "lightning_to_arkade", source: "Lightning", target: "Arkade", limits: { minSats: 335, maxSats: 1000000 }, token: undefined });
+  assert.deepEqual({ from: arkLn.from, to: arkLn.to, direction: arkLn.direction, source: arkLn.source, target: arkLn.target, limits: arkLn.limits },
+    { from: "arkade", to: "lightning", direction: "arkade_to_lightning", source: "Arkade", target: "Lightning", limits: { minSats: 335, maxSats: 1000000 } });
+  assert.deepEqual(r.routes.map((x) => x.direction), [...Array(4).fill("btc_to_stablecoin"), ...Array(4).fill("stablecoin_to_btc"), "lightning_to_arkade", "arkade_to_lightning"]);
+  assert.equal(calls.getQuote.length, 10); assert.equal(calls.createSwap.length, 0); assert.equal(calls.claim.length, 0);
   for (const g of calls.getQuote) { assert.equal(g.referralCode, SWAP_REFERRAL_ID); assert.equal(g.extraFees, SWAP_MARKUP_BPS); }
   // the reverse probes quote a stablecoin source amount on Arbitrum
-  for (const g of calls.getQuote.slice(4)) { assert.equal(g.sourceChain, "42161"); assert.equal(g.targetToken, "btc"); assert.equal(String(g.sourceAmount), "10000000"); }
+  for (const g of calls.getQuote.slice(4, 8)) { assert.equal(g.sourceChain, "42161"); assert.equal(g.targetToken, "btc"); assert.equal(String(g.sourceAmount), "10000000"); }
+  for (const g of calls.getQuote.slice(8)) { assert.equal(g.sourceToken, "btc"); assert.equal(g.targetToken, "btc"); assert.equal(g.sourceAmount, 100000); }
   const liveFees = { satoraFeeRate: 0.005, satoraFeePercent: "0.5%", agentEscrowMarkup: "0.5%", agentEscrowMarkupBps: 50, totalFeeRate: 0.01, totalFeePercent: "1%" };
-  for (const x of r.routes) assert.deepEqual(x.fees, liveFees);
-  assert.deepEqual(r.markup, { bps: 50, percent: "0.5%", note: "Every swap costs 1% total (Satora 0.5% + Agent Escrow 0.5%) plus network fee. Paid inside the swap; nothing extra to send." });
+  for (const x of r.routes.slice(0, 8)) assert.deepEqual(x.fees, liveFees);
+  assert.equal(lnArk.fees.totalFeePercent, "0.65%"); assert.equal(lnArk.fees.satoraFeePercent, "0.15%");
+  assert.equal(arkLn.fees.totalFeePercent, "0.8%"); assert.equal(arkLn.fees.satoraFeePercent, "0.3%");
+  // rates differ across routes: the summary uses the all-routes note, not a single 1%
+  assert.match(r.markup.note, /Fees depend on the route/);
+  assert.match(r.markup.note, /about 1% total \(Satora ~0\.5% \+ Agent Escrow 0\.5%\) plus network fee/);
+  assert.match(r.markup.note, /about 0\.65% total \(Satora ~0\.15% \+ Agent Escrow 0\.5%\) plus network fee/);
+  assert.match(r.markup.note, /about 0\.80% total \(Satora ~0\.30% \+ Agent Escrow 0\.5%\) plus network fee/);
   assert.equal(r.referral, SWAP_REFERRAL_ID);
 });
 test("swap routes: a failed or incomplete limits lookup still lists every route, limits unavailable, no error", async () => {
@@ -357,13 +377,13 @@ test("swap routes: a failed or incomplete limits lookup still lists every route,
     const x = await sw.swapRoutes(ctxWith(provider(m.client))); assert.ok(x.routes.every((y) => y.limits === "unavailable"), JSON.stringify(bad));
   }
   assert.equal(calls.createSwap.length, 0);
-  // the provider cannot even be opened: all eight listed, all unavailable
+  // the provider cannot even be opened: all ten listed, all unavailable
   r = await sw.swapRoutes({ network: "bitcoin", cfg: {}, swaps: async () => { throw new Error("no provider"); } });
-  assert.equal(r.routes.length, 8); assert.ok(r.routes.every((x) => x.limits === "unavailable" && /no provider/.test(x.limitsNote)));
+  assert.equal(r.routes.length, 10); assert.ok(r.routes.every((x) => x.limits === "unavailable" && /no provider/.test(x.limitsNote)));
   // mutinynet: no Satora stablecoin routes, so no lookup at all
   ({ client, calls } = mockClient());
   r = await sw.swapRoutes(ctxWith(provider(client), "mutinynet"));
-  assert.equal(r.routes.length, 8); assert.ok(r.routes.every((x) => x.limits === "unavailable" && /mainnet only/.test(x.limitsNote) && x.fees === undefined)); assert.equal(calls.getQuote.length, 0);
+  assert.equal(r.routes.length, 10); assert.ok(r.routes.every((x) => x.limits === "unavailable" && /mainnet only/.test(x.limitsNote) && x.fees === undefined)); assert.equal(calls.getQuote.length, 0);
   assert.match(r.markup.note, /about 1% total \(Satora ~0\.5% \+ Agent Escrow 0\.5%\) plus network fee/);
 });
 test("swap routes: mixed live pair rates fall back to the approximate total-fee note; each route still shows its own rate", async () => {
@@ -373,14 +393,30 @@ test("swap routes: mixed live pair rates fall back to the approximate total-fee 
   const by = Object.fromEntries(r.routes.map((x) => [`${x.from}->${x.to}`, x]));
   assert.equal(by["lightning->usdc"].fees.totalFeePercent, "1%"); assert.equal(by["lightning->usdc"].fees.satoraFeePercent, "0.5%");
   assert.equal(by["arkade->usdc"].fees.totalFeePercent, "1.2%"); assert.equal(by["arkade->usdc"].fees.satoraFeePercent, "0.7%");
+  assert.match(r.markup.note, /Fees depend on the route/);
   assert.match(r.markup.note, /about 1% total \(Satora ~0\.5% \+ Agent Escrow 0\.5%\) plus network fee/);
+  assert.doesNotMatch(r.markup.note, /Every swap costs/);
+});
+test("swap routes: a partial probe success never claims one route's rate for every swap", async () => {
+  const { client } = mockClient(); const q = client.getQuote;
+  client.getQuote = async (p) => {
+    if (!(p.sourceChain === "Lightning" && p.targetChain === "Arkade")) throw new Error("satora down");
+    return { ...(await q(p)), protocol_fee_rate: 0.0065, protocol_fee: 646, network_fee: 1, min_amount: 335, max_amount: 1000000, net_target_amount: "99353" };
+  };
+  const r = await sw.swapRoutes(ctxWith(provider(client)));
+  const by = Object.fromEntries(r.routes.map((x) => [`${x.from}->${x.to}`, x]));
+  assert.equal(by["lightning->arkade"].fees.totalFeePercent, "0.65%");
+  assert.equal(by["lightning->usdc"].fees, undefined);
+  assert.match(r.markup.note, /Fees depend on the route/);
+  assert.doesNotMatch(r.markup.note, /Every swap costs 0\.65%/);
+  assert.doesNotMatch(r.markup.note, /Every swap costs/);
 });
 test("swap routes CLI: takes no amount / address / wait flags; --json is fine; help shows its usage", () => {
   assert.equal(checkSwapArgs("routes", undefined, {}), null); assert.equal(checkSwapArgs("routes", undefined, { json: true }), null);
   for (const f of [{ sats: "5" }, { address: ADDR }, { from: "lightning" }, { to: "usdc" }, { wait: true }, { yes: true }, { timeout: "5" }]) assert.equal(checkSwapArgs("routes", undefined, f)?.code, "USAGE", JSON.stringify(f));
   assert.match(helpFor(["swap", "routes"], { help: true }, "x").usage, /^mark swap routes/); assert.ok("routes" in SWAP_USAGE);
 });
-test("MCP swap_routes: listed with no required arguments; a call returns all eight routes (mutinynet: no Satora lookup, limits unavailable)", async () => {
+test("MCP swap_routes: listed with no required arguments; a call returns all ten routes (mutinynet: no Satora lookup, limits unavailable)", async () => {
   tmpHome(); const CLI = new URL("../dist/src/cli.js", import.meta.url).pathname;
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("npm_")));
   const t = new StdioClientTransport({ command: process.execPath, args: [CLI, "mcp", "--network", "mutinynet", "--escrow-url", "http://127.0.0.1:9"], env, stderr: "ignore" });
@@ -388,9 +424,9 @@ test("MCP swap_routes: listed with no required arguments; a call returns all eig
   try {
     const tool = (await cl.listTools()).tools.find((x) => x.name === "swap_routes");
     assert.ok(tool, "swap_routes is registered"); assert.deepEqual(tool.inputSchema.required ?? [], []); assert.deepEqual(Object.keys(tool.inputSchema.properties ?? {}), []);
-    assert.match(tool.description, /Read-only: nothing is created/); assert.match(tool.description, /about 1% total \(Satora ~0\.5% \+ Agent Escrow 0\.5%\) plus network fee/);
+    assert.match(tool.description, /Read-only: nothing is created/); assert.match(tool.description, /Fees depend on the route/); assert.match(tool.description, /about 1% total \(Satora ~0\.5% \+ Agent Escrow 0\.5%\) plus network fee/); assert.match(tool.description, /0\.65% total/); assert.match(tool.description, /0\.80% total/);
     const r = JSON.parse((await cl.callTool({ name: "swap_routes", arguments: {} })).content[0].text);
-    assert.deepEqual(r.routes.map((x) => `${x.from}->${x.to}`), ["lightning->usdc", "lightning->usdt0", "arkade->usdc", "arkade->usdt0", "usdc->lightning", "usdc->arkade", "usdt0->lightning", "usdt0->arkade"]);
+    assert.deepEqual(r.routes.map((x) => `${x.from}->${x.to}`), ["lightning->usdc", "lightning->usdt0", "arkade->usdc", "arkade->usdt0", "usdc->lightning", "usdc->arkade", "usdt0->lightning", "usdt0->arkade", "lightning->arkade", "arkade->lightning"]);
     assert.ok(r.routes.every((x) => x.limits === "unavailable" && x.fees === undefined)); assert.equal(r.markup.percent, "0.5%"); assert.match(r.markup.note, /about 1% total/); assert.equal(r.referral, SWAP_REFERRAL_ID);
   } finally { await cl.close(); }
 });

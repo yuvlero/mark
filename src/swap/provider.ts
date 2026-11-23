@@ -28,6 +28,24 @@ export interface ReverseCreateInput { from: SwapStable; to: SwapRail; bps: numbe
  *  too close to expiry). */
 export interface FundResult { success: boolean; txHash?: string; message?: string; uncertain?: boolean; skipped?: string; stop?: boolean }
 
+/** `mark swap` Lightning ↔ Arkade. Fields are Satora's own answer, checked before anything is shown to pay. */
+export interface RailSwapCreated {
+  id: string; status: string; direction?: string;
+  /** Lightning invoice to pay (lightning → arkade) or the payout invoice (arkade → lightning). */
+  invoice?: string;
+  /** Arkade VHTLC address the user must fund (arkade → lightning). */
+  fundArkAddress?: string;
+  /** Arkade address the sats are claimed to (lightning → arkade). */
+  payoutArkAddress?: string;
+  payAmountSats: number; receiveSats?: number;
+  sourceChain?: string; targetChain?: string; raw?: unknown;
+}
+export interface RailSwapInfo extends RailSwapCreated {
+  fundTx?: string; payoutTx?: string; createdAt?: string; local: boolean;
+}
+export interface RailQuoteInput { from: SwapSource; to: SwapRail; bps: number; sats?: number; invoice?: string }
+export interface RailCreateInput { from: SwapSource; to: SwapRail; bps: number; sats?: number; address?: string; invoice?: string }
+
 export interface SwapProvider {
   readonly name: string;
   createReceive(amountSats: number, arkAddress: string): Promise<ReceiveSwap>;
@@ -70,6 +88,10 @@ export interface SwapProvider {
   refundReverse?(id: string): Promise<{ success: boolean; txHash?: string; how?: string; message?: string }>;
   /** Sweep the swap token from the deposit address to `to` (needs a little ETH there for gas). */
   recoverReverse?(id: string, to: string): Promise<{ success: boolean; txHash?: string; amountUnits?: string; message?: string }>;
+  /** `mark swap` Lightning ↔ Arkade: same referral ID and markup on the quote and the create. */
+  quoteRail?(p: RailQuoteInput): Promise<SatoraQuote>;
+  createRail?(p: RailCreateInput): Promise<RailSwapCreated>;
+  getRail?(id: string): Promise<RailSwapInfo>;
   /** Read Arbitrum balances (the deposit address). */
   evm?: import("./evm.js").EvmReader;
 }

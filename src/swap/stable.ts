@@ -22,15 +22,24 @@ export const SWAP_MAX_SLIPPAGE_BPS = 100;
 export const pct = (bps: number) => `${+(bps / 100).toFixed(2)}%`;
 /** "0.5%" for 0.005; "1%" for 0.01. Same formatting as pct(), from a rate rather than bps. */
 export const ratePct = (rate: number) => `${+(rate * 100).toFixed(2)}%`;
-/** Wording when no live quote is available (docs, MCP descriptions, routes with unavailable limits). Satora's pair fee is typically ~0.5%. */
+/** Wording when no live quote is available for a stablecoin route (docs, MCP descriptions). Satora's pair fee on those routes is typically ~0.5%. */
 export const SWAP_FEE_TOTAL_NOTE = `about 1% total (Satora ~0.5% + Agent Escrow ${pct(SWAP_MARKUP_BPS)}) plus network fee`;
-/** Top-level routes / docs note. `live` is used only when every successful quote agreed on the same rates. */
+/** Lightning → Arkade, no live quote. Satora's pair fee is typically ~0.15%; the live quote's network fee can differ from /network-fees. */
+export const SWAP_FEE_LN_ARKADE_NOTE = `about 0.65% total (Satora ~0.15% + Agent Escrow ${pct(SWAP_MARKUP_BPS)}) plus network fee`;
+/** Arkade → Lightning, no live quote. Satora's pair fee is typically ~0.30%; the Lightning network fee comes from the live quote (/network-fees can differ). */
+export const SWAP_FEE_ARKADE_LN_NOTE = `about 0.80% total (Satora ~0.30% + Agent Escrow ${pct(SWAP_MARKUP_BPS)}) plus network fee`;
+/** Static wording for a route when no live quote is available. */
+export function routeFeeNote(route: SwapRoute): string {
+  if (route.dir === "rail") return route.from === "lightning" ? SWAP_FEE_LN_ARKADE_NOTE : SWAP_FEE_ARKADE_LN_NOTE;
+  return SWAP_FEE_TOTAL_NOTE;
+}
+/** Docs / MCP / routes summary: fees vary by route, so a single ~1% line would be wrong for Lightning ↔ Arkade. */
+export const SWAP_FEE_ALL_ROUTES_NOTE = `Fees depend on the route and are shown on the live quote. Lightning or Arkade to USDC or USDT0 (and back) is ${SWAP_FEE_TOTAL_NOTE}. Lightning to Arkade is ${SWAP_FEE_LN_ARKADE_NOTE}. Arkade to Lightning is ${SWAP_FEE_ARKADE_LN_NOTE}`;
+/** Top-level routes / docs note. `live` is used only when every listed route returned a quote and they all agreed on the same rates (unusual once Lightning ↔ Arkade is included). */
 export function swapFeeSummaryNote(live?: { satoraFeeRate: number; totalFeeRate: number; markupBps?: number } | null) {
   const bps = live?.markupBps ?? SWAP_MARKUP_BPS;
-  const body = live
-    ? `${ratePct(live.totalFeeRate)} total (Satora ${ratePct(live.satoraFeeRate)} + Agent Escrow ${pct(bps)}) plus network fee`
-    : SWAP_FEE_TOTAL_NOTE;
-  return `Every swap costs ${body}. Paid inside the swap; nothing extra to send.`;
+  if (live) return `Every swap costs ${ratePct(live.totalFeeRate)} total (Satora ${ratePct(live.satoraFeeRate)} + Agent Escrow ${pct(bps)}) plus network fee. Paid inside the swap; nothing extra to send.`;
+  return `${SWAP_FEE_ALL_ROUTES_NOTE}. Paid inside the swap; nothing extra to send.`;
 }
 
 /** Where the BTC comes from (a Satora source asset). */
@@ -160,24 +169,35 @@ export function formatSwapQuote(q: SatoraQuote, o: { from: SwapSource; to: SwapT
 /** The same two tables, read the other way: SWAP_TARGETS are the stablecoins you send, SWAP_SOURCES the BTC rails paid out. */
 export type SwapStable = SwapTarget;
 export type SwapRail = SwapSource;
-export type SwapRoute = { dir: "to_stable"; from: SwapSource; to: SwapTarget } | { dir: "to_btc"; from: SwapStable; to: SwapRail };
+export type SwapRoute =
+  | { dir: "to_stable"; from: SwapSource; to: SwapTarget }
+  | { dir: "to_btc"; from: SwapStable; to: SwapRail }
+  | { dir: "rail"; from: SwapSource; to: SwapRail };
 const isStable = (k: string) => Object.hasOwn(SWAP_TARGETS, k.replace(/^usdt$/, "usdt0"));
-/** --from / --to to a route. A stablecoin --from is the reverse direction (default --to lightning); anything else is the forward
- *  direction exactly as before (default --from lightning --to usdc). */
+const isRail = (k: string) => Object.hasOwn(SWAP_SOURCES, k);
+/** --from / --to to a route. A stablecoin --from is the reverse direction (default --to lightning). Both --from and --to a
+ *  BTC rail (lightning or arkade, and different) is a Lightning ↔ Arkade swap. Anything else is BTC -> stablecoin
+ *  (default --from lightning --to usdc). `--to lightning|arkade` without --from is refused (ambiguous). */
 export function swapRoute(from: string | undefined, to: string | undefined): SwapRoute {
-  const f = (from ?? "").toLowerCase();
+  const f = (from ?? "").toLowerCase(), t = (to ?? "").toLowerCase();
   if (f && isStable(f)) {
-    const t = (to ?? "lightning").toLowerCase();
-    if (!Object.hasOwn(SWAP_SOURCES, t)) throw new MarkError("USAGE", `--to must be ${Object.keys(SWAP_SOURCES).join(" or ")} when --from is a stablecoin`);
-    return { dir: "to_btc", from: swapTarget(f), to: t as SwapRail };
+    const rail = (to ?? "lightning").toLowerCase();
+    if (!isRail(rail)) throw new MarkError("USAGE", `--to must be ${Object.keys(SWAP_SOURCES).join(" or ")} when --from is a stablecoin`);
+    return { dir: "to_btc", from: swapTarget(f), to: rail as SwapRail };
   }
-  if (to && Object.hasOwn(SWAP_SOURCES, to.toLowerCase())) throw new MarkError("USAGE", `--to ${to.toLowerCase()} needs a stablecoin --from (${Object.keys(SWAP_TARGETS).join(" or ")})`);
+  if (t && isRail(t)) {
+    if (!f) throw new MarkError("USAGE", `--to ${t} needs --from lightning or arkade (a Lightning ↔ Arkade swap) or --from ${Object.keys(SWAP_TARGETS).join(" or ")} (from a stablecoin)`);
+    if (!isRail(f)) throw new MarkError("USAGE", `--to ${t} needs --from lightning or arkade, or a stablecoin --from (${Object.keys(SWAP_TARGETS).join(" or ")})`);
+    if (f === t) throw new MarkError("USAGE", `--from and --to cannot both be ${f}`);
+    return { dir: "rail", from: f as SwapSource, to: t as SwapRail };
+  }
   return { dir: "to_stable", from: swapSource(from), to: swapTarget(to) };
 }
-/** Every route, built from the same two tables: BTC -> stablecoin first (as before), then stablecoin -> BTC. */
+/** Every route: BTC -> stablecoin, then stablecoin -> BTC, then Lightning ↔ Arkade. */
 export function allSwapRoutes(): SwapRoute[] {
   const btc = Object.keys(SWAP_SOURCES) as SwapSource[], st = Object.keys(SWAP_TARGETS) as SwapTarget[];
-  return [...btc.flatMap((from) => st.map((to) => ({ dir: "to_stable" as const, from, to }))), ...st.flatMap((from) => btc.map((to) => ({ dir: "to_btc" as const, from, to })))];
+  const rails = btc.flatMap((from) => btc.filter((to) => to !== from).map((to) => ({ dir: "rail" as const, from, to })));
+  return [...btc.flatMap((from) => st.map((to) => ({ dir: "to_stable" as const, from, to }))), ...st.flatMap((from) => btc.map((to) => ({ dir: "to_btc" as const, from, to }))), ...rails];
 }
 /** "1.5" USDC -> 1500000n token units (at most `decimals` decimals, more than zero). */
 export function tokenUnits(v: unknown, decimals: number, flag = "--amount"): bigint {
@@ -199,6 +219,22 @@ export function formatReverseQuote(q: SatoraQuote, o: { from: SwapStable; to: Sw
     receiveSats: Number(q.net_target_amount),
     fees: v.fees,
     markupNote: `${v.totalFeeLine}. Taken inside the swap; nothing extra to send. No ETH needed: the deposit is gasless.`,
+    limits: { minSats: q.min_amount, maxSats: q.max_amount },
+    referral: SWAP_REFERRAL_ID,
+  };
+}
+
+/** The quote for a Lightning ↔ Arkade swap as Mark shows it: sats in, sats out, every fee line, and the total rate from the quote. */
+export function formatRailQuote(q: SatoraQuote, o: { from: SwapSource; to: SwapRail; bps: number; sats?: number }) {
+  const pay = Number(q.net_source_amount ?? q.source_amount ?? o.sats);
+  const v = quoteFeeView(splitSwapFees(q, Number.isSafeInteger(pay) ? pay : 0, o.bps));
+  return {
+    from: o.from, to: o.to,
+    payAmountSats: pay,
+    receiveSats: Number(q.net_target_amount),
+    rate: "1 BTC per BTC",
+    fees: v.fees,
+    markupNote: `${v.totalFeeLine}. Paid inside the swap; nothing extra to send.`,
     limits: { minSats: q.min_amount, maxSats: q.max_amount },
     referral: SWAP_REFERRAL_ID,
   };
