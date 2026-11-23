@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { Client } from "@satora/swap";
-import type { SwapProvider, SwapInfo, ClaimResult, StableSwapCreated, StableSwapInfo, ReverseQuoteInput, ReverseCreateInput, ReverseSwapCreated, ReverseSwapInfo, FundResult } from "./provider.js";
+import type { SwapProvider, SwapInfo, ClaimResult, StableSwapCreated, StableSwapInfo, ReverseQuoteInput, ReverseCreateInput, ReverseSwapCreated, ReverseSwapInfo, FundResult, ReversePin } from "./provider.js";
 import { arbitrumReader, viemSigner, type EvmReader } from "./evm.js";
 import { SWAP_REFERRAL_ID, SWAP_SOURCES, SWAP_TARGETS, checkMarkupBps, type SatoraQuote, type SwapSource, type SwapTarget } from "./stable.js";
 import { encryptWith, decryptWith } from "../crypto/keystore.js";
@@ -233,6 +233,17 @@ export class SatoraProvider implements SwapProvider {
     const f = this.attemptsFile(); if (f) { fs.writeFileSync(f + ".tmp", JSON.stringify(a), { mode: 0o600 }); fs.renameSync(f + ".tmp", f); }
   }
   fundAttemptedAt(id: string) { return this.readAttempts()[id]; }
+  private pins: Record<string, ReversePin> = {};
+  private pinsFile() { return this.dir ? path.join(this.dir, "reverse-pins.json") : undefined; }
+  private readPins(): Record<string, ReversePin> {
+    const f = this.pinsFile(); if (!f || !fs.existsSync(f)) return this.pins;
+    try { return { ...JSON.parse(fs.readFileSync(f, "utf8")), ...this.pins }; } catch { return this.pins; }
+  }
+  pinReverse(id: string, pin: ReversePin) {
+    const a = { ...this.readPins(), [id]: pin }; this.pins = a;
+    const f = this.pinsFile(); if (f) { fs.writeFileSync(f + ".tmp", JSON.stringify(a), { mode: 0o600 }); fs.renameSync(f + ".tmp", f); }
+  }
+  reversePin(id: string) { return this.readPins()[id]; }
   fundReverse(id: string): Promise<FundResult> {
     const running = this.funding.get(id); if (running) return running;
     const run = this.fundOnce(id).finally(() => this.funding.delete(id));
@@ -245,6 +256,9 @@ export class SatoraProvider implements SwapProvider {
       let x: ReverseSwapInfo; try { x = await this.getReverse(id); } catch (e) { return { success: false, message: `could not read the swap: ${errText(e)}` }; }
       if (x.status !== "pending" || x.fundTx) return { success: false, skipped: `the swap is already past funding (${x.status}${x.fundTx ? `, funding tx ${x.fundTx}` : ""})` };
       if (!x.tokenContract || !x.depositAddress || !/^\d+$/.test(String(x.sourceUnits ?? ""))) return { success: false, message: "the swap has no deposit terms" };
+      const pin = this.reversePin(id);
+      if (x.depositAddress.toLowerCase() !== this.depositAddress().toLowerCase() || (pin && (pin.tokenContract.toLowerCase() !== x.tokenContract.toLowerCase() || pin.sourceUnits !== x.sourceUnits)))
+        return { success: false, message: "the swap's deposit terms no longer match what was confirmed at create; not funding it" };
       let have: bigint; try { have = await this.evm.tokenBalance(x.tokenContract, x.depositAddress); } catch (e) { return { success: false, message: `could not read the deposit address: ${errText(e)}` }; }
       if (have < BigInt(x.sourceUnits!)) return { success: false, skipped: `the deposit address holds ${have} of the ${x.sourceUnits} token units this swap needs` };
       this.markAttempt(id, Date.now());

@@ -1,4 +1,4 @@
-/** `mark swap` from a stablecoin: USDC / USDT0 on Arbitrum -> BTC over Lightning (a BOLT11 invoice or a Lightning address) or to
+/** `mark swap` from a stablecoin: USDC / USDT0 on Arbitrum -> BTC over Lightning (a BOLT11 invoice) or to
  *  an Ark address, through Satora. Gasless: the stablecoins go to this Mark home's deposit address (its own EVM key, kept in the
  *  encrypted swap storage); Mark then signs Permit2 and Satora's relay locks them into the swap. No wallet, no ETH. */
 import { MarkError } from "../errors.js";
@@ -13,11 +13,11 @@ import { ARBISCAN_TX, SWAP_MARKUP_BPS, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP
   formatReverseQuote, pct, tokenUnits, units, type SwapRail, type SwapStable } from "../swap/stable.js";
 
 export interface ReverseInput { from: SwapStable; to: SwapRail; amount?: string | number; invoice?: string; address?: string }
-type Rev = Required<Pick<SwapProvider, "quoteReverse" | "createReverse" | "getReverse" | "depositAddress" | "openReverse" | "fundReverse" | "fundAttemptedAt" | "refundReverse" | "recoverReverse" | "evm" | "claim" | "exclusive">> & SwapProvider;
+type Rev = Required<Pick<SwapProvider, "quoteReverse" | "createReverse" | "getReverse" | "depositAddress" | "openReverse" | "fundReverse" | "fundAttemptedAt" | "refundReverse" | "recoverReverse" | "evm" | "claim" | "exclusive" | "pinReverse" | "reversePin">> & SwapProvider;
 
 export async function reverse(c: Ctx): Promise<Rev> {
   const s = await c.swaps();
-  for (const k of ["quoteReverse", "createReverse", "getReverse", "depositAddress", "openReverse", "fundReverse", "fundAttemptedAt", "refundReverse", "recoverReverse", "evm", "exclusive"] as const)
+  for (const k of ["quoteReverse", "createReverse", "getReverse", "depositAddress", "openReverse", "fundReverse", "fundAttemptedAt", "refundReverse", "recoverReverse", "evm", "exclusive", "pinReverse", "reversePin"] as const)
     if (!(s as any)[k]) throw new MarkError("BAD_CONFIG", `swap provider ${s.name} does not support mark swap from a stablecoin`);
   return s as any;
 }
@@ -94,6 +94,7 @@ export async function reverseRun(c: Ctx, i: ReverseRunInput) {
     return s.createReverse({ from: p.from, to: p.to, bps: p.bps, ...(p.invoice ? { invoice: p.invoice } : { sourceUnits: p.sourceUnits }), ...(p.arkAddress ? { arkAddress: p.arkAddress } : {}) });
   });
   checkReverseCreated(c, p, created, q, s.depositAddress());
+  s.pinReverse(created.id, { ...(p.invoice ? { invoice: p.invoice } : { arkAddress: p.arkAddress }), depositAddress: s.depositAddress(), tokenContract: created.tokenContract!, sourceUnits: created.sourceUnits! });
   const deposit = await depositInfo(s, created);
   const first = { swap: "created", id: created.id, status: created.status, from: p.from, to: p.to, payout: { ...target(p), sats: created.targetSats }, quote, deposit,
     next: i.wait && i.onProgress ? "Waiting for the deposit; then Mark funds the swap (gasless) and waits for the payout." : `After the deposit, run: ${mk()} swap fund ${created.id} --wait  (signs the permits once; Satora's relay locks the deposit)` };
@@ -159,7 +160,7 @@ export async function reverseFund(c: Ctx, id: string, o: { wait?: boolean; timeo
   if (!id) throw new MarkError("USAGE", "mark swap fund <id>");
   const s = await reverse(c);
   if (o.wait) return waitReverse(s, id, o);
-  const x = await s.getReverse(id); notReverse(x);
+  const x = pinned(s, await s.getReverse(id), true);
   if (isDone(x)) return doneOut(x);
   if (x.status !== "pending" || x.fundTx) return { id, status: x.status, funded: false, note: x.status === "pending" ? `Funding seen (tx ${x.fundTx}). ${DO_NOT_RESEND}` : `Already past funding (${x.status}): ${nextNote(x)}` };
   const f = await fundState(s, x);
@@ -175,6 +176,24 @@ function fundOut(x: ReverseSwapInfo, r: Awaited<ReturnType<Rev["fundReverse"]>>)
   return { id: x.id, status: x.status, funded: false, fundFailed: true, message: r.message, note: r.uncertain
     ? `The relay may still have submitted it: Mark will not sign again for a while. ${DO_NOT_RESEND} Check ${mk()} swap status ${x.id}.`
     : `Satora's relay refused the funding; nothing was locked and your stablecoins are still at the deposit address. Retry ${mk()} swap fund ${x.id}, or get them back with ${mk()} swap recover ${x.id} --to <0x...>. ${DO_NOT_RESEND}` };
+}
+/** Every later read of a swap from a stablecoin is checked against what was confirmed at create: this Mark home's own deposit
+ *  address, and the pinned payout target and deposit terms. act (fund, claim, refund, recover, wait): the swap must also be this
+ *  home's. Returns the swap with the pinned values in place of Satora's. */
+function pinned(s: Rev, x: ReverseSwapInfo, act: boolean): ReverseSwapInfo {
+  notReverse(x);
+  const bad = (why: string) => { throw new MarkError("SWAP_FAILED", `swap ${x.id} no longer matches what was confirmed at create (${why}). Do NOT deposit or send anything for it.`, { id: x.id }); };
+  if (act && !x.local) throw new MarkError("SWAP_NOT_LOCAL", "this Mark home does not hold the swap's keys: run it from the Mark home that created it");
+  const mine = s.depositAddress();
+  if (String(x.depositAddress ?? "").toLowerCase() !== mine.toLowerCase()) bad(`deposit address ${x.depositAddress} is not this Mark home's ${mine}`);
+  const pin = s.reversePin(x.id);
+  if (pin) {
+    if (pin.tokenContract.toLowerCase() !== String(x.tokenContract ?? "").toLowerCase()) bad(`token ${x.tokenContract}`);
+    if (pin.sourceUnits !== x.sourceUnits) bad(`deposit amount ${x.sourceUnits} units, confirmed ${pin.sourceUnits}`);
+    if (pin.arkAddress && x.arkAddress !== undefined && x.arkAddress !== pin.arkAddress) bad(`payout address ${x.arkAddress}, confirmed ${pin.arkAddress}`);
+    if (pin.invoice && x.invoice !== undefined && x.invoice.toLowerCase() !== pin.invoice.toLowerCase()) bad("the invoice Satora pays is not the confirmed one");
+  } else if (act && x.targetChain === "Arkade") bad("no confirmed payout address recorded in this Mark home");
+  return { ...x, depositAddress: mine, ...(pin?.arkAddress ? { arkAddress: pin.arkAddress } : {}) };
 }
 function notReverse(x: ReverseSwapInfo) { if (!/^evm_to_/.test(x.direction ?? "")) throw new MarkError("USAGE", `swap ${x.id} is not a swap from a stablecoin (${x.direction})`); }
 
@@ -195,7 +214,7 @@ export async function waitReverse(s: Rev, id: string, o: { timeoutSec?: number; 
   const end = Date.now() + (o.timeoutSec ?? 1800) * 1000; const poll = o.pollMs ?? 5000; let last = "unknown"; let fund: any; let claimed = false;
   while (Date.now() < end) {
     let x: ReverseSwapInfo; try { x = await s.getReverse(id); } catch { await sleep(poll); continue; }
-    notReverse(x); last = x.status;
+    x = pinned(s, x, true); last = x.status;
     if (isDone(x)) return doneOut(x);
     if (x.status === "pending" && !x.fundTx && !fund?.success) {
       const f = await fundState(s, x);
@@ -213,8 +232,9 @@ export async function waitReverse(s: Rev, id: string, o: { timeoutSec?: number; 
 }
 
 /** Status of a swap from a stablecoin (read-only), with the deposit seen so far while it waits for funding. */
-export async function reverseStatus(s: Rev, x: ReverseSwapInfo) {
-  const { raw: _raw, ...info } = x; const t = tokenOf(x);
+export async function reverseStatus(s: Rev, x0: ReverseSwapInfo) {
+  if (!x0.local) { notReverse(x0); const { raw: _r, ...i } = x0; return { ...i, next: "This Mark home did not create this swap: it shows no deposit instructions for it. Check it from the Mark home that created it." }; }
+  const x = pinned(s, x0, false); const { raw: _raw, ...info } = x; const t = tokenOf(x);
   const out: any = { ...info, ...(t ? { token: t.symbol, depositAmount: units(x.sourceUnits, t.decimals) } : {}), ...(x.fundTx ? { fundExplorer: ARBISCAN_TX + x.fundTx } : {}) };
   if (x.status === "pending" && !x.fundTx) {
     const f = await fundState(s, x);
@@ -228,8 +248,9 @@ export async function reverseStatus(s: Rev, x: ReverseSwapInfo) {
 }
 
 /** Claim an Ark payout Satora has funded (Lightning payouts need no claim). */
-export async function reverseClaim(s: Rev, x: ReverseSwapInfo) {
-  if (isDone(x)) return doneOut(x);
+export async function reverseClaim(s: Rev, x0: ReverseSwapInfo) {
+  if (isDone(x0)) return doneOut(x0);
+  const x = pinned(s, x0, true);
   if (x.targetChain !== "Arkade") return { id: x.id, status: x.status, claimed: false, note: `A Lightning payout needs no claim: Satora pays the invoice. ${nextNote(x)}` };
   if (x.status !== "serverfunded" && x.status !== "clientredeeming") return { id: x.id, status: x.status, claimed: false, note: nextNote(x) };
   const r = await s.claim(x.id, x.arkAddress!);
@@ -239,7 +260,8 @@ export async function reverseClaim(s: Rev, x: ReverseSwapInfo) {
 
 const REFUNDABLE = new Set(["clientfundingseen", "clientfunded"]);
 /** Refund a locked deposit that did not pay out, back to the deposit address (gasless), for recover to send on. */
-export async function reverseRefund(s: Rev, x: ReverseSwapInfo) {
+export async function reverseRefund(s: Rev, x0: ReverseSwapInfo) {
+  const x = pinned(s, x0, true);
   if (isDone(x)) throw new MarkError("SWAP_DONE", "this swap paid out: nothing to refund");
   if (x.status === "pending" && !x.fundTx) return { id: x.id, status: x.status, refunded: false, note: `Nothing is locked yet: an unfunded deposit is recovered with ${mk()} swap recover ${x.id} --to <your 0x address>.` };
   // only while the deposit is locked and Satora is not paying out: funded-but-stuck, or ended without a payout
@@ -256,13 +278,13 @@ const SWEEP_GAS = 120_000n;
 export async function reverseRecover(c: Ctx, id: string, to: string | undefined) {
   if (!id || !to) throw new MarkError("USAGE", "mark swap recover <id> --to <your 0x address on Arbitrum>");
   const dest = checkEvmAddress(to, "--to"); const s = await reverse(c);
-  const x = await s.getReverse(id); notReverse(x);
-  if (!x.local) throw new MarkError("SWAP_NOT_LOCAL", "this Mark home does not hold the swap's deposit key: run recover from the Mark home that created it");
-  const t = tokenOf(x); if (!t) throw new MarkError("SWAP_FAILED", `unknown swap token ${x.tokenContract}`);
-  const at = s.fundAttemptedAt(id);
-  if (x.status === "pending" && at !== undefined && Date.now() - at < 10 * 60 * 1000) throw new MarkError("SWAP_FUNDING", "a funding of this swap was just submitted: wait for it (mark swap status) before recovering");
+  const first = pinned(s, await s.getReverse(id), true); const t = tokenOf(first);
+  if (!t) throw new MarkError("SWAP_FAILED", `unknown swap token ${first.tokenContract}`);
   // under the deposit lock: no create or funding of this home can slip in between the checks and the sweep
   return s.exclusive(async () => {
+    // re-read under the lock: a funding that took the lock first is seen here, before anything is swept
+    const x = pinned(s, await s.getReverse(id), true); const at = s.fundAttemptedAt(id);
+    if (x.status === "pending" && at !== undefined && Date.now() - at < 10 * 60 * 1000) throw new MarkError("SWAP_FUNDING", "a funding of this swap was just submitted: wait for it (mark swap status) before recovering");
     const others = (await s.openReverse()).filter((o) => o.id !== id && String(o.tokenContract).toLowerCase() === t.tokenId.toLowerCase());
     if (others.length) throw new MarkError("SWAP_OPEN_DEPOSIT", `swap ${others[0].id} is waiting for a ${t.symbol} deposit at the same address: recovering now would take its deposit too. Finish it or let it expire first.`);
     const bal = await s.evm.tokenBalance(t.tokenId, x.depositAddress!);

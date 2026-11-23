@@ -20,6 +20,7 @@ export interface ReverseSwapCreated { id: string; status: string; gasless?: bool
   sourceChain?: string; evmChainId?: number; targetChain?: string; targetSats?: number; invoice?: string; arkAddress?: string; raw?: unknown }
 /** fundTx: the gasless funding (relay) tx once Satora saw it. local: this Mark home holds the swap's keys. */
 export interface ReverseSwapInfo extends ReverseSwapCreated { direction?: string; fundTx?: string; payoutTx?: string; lightningSettled?: boolean; createdAt?: string; local: boolean }
+export interface ReversePin { invoice?: string; arkAddress?: string; depositAddress: string; tokenContract: string; sourceUnits: string }
 export interface ReverseQuoteInput { from: SwapStable; to: SwapRail; bps: number; sourceUnits?: bigint; targetSats?: number; destination?: string }
 export interface ReverseCreateInput { from: SwapStable; to: SwapRail; bps: number; sourceUnits?: bigint; invoice?: string; arkAddress?: string }
 /** A gasless funding attempt: at most one per swap. uncertain: the relay may have submitted it (no clear refusal), so Mark does not
@@ -49,6 +50,9 @@ export interface SwapProvider {
   depositAddress?(): string;
   /** Swaps from a stablecoin in this Mark home's storage that are still waiting for their deposit (status pending). */
   openReverse?(): Promise<ReverseSwapInfo[]>;
+  /** The payout target and deposit terms confirmed at create (kept in this Mark home), checked on every later read. */
+  pinReverse?(id: string, pin: ReversePin): void;
+  reversePin?(id: string): ReversePin | undefined;
   /** Run f alone among this Mark home's deposit-address actions (create, fund, recover), across processes too. */
   exclusive?<T>(f: () => Promise<T>): Promise<T>;
   /** Sign the permits and let Satora's relay lock the deposit into the swap. At most once per swap (see FundResult): under the

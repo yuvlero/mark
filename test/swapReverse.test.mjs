@@ -53,8 +53,11 @@ function mockClient(o = {}) {
   return { client, calls, stored };
 }
 /** balances: token units at the deposit address, read in turn (the last one repeats). */
+/** one Mark home (swaps dir) per mock client, as in real use: what create records is there for later commands */
+const homes = new WeakMap();
+const homeOf = (client) => { if (!homes.has(client)) homes.set(client, fs.mkdtempSync(path.join(os.tmpdir(), "mark-rev-"))); return homes.get(client); };
 function provider(client, o = {}) {
-  const p = new SatoraProvider(client, "https://swap.test", "https://ark.test", o.dir);
+  const p = new SatoraProvider(client, "https://swap.test", "https://ark.test", o.dir ?? homeOf(client));
   let bals = [...(o.balances ?? [0n])];
   p.evm = { tokenBalance: async () => (bals.length > 1 ? bals.shift() : bals[0]), ethBalance: async () => o.eth ?? 0n, gasPrice: async () => 20_000_000n };
   p.signerFor = async () => ({ address: DEP, fake: true });
@@ -314,4 +317,31 @@ test("refund only while the locked deposit is stuck or the swap ended; claim --w
   let fails = 1; const get = m.client.getSwap; m.client.getSwap = async (id) => { if (fails-- > 0) throw new Error("satora down"); return get(id); };
   const r = await sw.swapClaim(ctxWith(provider(m.client)), "rv-1", { wait: true, pollMs: 1 });
   assert.equal(r.swap, "done"); assert.equal(m.calls.claimArkade.length, 1); assert.equal(m.calls.claimArkade[0].destinationAddress, ARK);
+});
+
+test("later reads are checked against what create confirmed: a changed Ark payout, a foreign deposit address, a non-local swap, a funding racing recover", async () => {
+  // Ark payout address swapped by the server after create -> claim refused, nothing claimed, the pinned address is the only one used
+  let m = mockClient({ statuses: ["serverfunded"] }); await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "arkade", amount: "1.5", address: ARK, confirm: true });
+  m.client.getSwap = async (id) => ({ ...m.stored[id].response, status: "serverfunded", target_arkade_address: payoutArk(8, "ark") });
+  let e = await sw.swapClaim(ctxWith(provider(m.client)), "rv-1", {}).catch((x) => x); assert.equal(e.code, "SWAP_FAILED"); assert.match(e.message, /Do NOT deposit/);
+  assert.equal(m.calls.claimArkade.length, 0);
+  // deposit address no longer this home's -> status and fund refuse, never show it, never fund
+  m = mockClient(); const inv = INV(); const c = await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: inv, confirm: true });
+  const evil = "0x" + "cd".repeat(20); m.stored["rv-1"].response.client_evm_address = evil;
+  e = await sw.swapStatus(ctxWith(provider(m.client)), "rv-1").catch((x) => x); assert.equal(e.code, "SWAP_FAILED"); assert.ok(!JSON.stringify(e).includes("pay " + evil));
+  e = await sw.swapFund(ctxWith(provider(m.client, { balances: [1500000n] })), "rv-1", {}).catch((x) => x); assert.equal(e.code, "SWAP_FAILED"); assert.equal(m.calls.fund.length, 0);
+  // deposit amount changed after create -> refused
+  m.stored["rv-1"].response.client_evm_address = DEP; m.stored["rv-1"].response.source_amount = "2500000";
+  e = await sw.swapFund(ctxWith(provider(m.client, { balances: [2500000n] })), "rv-1", {}).catch((x) => x); assert.equal(e.code, "SWAP_FAILED"); assert.equal(m.calls.fund.length, 0);
+  // a swap this home did not create: status shows no deposit instructions; fund refuses
+  m = mockClient({ existing: { direction: "evm_to_lightning", gasless: true, client_evm_address: DEP, source_amount: "1500000", source_token: { chain: "Arbitrum", token_id: USDC }, evm_chain_id: 42161, client_lightning_invoice: inv, target_amount: "2420" } });
+  m.client.getStoredSwap = async () => null;
+  const st = await sw.swapStatus(ctxWith(provider(m.client)), "rv-9"); assert.match(st.next, /did not create this swap/); assert.ok(!/send|deposit exactly/i.test(st.next.replace("no deposit instructions", "")));
+  e = await sw.swapFund(ctxWith(provider(m.client, { balances: [1500000n] })), "rv-9", {}).catch((x) => x); assert.equal(e.code, "SWAP_NOT_LOCAL"); assert.equal(m.calls.fund.length, 0);
+  // recover re-reads under the lock: a funding submitted just before the sweep takes the lock wins, nothing is swept
+  m = mockClient(); await sw.swapRun(ctxWith(provider(m.client)), { from: "usdc", to: "lightning", invoice: INV(), confirm: true });
+  const p = provider(m.client, { balances: [1500000n], eth: 10n ** 15n }); const ex = p.exclusive.bind(p);
+  p.exclusive = (f) => ex(async () => { p.fundAttemptedAt = () => Date.now(); return f(); });
+  e = await sw.swapRecover(ctxWith(p), "rv-1", ME).catch((x) => x); assert.equal(e.code, "SWAP_FUNDING"); assert.equal(m.calls.recover.length, 0);
+  void c;
 });
