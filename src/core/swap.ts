@@ -8,19 +8,14 @@ import { mk } from "../invocation.js";
 import { checkArkadeAddress } from "./arkAddress.js";
 import { decodeInvoice, networkOk } from "../lightning/invoice.js";
 import type { StableSwapCreated } from "../swap/provider.js";
+import { SWAP_UNPAID, SWAP_PAID, SWAP_WAITING, SWAP_CLAIMABLE, SWAP_DONE } from "../swap/states.js";
+import { sleep } from "../util.js";
 import { ARBISCAN_TX, SWAP_MARKUP_BPS, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkMarkupBps, formatSwapQuote, pct, swapSats, swapSource, swapTarget, units, type SwapSource, type SwapTarget } from "../swap/stable.js";
 
 export interface SwapQuoteInput { from?: string; to?: string; sats?: number | string }
 export interface SwapRunInput extends SwapQuoteInput { address?: string; confirm?: boolean; wait?: boolean; timeoutSec?: number; pollMs?: number; onProgress?: (x: unknown) => void }
 
-/** Swap statuses: not paid yet; paid, waiting for Satora's side; ready to claim; done; anything else ended without a payout. */
-const UNPAID = new Set(["pending"]);
-const PAID_WAITING = new Set(["clientfundingseen", "clientfunded"]);
-const WAITING = new Set([...UNPAID, ...PAID_WAITING]);
 const PAID_NOTE = "Your payment was seen: wait for Satora to fund its side, then claim. Do NOT pay again.";
-const CLAIMABLE = new Set(["serverfunded", "clientredeeming"]);
-const DONE = new Set(["clientredeemed", "serverredeemed"]);
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function mainnetOnly(c: Ctx) {
   if (!NETWORKS[c.network].isMainnet) throw new MarkError("SWAP_UNSUPPORTED_NETWORK", "mark swap runs on bitcoin mainnet only: Satora has no Arbitrum stablecoin route on mutinynet. Use --network bitcoin: `mark swap quote` and a preview without --yes are free and create nothing.");
@@ -99,12 +94,12 @@ async function waitAndClaim(s: Awaited<ReturnType<typeof stable>>, id: string, o
   while (Date.now() < end) {
     let info; try { info = await s.getStable(id); } catch { await sleep(poll); continue; }
     last = info.status;
-    if (DONE.has(last)) return done(id, last, info.payoutTx ?? claim?.txHash);
-    if (CLAIMABLE.has(last) && !claim?.success) {
+    if (SWAP_DONE.has(last)) return done(id, last, info.payoutTx ?? claim?.txHash);
+    if (SWAP_CLAIMABLE.has(last) && !claim?.success) {
       claim = await s.claimStable(id);
       if (!claim.success) return { id, status: last, claimFailed: true, claim, note: `The swap is funded but the claim failed. Your payment is safe while status is ${last}: retry with ${mk()} swap claim ${id} (same Mark home). Do NOT pay again.` };
       if (claim.txHash) return done(id, last, claim.txHash);
-    } else if (!WAITING.has(last) && !CLAIMABLE.has(last)) return { id, status: last, ended: true, note: endedNote(last, id, info.direction) };
+    } else if (!SWAP_WAITING.has(last) && !SWAP_CLAIMABLE.has(last)) return { id, status: last, ended: true, note: endedNote(last, id, info.direction) };
     await sleep(poll);
   }
   return { id, status: last, timeout: true, note: `timeout at swap status ${last}. Run ${mk()} swap status ${id}; once it is serverfunded run ${mk()} swap claim ${id}. Do NOT pay again.` };
@@ -128,8 +123,8 @@ export async function swapStatus(c: Ctx, id: string) {
   const { raw: _raw, ...info } = x;
   return { ...info, ...(t && x.targetUnits ? { receive: units(x.targetUnits, t.decimals), token: t.symbol } : {}),
     ...(x.payoutTx ? { explorer: ARBISCAN_TX + x.payoutTx } : {}),
-    next: CLAIMABLE.has(x.status) ? (x.local ? `Funded: claim it with ${mk()} swap claim ${id}` : "Funded, but this Mark home does not hold the swap's claim key: run the claim from the Mark home that created it. Do NOT pay again.")
-      : PAID_WAITING.has(x.status) ? PAID_NOTE : UNPAID.has(x.status) ? "Waiting for your payment." : DONE.has(x.status) ? "Done." : endedNote(x.status, id, x.direction) };
+    next: SWAP_CLAIMABLE.has(x.status) ? (x.local ? `Funded: claim it with ${mk()} swap claim ${id}` : "Funded, but this Mark home does not hold the swap's claim key: run the claim from the Mark home that created it. Do NOT pay again.")
+      : SWAP_PAID.has(x.status) ? PAID_NOTE : SWAP_UNPAID.has(x.status) ? "Waiting for your payment." : SWAP_DONE.has(x.status) ? "Done." : endedNote(x.status, id, x.direction) };
 }
 
 /** Claim a funded swap to the address fixed at create (gasless). Safe to repeat. wait: first wait for the payment / funding. */
@@ -138,9 +133,9 @@ export async function swapClaim(c: Ctx, id: string, o: { wait?: boolean; timeout
   const s = await stable(c);
   if (o.wait) return waitAndClaim(s, id, o);
   const x = await s.getStable(id);
-  if (DONE.has(x.status)) return done(id, x.status, x.payoutTx);
-  if (!CLAIMABLE.has(x.status)) return { id, status: x.status, claimed: false, note: PAID_WAITING.has(x.status) ? `Nothing to claim yet. ${PAID_NOTE} (${mk()} swap claim ${id} --wait claims as soon as it is funded)`
-    : UNPAID.has(x.status) ? "Not paid yet: nothing to claim. Pay the swap's invoice / Ark address once (shown when it was created)." : endedNote(x.status, id, x.direction) };
+  if (SWAP_DONE.has(x.status)) return done(id, x.status, x.payoutTx);
+  if (!SWAP_CLAIMABLE.has(x.status)) return { id, status: x.status, claimed: false, note: SWAP_PAID.has(x.status) ? `Nothing to claim yet. ${PAID_NOTE} (${mk()} swap claim ${id} --wait claims as soon as it is funded)`
+    : SWAP_UNPAID.has(x.status) ? "Not paid yet: nothing to claim. Pay the swap's invoice / Ark address once (shown when it was created)." : endedNote(x.status, id, x.direction) };
   const r = await s.claimStable(id);
   if (!r.success) return { id, status: x.status, claimFailed: true, claim: r, note: "Claim failed; retry later. Do NOT pay again." };
   return done(id, x.status, r.txHash);

@@ -24,6 +24,8 @@ import { mk, walletLine } from "../invocation.js";
 import { checkArkadeAddress, arkadeNote, ARK_HRP } from "./arkAddress.js";
 import { plainText, type Limits } from "../api/escrowApi.js";
 import type { Role } from "./localIndex.js";
+import { SWAP_UNPAID, SWAP_PAID, SWAP_CLAIMABLE, SWAP_DONE, SWAP_FAILED } from "../swap/states.js";
+import { sleep } from "../util.js";
 
 /** Machine-readable status (shared logic: status.ts, identical to the server's). */
 export function statusOf(e: Escrow) {
@@ -358,25 +360,17 @@ export async function status(c: Ctx, id: string) {
 /** Best-effort: tell the server which swap funded the escrow (for its fee ledger); never fails funding. */
 async function reportFunding(c: Ctx, id: string, swapId: string) {
   let e = await c.api.get(id);
-  for (let i = 0; i < 5 && e.state === "created"; i++) { await new Promise((r) => setTimeout(r, 2000)); e = await c.api.get(id); }
+  for (let i = 0; i < 5 && e.state === "created"; i++) { await sleep(2000); e = await c.api.get(id); }
   if (e.state !== "created") await (c.api as any).reportFundingSwap?.(id, swapId)?.catch?.(() => {});
   return e;
 }
 
-// ---------- funding swap states (Satora / Lendaswap LN -> Arkade) ----------
-/** Waiting for the Lightning payment: the only state in which the funding invoice is shown as payable. */
-const SWAP_AWAITING_PAYMENT = new Set(["pending"]);
-/** Paid, the provider is funding the Arkade VHTLC: keep waiting, never pay again. */
-const SWAP_PAID = new Set(["clientfundingseen", "clientfunded"]);
-/** The VHTLC holds the sats: claimable into the escrow. clientredeeming = a claim was started but not finished (resume it). */
-export const SWAP_CLAIMABLE = new Set(["serverfunded", "clientredeeming"]);
-const SWAP_DONE = new Set(["clientredeemed", "serverredeemed"]);
-/** Final states in which nothing reached (or will reach) the escrow. */
-const SWAP_FAILED = new Set(["expired", "clientrefunded", "clientfundedserverrefunded", "clientrefundedserverfunded", "clientrefundedserverrefunded", "serverwontfund", "clientinvalidfunded", "clientfundedtoolate"]);
+// ---------- funding swap states (Satora / Lendaswap LN -> Arkade): see swap/states.ts ----------
+export { SWAP_CLAIMABLE };
 /** Timeout text that says where the swap stands (not always "waiting for payment"). */
 export function fundTimeoutNote(id: string, status: string | undefined) {
   const st = status ?? "unknown";
-  if (SWAP_AWAITING_PAYMENT.has(st)) return `timeout: swap status ${st}, payment not received yet. Pay the invoice, then run: ${mk()} escrow fund ${id} --wait`;
+  if (SWAP_UNPAID.has(st)) return `timeout: swap status ${st}, payment not received yet. Pay the invoice, then run: ${mk()} escrow fund ${id} --wait`;
   if (SWAP_PAID.has(st)) return `timeout: swap status ${st}, payment seen, the swap provider has not funded the Arkade side yet. Do NOT pay again; run: ${mk()} escrow fund ${id} --wait`;
   if (st === "clientredeeming") return `timeout: swap status clientredeeming, claim not finished. Do NOT pay again; run: ${mk()} escrow fund ${id} --resume-claim`;
   if (st === "serverfunded") return `timeout: swap status serverfunded, not claimed yet. Do NOT pay again; run: ${mk()} escrow fund ${id} --resume-claim`;
@@ -464,7 +458,7 @@ export async function fund(c: Ctx, id: string, o: FundOpts = {}) {
     // existing swap: its status decides whether the invoice is still payable (never offer an invoice that was already paid)
     let known = true;
     const saved = c.index.get(id).fundInvoice;
-    try { const i = await s.get(swapId!); swapStatus = i.status; if (SWAP_AWAITING_PAYMENT.has(i.status)) { invoice = saved ?? i.invoice; if (!saved && i.invoice) c.index.set(id, { fundInvoice: i.invoice }); } }
+    try { const i = await s.get(swapId!); swapStatus = i.status; if (SWAP_UNPAID.has(i.status)) { invoice = saved ?? i.invoice; if (!saved && i.invoice) c.index.set(id, { fundInvoice: i.invoice }); } }
     catch { known = false; }
     // fail closed: without a status the saved invoice may already be paid, so it is not shown
     if (!known && !o.wait && !o.resumeClaim) return { escrowId: id, escrowAddress: e.address, amountSats: e.amountSats, swapId, swapStatus: "unknown", paymentReceived: null, dealCheck: check,
@@ -473,8 +467,8 @@ export async function fund(c: Ctx, id: string, o: FundOpts = {}) {
   const base0 = { escrowId: id, escrowAddress: e.address, amountSats: e.amountSats, swapId, newSwap, dealCheck: check, ...((v as any).termsWarning ? { termsWarning: (v as any).termsWarning } : {}) };
   /** Result fields for the swap status seen last: the invoice appears ONLY while that status is awaiting payment (never stale). */
   // paymentReceived: true = paid, false = awaiting payment, null = unknown or the swap ended (no claim about the payment)
-  const at = (st: string | undefined) => ({ ...base0, ...(invoice && st && SWAP_AWAITING_PAYMENT.has(st) ? { invoice } : {}), ...(st ? { swapStatus: st } : {}),
-    paymentReceived: !st ? null : SWAP_PAID.has(st) || SWAP_CLAIMABLE.has(st) || SWAP_DONE.has(st) ? true : SWAP_AWAITING_PAYMENT.has(st) ? false : null });
+  const at = (st: string | undefined) => ({ ...base0, ...(invoice && st && SWAP_UNPAID.has(st) ? { invoice } : {}), ...(st ? { swapStatus: st } : {}),
+    paymentReceived: !st ? null : SWAP_PAID.has(st) || SWAP_CLAIMABLE.has(st) || SWAP_DONE.has(st) ? true : SWAP_UNPAID.has(st) ? false : null });
   const base = at(swapStatus);
   const claimInto = async (status: string) => {
     invoice = undefined; // paid: a later stale "pending" read must never bring the invoice back
@@ -495,7 +489,7 @@ export async function fund(c: Ctx, id: string, o: FundOpts = {}) {
   if (o.resumeClaim) {
     if (!swapStatus) { try { swapStatus = (await s.get(swapId!)).status; } catch (x: any) { throw new MarkError("SWAP_UNREACHABLE", `could not read funding swap ${swapId}: ${x?.message ?? x}`); } }
     const fin = finalState(swapStatus); if (fin) return fin;
-    if (!SWAP_CLAIMABLE.has(swapStatus)) return { ...at(swapStatus), note: SWAP_AWAITING_PAYMENT.has(swapStatus) ? `nothing to resume: swap status ${swapStatus}, payment not received yet. Pay the invoice, then run: ${mk()} escrow fund ${id} --wait` : `nothing to resume yet: swap status ${swapStatus} (payment seen, the swap provider has not funded the Arkade side). Do NOT pay again; run: ${mk()} escrow fund ${id} --wait` };
+    if (!SWAP_CLAIMABLE.has(swapStatus)) return { ...at(swapStatus), note: SWAP_UNPAID.has(swapStatus) ? `nothing to resume: swap status ${swapStatus}, payment not received yet. Pay the invoice, then run: ${mk()} escrow fund ${id} --wait` : `nothing to resume yet: swap status ${swapStatus} (payment seen, the swap provider has not funded the Arkade side). Do NOT pay again; run: ${mk()} escrow fund ${id} --wait` };
     return claimInto(swapStatus);
   }
   if (!o.wait && swapStatus && SWAP_FAILED.has(swapStatus)) return finalState(swapStatus)!;
@@ -507,11 +501,11 @@ export async function fund(c: Ctx, id: string, o: FundOpts = {}) {
   while (Date.now() < end) {
     let i: { status: string };
     // a transient swap-provider error does not end the wait (the timeout note reports the last status seen)
-    try { i = await s.get(swapId!); } catch { await new Promise((r) => setTimeout(r, o.pollMs ?? 3000)); continue; }
+    try { i = await s.get(swapId!); } catch { await sleep(o.pollMs ?? 3000); continue; }
     last = i.status;
     if (SWAP_CLAIMABLE.has(i.status)) return claimInto(i.status);
     const fin = finalState(i.status); if (fin) return fin;
-    await new Promise((r) => setTimeout(r, o.pollMs ?? 3000));
+    await sleep(o.pollMs ?? 3000);
   }
   return { ...at(last), timedOut: true, note: fundTimeoutNote(id, last) };
 }
@@ -771,7 +765,6 @@ export interface DemoOpts extends DemoInput {
 }
 /** CLI flag / MCP param -> description key. */
 export const DEMO_INPUT_KEYS: Record<string, string> = { url: "URL", text: "Text", focus: "Focus", language: "Language", words: "Words", question: "Question", scope: "Scope" };
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const DEMO_FINAL = new Set(["released", "refunded"]);
 const BAD_LINE = /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/;
 const sellerAccepted = (e: Escrow) => !e.terms || !!e.acceptances?.seller;
