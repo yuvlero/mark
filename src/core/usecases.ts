@@ -6,7 +6,7 @@ import fs from "node:fs";
 import { createHash } from "node:crypto";
 import { signEscrowArkTx, signEscrowCheckpoints } from "../crypto/escrowSign.js";
 import { MarkError } from "../errors.js";
-import { NETWORKS, dataDir, ensureDir, defaultConfig, saveConfig, configPath, loadConfig, normalizeUrl, type NetworkName } from "../config.js";
+import { NETWORKS, dataDir, ensureDir, defaultConfig, saveConfig, configPath, loadConfig, normalizeUrl, LOOPBACK_HOSTS, type NetworkName } from "../config.js";
 import { createKeystore, openKeystore, resolvePassword, walletFile } from "../crypto/keystore.js";
 import { escrowKey, signAuth, signHash, signListRequest } from "../crypto/keys.js";
 import { normalizeTerms, termsHash, verifyTermsSig, dealTermsDocument, webhookUrlHash, deadlineUnix, normalizeEvidence, evidenceHash, normalizeMessage, messageHash, type Terms } from "./terms.js";
@@ -72,13 +72,16 @@ const expiredNote = (e: Escrow) => expiredWithFunds(e)
   ? `expired: not funded by the deadline, but sats reached the escrow address afterwards. The deal is not revived; refund them with: ${mk()} escrow refund ${e.id} --payout-lnaddr <you@wallet>`
   : "expired: not funded by the deadline (+ grace). Do not fund it; create a new deal if you still want one";
 
-/** The Arkade server this escrow runs on. URL: GET /limits arkServer.url (newer servers; plain https host URL only, http only for localhost), else Mark's network
+/** Plain http Arkade URL to this machine: one of LOOPBACK_HOSTS written literally (IPv6 in brackets, as URL.hostname gives it:
+ *  http://[::1]:7070), optional port, no path. Same host list as the escrow URL check. */
+const LOCAL_ARKADE_URL = new RegExp(`^http://(${LOOPBACK_HOSTS.map((h) => h.replace(/[.[\]]/g, "\\$&")).join("|")})(:\\d+)?/?$`, "i");
+/** The Arkade server this escrow runs on. URL: GET /limits arkServer.url (newer servers; plain https host URL only, http only for LOOPBACK_HOSTS), else Mark's network
  *  preset. Key: the deal's own serverPubkey when a deal is given (it is in the locally derived address and the arbiter attestation),
  *  else /limits arkServer.pubkey. */
 export function arkadeFrom(c: Ctx, lim: Limits | null, e?: Escrow) {
   const s: any = (lim as any)?.arkServer;
   const u = typeof s?.url === "string" ? plainText(s.url).slice(0, 200) : "";
-  const url = (/^https:\/\/[a-z0-9.-]+(:\d+)?\/?$/i.test(u) || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/?$/i.test(u)) ? u.replace(/\/$/, "") : c.cfg.arkServerUrl;
+  const url = (/^https:\/\/[a-z0-9.-]+(:\d+)?\/?$/i.test(u) || LOCAL_ARKADE_URL.test(u)) ? u.replace(/\/$/, "") : c.cfg.arkServerUrl;
   const spk = typeof s?.pubkey === "string" && /^[0-9a-f]{64}$/i.test(s.pubkey) ? s.pubkey.toLowerCase() : null;
   const dealKey = e?.serverPubkey ? String(e.serverPubkey).toLowerCase().slice(-64) : null;
   const warnings: string[] = [];

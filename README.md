@@ -386,7 +386,7 @@ Example quote (100,000 sats, Lightning → USDC; numbers move with the market):
 
 ## 7. Command reference
 
-Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL` (https; http only for localhost), `--arbiter-pubkey <hex>` (explicit arbiter identity pin; env `MARK_ARBITER_PUBKEY`). Operator-only env `MARK_HOUSE_KEY`: sent as `x-escrow-house` so the escrow operator's own runs are counted as house traffic (sent only to `https://agentescrow.to`, an https origin in `MARK_HOUSE_ORIGIN`, or loopback; leave it unset).
+Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL` (https; http only for `localhost`, `127.0.0.1` or `[::1]`), `--arbiter-pubkey <hex>` (explicit arbiter identity pin; env `MARK_ARBITER_PUBKEY`). Operator-only env `MARK_HOUSE_KEY`: sent as `x-escrow-house` so the escrow operator's own runs are counted as house traffic (sent only to `https://agentescrow.to`, an https origin in `MARK_HOUSE_ORIGIN`, or loopback; leave it unset).
 
 | Command | What it does |
 |---|---|
@@ -471,7 +471,7 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 | `ARBITER_KEY_CHANGED` / `ARBITER_KEY_MISMATCH` / `ARBITER_KEY_MISSING` | The server's arbiter identity is not the pinned one (or is gone). Possible impersonation: **do not fund**. Re-pin only after confirming the new key with the operator: `--arbiter-pubkey <key>` |
 | `ARBITER_ATTESTATION_INVALID` | The deal's arbiter key / address is not signed by the pinned identity; **do not accept or fund** |
 | `UNSAFE_RULE` | The seller chose an automatic release rule; accepting (v2) or funding (v1) needs `--allow-counterparty-rule` |
-| `BAD_ESCROW_URL` | Invalid escrow URL, or `http://` to a host other than localhost |
+| `BAD_ESCROW_URL` | Invalid escrow URL, or `http://` to a host other than `localhost`, `127.0.0.1` or `[::1]` |
 | `NO_TERMS` | Legacy deal without terms (nothing to accept) |
 | `BAD_STATE` | Action not allowed in the current state (e.g. dispute before funding, release on an expired deal) |
 | `EXPIRED` | The deal expired unfunded (deadline + grace passed); it cannot be accepted or funded. Create a new deal |
@@ -501,7 +501,7 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 - Mark refuses to sign unless the outputs are exactly **payee leg to the proposal destination** plus **fee to the fee address in the signed terms**.
 - Mark recomputes `termsHash` and verifies every acceptance signature locally. It never trusts the server's word. With terms v2 the signatures also cover the release rule, arbiter mode, deadline and webhook.
 - Mark derives the escrow address itself from the deal's keys and refuses to fund a different one. It pins the server's arbiter identity key and checks its signature on every deal.
-- Escrow URLs must be `https://` (except localhost).
+- Escrow URLs must be `https://` (plain `http://` only to `localhost`, `127.0.0.1` or `[::1]`). The same rule applies to the Arkade server URL an escrow server reports in `/limits`: anything else falls back to Mark's network preset.
 - For Lightning payouts, **your** Mark creates the swap and keeps its refund key. For funding, your Mark keeps the claim key. The server never holds them.
 - Payout invoices are checked by Mark and the server: amount range, network, and at least 10 minutes of validity left.
 - Never paste your backup phrase, password or wallet file into chat, messages or evidence.

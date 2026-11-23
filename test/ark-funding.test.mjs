@@ -85,6 +85,14 @@ test("limits: arkade = the server's Arkade URL + key; Mark preset when the serve
   ({ c } = await ctx({ limits: LIM({ arkServer: { url: "https://other.example", pubkey: MOCK_SERVER_PK } }) })); l = await uc.limits(c); assert.equal(l.arkade.url, "https://other.example"); assert.match(l.arkade.warnings[0], /preset/);
 });
 
+test("arkade URL: plain http only to the same loopback hosts as the escrow URL check (localhost, 127.0.0.1, [::1])", async () => {
+  const at = async (url) => { const { c } = await ctx({ limits: LIM({ arkServer: { url, pubkey: MOCK_SERVER_PK } }) }); return (await uc.limits(c)).arkade.url; };
+  for (const u of ["http://localhost:7070", "http://127.0.0.1:7070", "http://[::1]:7070", "http://[::1]"]) assert.equal(await at(u), u, u);
+  assert.equal(await at("http://[::1]:7070/"), "http://[::1]:7070", "trailing slash dropped");
+  for (const u of ["http://evil.example:7070", "http://10.0.0.1:7070", "http://127.0.0.2", "http://[::2]:7070", "http://[0:0:0:0:0:0:0:1]", "http://::1:7070", "http://[::1].evil.example", "http://[::1]:7070/path", "http://localhost.evil.example"])
+    assert.equal(await at(u), ARKD, `${u} refused: Mark preset`);
+});
+
 test("MCP + help: every Ark field and the fund tool say Arkade server / not Bark", () => {
   const src = fs.readFileSync(new URL("../src/mcp.ts", import.meta.url), "utf8");
   assert.match(src, /rail: z\.enum\(\["lightning", "ark"\]\)/); assert.match(src, /Bark \/ Second Ark addresses will NOT work/); assert.match(src, /payoutArk: z\.string\(\)\.optional\(\)\.describe\(ARK_ONLY\)/);

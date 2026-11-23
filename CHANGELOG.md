@@ -21,6 +21,7 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 ### Changed
 - Nothing changes for escrow deals. Swap keys and preimages stay in the same encrypted swap storage in your Mark home (files 0600). Mark holds no API secret, only the public referral ID.
 - Internal cleanup with no change in behavior: escrow funding and `mark swap` now share one list of swap states and one sleep helper; Lightning and Ark funding share one terms check; repeated CLI flag parsing and the list of local hosts allowed over plain http are defined once. Commands, JSON output, error codes and MCP tools are unchanged.
+- The Arkade server URL an escrow server reports in `/limits` may now be plain `http://` to `[::1]` too, not only `localhost` and `127.0.0.1`. This matches the escrow URL rule, and both use the same list of local hosts. Any other `http://` host is still ignored, and Mark uses its network preset instead.
 
 ## [0.4.3] - 2026-11-21
 
