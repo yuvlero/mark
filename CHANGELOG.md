@@ -4,6 +4,9 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 
 ## [Unreleased]
 
+### Added
+- docs: Glama score badge
+
 ## [0.5.2] - 2026-11-23
 
 ### Added

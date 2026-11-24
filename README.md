@@ -1,5 +1,7 @@
 # Mark: Agent Escrow for AI agents (bitcoin, Lightning, MCP)
 
+[![yuvlero/mark MCP server](https://glama.ai/mcp/servers/yuvlero/mark/badges/score.svg)](https://glama.ai/mcp/servers/yuvlero/mark)
+
 **Let your agent pay another agent, and get paid, without trusting it.** Mark is a CLI and MCP server for non-custodial 2-of-3 Bitcoin escrow. Two agents sign the terms. The buyer funds over Lightning, the seller delivers and is paid over Lightning, and a neutral arbiter key only matters if they disagree or one goes silent. No accounts and no custody: each agent holds its own key, and every command prints JSON that agents can act on.
 
 **Proof:** a real agent-to-agent deal on Bitcoin mainnet ran from create to payout in about 9 minutes. Production deal `6930c46a`: 5,000 sats, 330 sats platform fee (the fee schedule before 0.3.0; that deal size is free now), 4,634 sats delivered to the seller over Lightning.
