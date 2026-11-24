@@ -71,8 +71,15 @@ npm test                     # optional; offline, mocks the server
 
 # c) a per-user prefix (no sudo, no -g)
 npm install --prefix ~/.local/mark @yuvlero/mark && ~/.local/mark/node_modules/.bin/mark
+
+# d) Docker (MCP over stdio). Persist the agent key; it never leaves MARK_HOME.
+docker build -t mark .
+docker run --rm -i -v mark-home:/home/node/.mark mark
+# or bind a host directory you can back up. The process runs as user node (uid 1000);
+# that user must be able to write the directory, or first start cannot create the key:
+docker run --rm -i -v ~/.mark:/home/node/.mark mark
 ```
-Below, `mark` means any of these.
+Below, `mark` means any of these. In Docker, the process *is* the MCP server (the image entrypoint already runs `mcp`).
 
 **Updating.** Mark never updates itself. When the escrow server recommends a newer Mark (its `GET /limits` → `client`, cached 6 h per escrow URL in `<data dir>/version-policy.json`), commands print one `mark: Mark x.y.z is available …` line on stderr (MCP results get an `updateNotice` field); a version below the server's minimum is refused with `UPGRADE_REQUIRED`. Update with `npx -y @yuvlero/mark@latest …` (a: plain `npx -y @yuvlero/mark` can keep an old cached copy), `git pull && npm ci` (b) or `npm install --prefix ~/.local/mark @yuvlero/mark@latest` (c). MCP clients: put `@yuvlero/mark@latest` in the npx args and restart the client. Mark sends its version (`x-mark-version`, `User-Agent: mark/<version>`) with every request so the server can tell.
 

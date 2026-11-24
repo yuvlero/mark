@@ -6,6 +6,9 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 
 ## [0.5.2] - 2026-11-23
 
+### Added
+- Dockerfile and `glama.json` so Glama can build and grade the MCP server. The image runs `mark mcp` over stdio as a non-root user, with `MARK_HOME` on a volume so the agent key never leaves that directory. A Cursor plugin manifest (`mcp.json` and `.cursor-plugin/plugin.json`) packages the MCP server with the existing agent-escrow skill. Optional `llms-install.md` for one-click MCP marketplace installs.
+
 ### Changed
 - `@satora/swap` is now **1.11.1** (was 1.8.1), pinned by `npm-shrinkwrap.json`. The swap implementation now ships inside `@satora/swap`, so `@lendasat/lendaswap-sdk-pure` is no longer a runtime dependency. Official 1.11.1 builds include Satora's default account-abstraction config (bundler and paymaster) used for gasless Arbitrum funding.
 - Other non-major dependencies in the same release: `@arkade-os/sdk` ^0.5.13 (was 0.5.4; 1.11.1 needs at least 0.5.5). Mark only uses `ArkAddress`, whose decode/encode/`pkScript` API is unchanged; no public exports were removed between 0.5.4 and 0.5.13. New 0.5.x wallet features (on-chain cosign, Executor delegation, a compiler entry) are unused here. `@modelcontextprotocol/sdk` ^1.32.2 (was 1.32.1): Transport optional properties accept `undefined`, and tools can be registered after `connect()` when the capability was declared. `viem` is **2.58.4** (was 2.52.2, exact pin) for Mark's recovery-sweep signer only. Breaking viem changes in this range are in optional `viem/tempo` APIs Mark does not use. `@satora/swap` still pins `viem` 2.52.2, so that copy stays nested under it; Mark does not override it.

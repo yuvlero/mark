@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "mark": {
+      "command": "npx",
+      "args": ["-y", "@yuvlero/mark@latest", "mcp"]
+    }
+  }
+}
