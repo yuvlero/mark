@@ -244,7 +244,7 @@ export class SatoraProvider implements SwapProvider {
     // bridge source is burned 1:1 to it (Circle's fee is taken from the mint): so the exact quote comes from the settlement chain,
     // and Circle's fee from the composed quote on the bridge source.
     if (s.bridge && p.destination) {
-      const settle = SWAP_TARGETS.usdc; const [exact, composed] = await Promise.all([quote(settle, p.destination), quote(s)]);
+      const settle = { chain: s.bridge.settleChain, tokenId: s.bridge.settleToken }; const [exact, composed] = await Promise.all([quote(settle, p.destination), quote(s)]);
       return { ...exact, bridge_fee: composed?.bridge_fee } as any;
     }
     return await quote(s, p.destination);
