@@ -9,6 +9,9 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 - Before showing anything to pay, Mark checks that Satora's swap settles in USDC on Arbitrum One and bridges to exactly USDC on Base (and that an Arbitrum payout does not bridge anywhere); otherwise `SWAP_FAILED`. For a Base payout, `payoutTx` is the claim on Arbitrum One (Arbiscan); `mark swap status` / `claim` add a Basescan link to the payout address and the Base delivery tx once Satora reports it, and never read the Arbitrum claim as the amount received. `expectedReceive` is never above the quote's amount after the bridge fee.
 - docs: Glama score badge
 
+### Live test (25 Nov 2026, 08:44 Dubai)
+- 5,000 sats Lightning → USDC on Base (swap ee534bfe): quote 2.850531 USDC after Circle's 0.054957 USDC fee; 2.851141 USDC arrived on Base about 30 s after paying (Arbitrum claim 0xf209e0df…, Base mint 0xe8cd8553…). `mark swap status` / `claim` now label the raw Arbitrum amount as `bridge.bridgedAmount` and say Circle's fee comes out of it, so it is not read as the amount that arrives on Base.
+
 ### Changed
 - Swap text names each route's network instead of assuming Arbitrum: quotes, previews, `--to` / `--address` errors, CLI usage, MCP tool descriptions, README, quickstart and skill (e.g. "USDC on Base", "USDT0 on Arbitrum One").
 

@@ -207,13 +207,15 @@ async function bridgedClaimState(s: SwapProvider, tx: string, settleToken: strin
 }
 /** settled() already tried reading the swap: done() must not read it again (a bounded number of reads). */
 const NO_REREAD = { noReread: true } as const;
-type DoneInfo = { targetAddress?: string; tokenContract?: string; bridgeTargetChain?: string; bridgeTargetToken?: string; bridgeTx?: string; noReread?: boolean };
+type DoneInfo = { targetAddress?: string; targetUnits?: string; tokenContract?: string; bridgeTargetChain?: string; bridgeTargetToken?: string; bridgeTx?: string; noReread?: boolean };
 /** A bridged payout (USDC on Base): the payout tx is the claim on Arbitrum One that hands the USDC to the bridge; it arrives on the
  *  bridge chain in a separate delivery (bridgeTx once Satora reports it). Mark does not read that chain: it links the address. */
 function bridgeInfo(t: StableToken, x: DoneInfo) {
+  const bridged = /^\d+$/.test(String(x.targetUnits ?? "")) ? units(x.targetUnits, t.decimals) : undefined;
   return { bridge: { to: t.network, via: t.bridge!.via, ...(x.bridgeTx ? { deliveryTx: x.bridgeTx, deliveryExplorer: t.explorerTx + x.bridgeTx } : {}),
     ...(x.targetAddress ? { payoutAddressExplorer: t.explorerAddress + x.targetAddress } : {}),
-    note: `payoutTx is the claim on Arbitrum One that hands the ${t.symbol} to ${t.bridge!.via}; it arrives at the payout address on ${t.network} shortly after (usually within a few minutes). Check it with the ${t.network} explorer link. Do NOT pay again.` } };
+    ...(bridged !== undefined ? { bridgedAmount: bridged } : {}),
+    note: `payoutTx is the claim on Arbitrum One that hands the ${t.symbol} to ${t.bridge!.via}; it arrives at the payout address on ${t.network} shortly after (usually within a few minutes).${bridged !== undefined ? ` bridgedAmount (and targetUnits) is what leaves Arbitrum One: ${t.bridge!.via}'s bridge fee comes out of it, so a little less arrives on ${t.network} (the quote's receive is after that fee).` : ""} Check it with the ${t.network} explorer link. Do NOT pay again.` } };
 }
 async function done(s: SwapProvider, id: string, status: string, tx?: string, x?: DoneInfo) {
   let got: { reverted?: boolean; receivedUnits?: string; receivedNote?: string } = {};

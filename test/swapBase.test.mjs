@@ -143,6 +143,9 @@ test("usdc-base status / claim: payoutTx is the Arbitrum claim; no Arbitrum tran
   const cl = await sw.swapClaim(ctxWith(p), "sw-b");
   assert.equal(cl.swap, "done"); assert.equal(cl.payoutTx, "0xarbclaim"); assert.equal(cl.received, undefined); assert.equal(cl.payoutFailed, undefined);
   assert.match(cl.note, /bridging to Base over Circle CCTP/); assert.match(cl.bridge.note, /Do NOT pay again/);
+  // the raw amount is what leaves Arbitrum One (before Circle's fee): labelled as bridgedAmount, never as what arrives on Base
+  assert.equal(st.bridge.bridgedAmount, "58.627598"); assert.equal(cl.bridge.bridgedAmount, "58.627598");
+  assert.match(st.bridge.note, /bridgedAmount \(and targetUnits\) is what leaves Arbitrum One: Circle CCTP's bridge fee comes out of it, so a little less arrives on Base/);
   // the claim receipt is read only for a revert (status, then claim): its transfer goes to the bridge, never reported as received
   assert.deepEqual(p.reads, [["0xarbclaim", ARB_USDC, ADDR], ["0xarbclaim", ARB_USDC, ADDR]]); assert.equal(st.received, undefined); assert.equal(st.reverted, undefined);
 });
