@@ -245,3 +245,23 @@ test("create refuses a provider that cannot track the burn, and a Base quote wit
   const m2 = mockClient({ quote: { ...RQ, bridge_fee: undefined } }); const p2 = provider(m2.client);
   await assert.rejects(create(p2), (e) => e.code === "QUOTE_UNAVAILABLE"); assert.equal(m2.calls.createSwap.length, 0);
 });
+
+test("an unreadable local swap record is not 'no burn': fund and recover move nothing", async () => {
+  const m = mockClient({ statuses: ["pending"] }); const p = provider(m.client, { base: { usdc: 2_000_000n, eth: NEED_WEI } }); await create(p);
+  m.stored["rb-1"].cctpBurnTxid = BURN; const real = m.client.getStoredSwap;
+  m.client.getStoredSwap = async () => { throw new Error("storage locked"); };
+  const f = await p.fundReverse("rb-1"); assert.equal(f.success, false); assert.match(f.message, /not funding it/); assert.equal(m.calls.fundSwap.length, 0);
+  const r = await p.recoverReverse("rb-1", ME); assert.equal(r.success, false); assert.match(r.message, /nothing was moved/);
+  assert.equal(m.calls.recoverCctp.length, 0); assert.equal(m.calls.recoverGasless.length, 0); assert.equal(p.sent.length, 0);
+  // no local copy at all: Satora's record (its bridge source) picks the path, never the Arbitrum default
+  m.client.getStoredSwap = async (id) => (id === "rb-1" ? null : real(id));
+  const r2 = await p.recoverReverse("rb-1", ME); assert.equal(r2.network, "Base"); assert.equal(m.calls.recoverGasless.length, 0);
+});
+
+test("concurrent fund calls (same home, two providers) make one burn", async () => {
+  const m = mockClient(); const p = provider(m.client, { base: { usdc: 2_000_000n, eth: NEED_WEI } }); await create(p);
+  const q = provider(m.client, { base: { usdc: 2_000_000n, eth: NEED_WEI } }); // a second process on the same Mark home (same dir, same lock file)
+  const [a, b, c] = await Promise.all([p.fundReverse("rb-1"), p.fundReverse("rb-1"), q.fundReverse("rb-1")]);
+  assert.equal(m.calls.fundSwap.length, 1); assert.strictEqual(a, b); // p's two calls share one run
+  assert.equal([a, c].filter((x) => x.success).length, 1); assert.ok((a.success ? c : a).skipped); // the other process is told it was funded
+});

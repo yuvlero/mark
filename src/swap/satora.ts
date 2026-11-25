@@ -80,6 +80,11 @@ function dirOf(s: any): SwapInfo["direction"] {
   return "other";
 }
 
+/** A CCTP burn tx (0x + 64 hex) the swap library recorded on its swap record, if any. */
+const burnOf = (st: any): string | undefined => { const b = st?.cctpBurnTxid; return typeof b === "string" && /^0x[0-9a-fA-F]{64}$/.test(b) ? b : undefined; };
+/** The lock transaction the swap library recorded for a swap it funded, if any. */
+const fundTxOf = (st: any): string | undefined => typeof st?.evmFundTxid === "string" && st.evmFundTxid ? st.evmFundTxid : undefined;
+
 export class SatoraProvider implements SwapProvider {
   readonly name = "satora";
   /** dir: where the funding-attempt record lives (none: in memory only, tests). */
@@ -103,15 +108,12 @@ export class SatoraProvider implements SwapProvider {
       const v = r?.[0]?.usdPrice; return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined;
     } catch { return undefined; }
   }
-  /** The lock transaction the swap library recorded for a swap it funded, if any. */
-  private async storedFundTx(id: string): Promise<string | undefined> {
-    let st: any; try { st = await (this.c as any).getStoredSwap?.(id); } catch { return undefined; }
-    return typeof st?.evmFundTxid === "string" && st.evmFundTxid ? st.evmFundTxid : undefined;
-  }
-  /** The CCTP burn the swap library recorded for a swap from USDC on Base (the USDC left Base), if any. */
+  /** The swap library's local record of a swap (null when there is none); throws when it cannot be read. */
+  private async storedSwap(id: string): Promise<any> { const g = (this.c as any).getStoredSwap; return g ? (await g.call(this.c, id)) ?? null : null; }
+  /** The CCTP burn the swap library recorded for a swap from USDC on Base (the USDC left Base), if any. For display and choosing a
+   *  path only (undefined when unreadable): funding and recovery read the record themselves and refuse when it cannot be read. */
   async cctpBurn(id: string): Promise<string | undefined> {
-    let st: any; try { st = await (this.c as any).getStoredSwap?.(id); } catch { return undefined; }
-    const b = st?.cctpBurnTxid; return typeof b === "string" && /^0x[0-9a-fA-F]{64}$/.test(b) ? b : undefined;
+    try { return burnOf(await this.storedSwap(id)); } catch { return undefined; }
   }
 
   static async create(opts: { baseUrl: string; arkServerUrl: string; esploraUrl: string; bitcoinNetwork: "mainnet" | "signet"; mnemonic: string; key: Buffer; dir: string; referralCode?: string }) {
@@ -315,11 +317,13 @@ export class SatoraProvider implements SwapProvider {
       const at = this.fundAttemptedAt(id);
       // a CCTP burn already sent (USDC on Base): funding again only resumes the settlement from that burn, it never burns again
       // (read even without a funding time in this home: a lost record must not lead to a second burn)
-      const burn = await this.cctpBurn(id);
+      // an unreadable local record is not "no burn": refuse rather than risk a second one
+      let st: any; try { st = await this.storedSwap(id); } catch (e) { return { success: false, message: `could not read this Mark home's record of the swap (${errText(e)}); not funding it` }; }
+      const burn = burnOf(st), ft = fundTxOf(st);
       // a submitted or uncertain funding is never signed again (only a clear refusal clears the record)
       if (at !== undefined && !burn) return { success: false, skipped: `a funding was already submitted at ${new Date(at).toISOString()}; Mark never signs it again` };
       // the resume after a burn locked it already (the swap library recorded the lock): never again, even if Satora lags
-      if (burn) { const ft = await this.storedFundTx(id); if (ft) return { success: false, skipped: `the swap was already funded (tx ${ft}); Mark never funds it again` }; }
+      if (burn && ft) return { success: false, skipped: `the swap was already funded (tx ${ft}); Mark never funds it again` };
       let x: ReverseSwapInfo; try { x = await this.getReverse(id); } catch (e) { return { success: false, message: `could not read the swap: ${errText(e)}` }; }
       if (x.status !== "pending" || x.fundTx) return { success: false, skipped: `the swap is already past funding (${x.status}${x.fundTx ? `, funding tx ${x.fundTx}` : ""})` };
       if (!x.tokenContract || !x.depositAddress || !/^\d+$/.test(String(x.sourceUnits ?? ""))) return { success: false, message: "the swap has no deposit terms" };
@@ -417,11 +421,15 @@ export class SatoraProvider implements SwapProvider {
     });
   }
   async recoverReverse(id: string, to: string): Promise<{ success: boolean; txHash?: string; amountUnits?: string; message?: string; network?: string }> {
-    let st: any; try { st = await (this.c as any).getStoredSwap?.(id); } catch { st = undefined; }
-    const resp = st?.response ?? {};
+    // which path (Base sweep, post-burn recovery, Arbitrum) depends on the record: an unreadable one moves nothing, and a missing
+    // local copy falls back to Satora's own record of the swap (its bridge source), never to a guess
+    let st: any, resp: any;
+    try { st = await this.storedSwap(id); resp = st?.response ?? (await this.c.getSwap(id)); }
+    catch (e) { return { success: false, message: `could not read the swap's record (${errText(e)}); nothing was moved` }; }
+    resp = resp ?? {};
     const t = resp.bridge_source_chain ? stableOfReverse({ tokenContract: resp.source_token?.token_id, bridgeSourceChain: resp.bridge_source_chain, bridgeSourceToken: resp.bridge_source_token_address }) : undefined;
     if (resp.bridge_source_chain && !t?.bridge) return { success: false, message: `unknown bridge source ${resp.bridge_source_chain}; nothing was moved` };
-    if (t?.bridge) return (await this.cctpBurn(id)) ? this.recoverBurned(id, to, t.bridge.settleNetwork) : this.sweepOn(id, to, t.tokenId, Number(t.chain), t.network);
+    if (t?.bridge) return burnOf(st) ? this.recoverBurned(id, to, t.bridge.settleNetwork) : this.sweepOn(id, to, t.tokenId, Number(t.chain), t.network);
     return stdoutToStderr(async () => {
       try {
         const k: any = await (this.c as any).getSwapDepositorKey(id);

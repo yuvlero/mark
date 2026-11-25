@@ -1,7 +1,7 @@
 /** What a swap from a stablecoin was confirmed with at create (kept in the Mark home), and the one check every later read of the
  *  swap goes through: status, fund (including the provider's own read under the deposit lock), claim, refund and recover. */
 import type { ReversePin, ReverseSwapInfo } from "./provider.js";
-import { SWAP_SOURCES, sameHex } from "./stable.js";
+import { SWAP_SOURCES, SWAP_TARGETS, sameHex } from "./stable.js";
 import { reverseDir } from "./states.js";
 
 /** A well-formed record (read from disk): one payout target, the deposit terms, optional numeric fields. */
@@ -26,7 +26,7 @@ export function pinMismatch(pin: ReversePin, x: ReverseSwapInfo, myDeposit: stri
   if (!sameHex(pin.tokenContract, x.tokenContract)) return `token ${x.tokenContract}`;
   if (pin.sourceUnits !== x.sourceUnits) return `deposit amount ${x.sourceUnits} units, confirmed ${pin.sourceUnits}`;
   // a swap confirmed from Arbitrum must stay on Arbitrum, and one from a bridge chain (USDC on Base) on that chain and token
-  if ((pin.bridgeSourceChain ?? "") !== (x.bridgeSourceChain ?? "")) return `deposit chain ${x.bridgeSourceChain ?? "Arbitrum One"}, confirmed ${pin.bridgeSourceChain ?? "Arbitrum One"}`;
+  if ((pin.bridgeSourceChain ?? "") !== (x.bridgeSourceChain ?? "")) return `deposit chain ${x.bridgeSourceChain ?? SWAP_TARGETS.usdc.network}, confirmed ${pin.bridgeSourceChain ?? SWAP_TARGETS.usdc.network}`;
   if (pin.bridgeSourceChain !== undefined && !sameHex(pin.bridgeSourceToken, x.bridgeSourceToken)) return `deposit token ${x.bridgeSourceToken}`;
   if (x.gasless !== true) return "no longer a gasless swap";
   if (pin.evmChainId !== undefined ? x.evmChainId !== pin.evmChainId : strict) return `chain ${x.evmChainId}`;
