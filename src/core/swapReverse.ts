@@ -421,7 +421,10 @@ export async function reverseRecover(c: Ctx, id: string, to: string | undefined)
         return { ...done(r, { network: t.bridge.settleNetwork, explorerTx: ARBISCAN_TX }), burnTx: burn, ...(r.success ? { note: `Sent as ${t.symbol} on ${t.bridge.settleNetwork} to ${dest} (the burn on ${t.network} cannot be undone; your address is the same there).` } : {}) };
       }
       const r0 = readerOf(s, t); const bal = await r0.tokenBalance(t.tokenId, x.depositAddress!);
-      if (bal === 0n) return { id, recovered: false, note: `The deposit address holds no ${t.symbol} on ${t.network}. Nothing to recover.` };
+      // no USDC on Base after a send of unknown outcome: a burn may have gone through, waiting on the settlement chain
+      if (bal === 0n) return { id, recovered: false, note: s.sentUnknown?.(id)
+        ? `The deposit address holds no ${t.symbol} on ${t.network}, and a funding transaction of this swap was sent with an unknown outcome: a Circle CCTP burn may have gone through. Check ${x.depositAddress} on ${t.network}'s explorer for a depositForBurn; that USDC is then on ${t.bridge.settleNetwork}, not lost. Nothing was moved.`
+        : `The deposit address holds no ${t.symbol} on ${t.network}. Nothing to recover.` };
       const [eth, need] = await Promise.all([r0.ethBalance(x.depositAddress!), gasNeedWei(r0, [SWEEP_TX])]);
       if (eth < need) return { id, recovered: false, holds: `${units(bal, t.decimals)} ${t.symbol}`, depositAddress: x.depositAddress, needEth: ethText(need), holdsEth: ethText(eth),
         note: `Sending the ${t.symbol} out of the deposit address costs a little ETH on ${t.network} for gas: send at least ${ethText(need - eth)} ETH on ${t.network} to ${x.depositAddress}, then run this again.` };

@@ -300,6 +300,36 @@ test("a Base send with an unknown outcome: recover sweeps only when the deposit 
   p.st.nonce = 0; p.st.usdc = 2_000_000n; const r2 = await sw.swapRecover(ctxWith(p), "rb-1", ME); assert.equal(r2.recovered, true); assert.equal(r2.network, "Base"); assert.equal(p.sent.length, 1);
 });
 
+test("crash right after a Base broadcast (review): the send is marked before it goes out, so a restart neither burns again nor sweeps on Base", async () => {
+  const m = mockClient({ statuses: ["pending"] }); const p = provider(m.client, { base: { usdc: 2_000_000n, eth: NEED_WEI } }); await create(p);
+  const dir = homeOf(m.client), file = path.join(dir, "bridge-sends.json"); let snap;
+  m.client.fundSwap = async (id, signer) => { m.calls.fundSwap.push({ id }); await signer.sendTransaction({ to: B.tokenId, data: "0x095ea7b3" }); await signer.sendTransaction({ to: TOKEN_MESSENGER_V2, data: "0x8e0250ee" }); };
+  const real = p.signerFor; p.signerFor = async (k, c) => { const s = await real(k, c);
+    return { ...s, sendTransaction: async (tx) => { if (tx.to === TOKEN_MESSENGER_V2) { await s.sendTransaction(tx); snap = fs.readFileSync(file, "utf8"); throw new Error("process killed"); } return s.sendTransaction(tx); } }; };
+  await p.fundReverse("rb-1");
+  const rec = JSON.parse(snap)["rb-1"]; assert.equal(rec.unknown, true); assert.equal(rec.burn, undefined); assert.equal(rec.nonce, "1"); // after the approve
+  // the process died there: its record is what was on disk, the funding time is lost, a later deposit refilled the address
+  fs.writeFileSync(file, snap); fs.writeFileSync(path.join(dir, "evm-funding.json"), "{}");
+  const q = provider(m.client, { base: { usdc: 4_000_000n, eth: NEED_WEI, nonce: 2 } });
+  const f = await q.fundReverse("rb-1"); assert.match(f.skipped ?? "", /unknown outcome/); assert.equal(m.calls.fundSwap.length, 1);
+  q.markAttempt("rb-1", Date.now() - 31 * 60 * 1000);
+  const r = await sw.swapRecover(ctxWith(q), "rb-1", ME); assert.equal(r.recovered, false); assert.match(r.message, /a burn may have gone through/); assert.equal(q.sent.length, 0);
+  // and with the USDC gone from Base it is not "nothing to recover": the burn may be waiting on the settlement chain
+  q.st.usdc = 0n; const r0 = await sw.swapRecover(ctxWith(q), "rb-1", ME); assert.equal(r0.recovered, false);
+  assert.match(r0.note, /burn may have gone through/); assert.doesNotMatch(r0.note, /Nothing to recover/); assert.equal(q.sent.length, 0);
+});
+
+test("a funding record with no send marked: the Base sweep still needs the deposit address's transaction count unchanged", async () => {
+  for (const [nonce, ok] of [[0, true], [1, false]]) {
+    const m = mockClient({ statuses: ["pending"] }); const p = provider(m.client, { base: { usdc: 2_000_000n, eth: NEED_WEI, nonce } }); await create(p);
+    fs.writeFileSync(path.join(homeOf(m.client), "bridge-sends.json"), JSON.stringify({ "rb-1": { pre: "2000000", nonce: "0" } }));
+    p.markAttempt("rb-1", Date.now() - 31 * 60 * 1000);
+    const q = provider(m.client, { base: { usdc: 2_000_000n, eth: NEED_WEI, nonce } }); q.markAttempt("rb-1", Date.now() - 31 * 60 * 1000);
+    const r = await sw.swapRecover(ctxWith(q), "rb-1", ME);
+    assert.equal(r.recovered, ok, `nonce ${nonce}`); assert.equal(q.sent.length, ok ? 1 : 0);
+  }
+});
+
 test("a pinned Base swap with no swap-library record is not funded", async () => {
   const m = mockClient(); const p = provider(m.client, { base: { usdc: 2_000_000n, eth: NEED_WEI } }); await create(p);
   const real = m.client.getStoredSwap; m.client.getStoredSwap = async () => null;

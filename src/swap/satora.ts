@@ -121,6 +121,7 @@ export class SatoraProvider implements SwapProvider {
   }
   /** A burn Mark's own signer sent for this swap (also when the swap library did not record it): recovery on the settlement chain. */
   sentBurn(id: string): string | undefined { return this.sends.read()[id]?.burn; }
+  sentUnknown(id: string): boolean { const m = this.sends.read()[id]; return !!m?.unknown && !m.burn; }
 
   static async create(opts: { baseUrl: string; arkServerUrl: string; esploraUrl: string; bitcoinNetwork: "mainnet" | "signet"; mnemonic: string; key: Buffer; dir: string; referralCode?: string }) {
     const sdir = path.join(opts.dir, "swaps"); fs.mkdirSync(sdir, { recursive: true, mode: 0o700 });
@@ -282,8 +283,8 @@ export class SatoraProvider implements SwapProvider {
   private funding = new Map<string, Promise<FundResult>>();
   /** Funding attempts and create records: in memory plus files in the swaps dir, so a second process (or a restart) sees them. */
   private attempts: RecordFile<number>;
-  /** Swaps from USDC on Base: what Mark's own signer sent in a funding (the burn hash, or that a send failed with an unknown
-   *  outcome) and the deposit's USDC before it. Kept apart from the swap library's record, so a burn it failed to record is known. */
+  /** Swaps from USDC on Base: what Mark's own signer sent in a funding (the burn hash, or a send of unknown outcome, marked
+   *  before the send so a crash leaves it), the deposit's USDC and its expected transaction count. Kept apart from the swap library's record, so a burn it failed to record is known. */
   private sends: RecordFile<BridgeSends>;
   private pins: RecordFile<ReversePin>;
   private readAttempts() { return this.attempts.read(); }
@@ -396,13 +397,16 @@ export class SatoraProvider implements SwapProvider {
     // before anything is sent: the USDC and the deposit address's transaction count (the evidence a later recover needs)
     if (!burn) { let nonce: bigint | undefined; try { nonce = await r.txCount?.(dep); } catch { nonce = undefined; }
       this.sends.set(id, { ...(pre !== undefined ? { pre: pre.toString() } : {}), ...(nonce !== undefined ? { nonce: nonce.toString() } : {}) }); }
+    // each send is recorded as of unknown outcome BEFORE it is handed to the signer (a crash after the broadcast leaves that
+    // record); it is cleared only when the send returns: a burn records its hash, any other send moves the expected nonce on
     const counted = { ...signer, sendTransaction: async (tx: any) => {
       sends++;
-      try {
-        const h: string = await send(tx);
-        if (sameHex(tx?.to, TOKEN_MESSENGER_V2) && /^0x[0-9a-fA-F]{64}$/.test(String(h))) this.sends.set(id, { ...this.sends.read()[id], burn: h });
-        return h;
-      } catch (e) { this.sends.set(id, { ...this.sends.read()[id], unknown: true }); throw e; }
+      this.sends.set(id, { ...this.sends.read()[id], unknown: true });
+      const h: string = await send(tx);
+      const { unknown: _u, ...was } = this.sends.read()[id] ?? {};
+      if (sameHex(tx?.to, TOKEN_MESSENGER_V2) && /^0x[0-9a-fA-F]{64}$/.test(String(h))) this.sends.set(id, { ...was, burn: h });
+      else this.sends.set(id, { ...was, ...(was.nonce !== undefined ? { nonce: (BigInt(was.nonce) + 1n).toString() } : {}) });
+      return h;
     } };
     try {
       const f: any = await stdoutToStderr(() => (this.c as any).fundSwap(id, counted));
@@ -465,11 +469,12 @@ export class SatoraProvider implements SwapProvider {
       if (mine?.burn) return this.recoverBurned(id, to, t.bridge.settleNetwork, mine.burn);
       // a send that failed with an unknown outcome: a balance proves nothing (the address is shared, a later deposit can refill it).
       // Only the deposit address's transaction count proves it: unchanged since before the attempt means nothing of it was sent
-      if (mine?.unknown) {
+      // Any funding record with a transaction count (a crash can leave one without the unknown mark) is checked the same way
+      if (mine?.unknown || mine?.nonce !== undefined) {
         let now: bigint | undefined; try { now = await this.evmOn(Number(t.chain)).txCount?.(this.depositAddress()); }
         catch (e) { return { success: false, message: `could not read the deposit address on ${t.network} (${errText(e)}); nothing was moved`, network: t.network }; }
         if (mine.nonce === undefined || now === undefined || now !== BigInt(mine.nonce)) return { success: false, network: t.network,
-          message: `a ${t.network} transaction of this swap's funding was sent with an unknown outcome and the deposit address has sent transactions since: a burn may have gone through. Nothing was moved. Check the deposit address on ${t.network}'s explorer for a Circle CCTP burn (depositForBurn); that burn is recovered on ${t.bridge.settleNetwork}, not by a ${t.network} sweep` };
+          message: `a ${t.network} transaction of this swap's funding may have been sent and the deposit address has sent transactions since: a burn may have gone through. Nothing was moved. Check the deposit address on ${t.network}'s explorer for a Circle CCTP burn (depositForBurn); that burn is recovered on ${t.bridge.settleNetwork}, not by a ${t.network} sweep` };
       }
       return this.sweepOn(id, to, t.tokenId, Number(t.chain), t.network);
     }
