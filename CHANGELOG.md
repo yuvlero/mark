@@ -9,6 +9,12 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 - Before showing anything to pay, Mark checks that Satora's swap settles in USDC on Arbitrum One and bridges to exactly USDC on Base (and that an Arbitrum payout does not bridge anywhere); otherwise `SWAP_FAILED`. For a Base payout, `payoutTx` is the claim on Arbitrum One (Arbiscan); `mark swap status` / `claim` add a Basescan link to the payout address and the Base delivery tx once Satora reports it, and never read the Arbitrum claim as the amount received. `expectedReceive` is never above the quote's amount after the bridge fee.
 - docs: Glama score badge
 
+### Changed (review pass, no behaviour change)
+- Swap token / network data comes from `SWAP_TARGETS` in one place: Arbitrum One's chain id, name and explorer are one `ARB` entry; a bridged payout names its settlement network (`bridge.settleNetwork`), so bridge notes no longer hard-code "Arbitrum One". New derived texts `SWAP_PAYOUTS_TEXT`, `PAYOUT_NETWORKS_TEXT`, `STABLE_FLAGS` / `STABLE_OR` feed the CLI usage flags, the `--address` error (a lookup, not an `if usdc-base` branch) and the MCP payout lists. Longer explanatory prose in the help and MCP descriptions still names the networks by hand. Output text is unchanged (CLI help and errors compared byte for byte against the previous build).
+- `mark swap claim --wait` reuses the read it already made to find the swap's direction as the first wait round (one fewer Satora call before the claim).
+- CLI swap checks lower-case `--from` / `--to` once instead of on every line; two unused imports removed.
+- Tests: derived wording, the single read before a waited claim, and a docs check that README, the agent quickstart and SKILL.md carry the code's per-route fee sentences verbatim and every payout key.
+
 ### Live test (25 Nov 2026, 08:44 Dubai)
 - 5,000 sats Lightning → USDC on Base (swap ee534bfe): quote 2.850531 USDC after Circle's 0.054957 USDC fee; 2.851141 USDC arrived on Base about 30 s after paying (Arbitrum claim 0xf209e0df…, Base mint 0xe8cd8553…). `mark swap status` / `claim` now label the raw Arbitrum amount as `bridge.bridgedAmount` and say Circle's fee comes out of it, so it is not read as the amount that arrives on Base.
 

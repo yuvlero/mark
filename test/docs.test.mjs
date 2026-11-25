@@ -24,3 +24,13 @@ test("status enums are documented with every value", () => {
   for (const v of ["buyer_accept", "seller_accept", "buyer_funding", "delivery", "release_signature", "payout", "ruling", "none"]) assert.ok(API.includes("`" + v + "`") || API.includes(v), v);
   for (const v of ["buyer", "seller", "arbiter", "operator"]) assert.ok(API.includes(v));
 });
+
+test("swap docs carry the code's fee sentence verbatim and every payout key (README, quickstart, skill)", async () => {
+  const { SWAP_FEE_ALL_ROUTES_NOTE, SWAP_TARGETS } = await import("../dist/src/swap/stable.js");
+  for (const [n, d] of [["README", README], ["quickstart", QS], ["skill", rd("../skills/agent-escrow/SKILL.md")]]) {
+    // the per-route sentences after "...shown on the live quote." (the quickstart puts quote field names in between)
+    const perRoute = SWAP_FEE_ALL_ROUTES_NOTE.slice(SWAP_FEE_ALL_ROUTES_NOTE.indexOf("live quote.") + "live quote. ".length);
+    assert.ok(perRoute.startsWith("Lightning or Arkade to ") && d.includes(perRoute), `${n} fee wording differs from SWAP_FEE_ALL_ROUTES_NOTE`);
+    for (const k of Object.keys(SWAP_TARGETS)) assert.ok(d.includes(k), `${n} is missing payout ${k}`);
+  }
+});

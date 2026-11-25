@@ -8,7 +8,7 @@ import { openCtx, type Ctx, type CtxOptions } from "./core/context.js";
 import { updateNotice } from "./core/clientVersion.js";
 import * as uc from "./core/usecases.js";
 import * as sw from "./core/swap.js";
-import { SWAP_FEE_TOTAL_NOTE, SWAP_FEE_ALL_ROUTES_NOTE, SWAP_SOURCES, SWAP_TARGETS, SWAP_STABLES, targetList, type SwapSource, type SwapTarget } from "./swap/stable.js";
+import { SWAP_FEE_TOTAL_NOTE, SWAP_FEE_ALL_ROUTES_NOTE, SWAP_SOURCES, SWAP_TARGETS, SWAP_STABLES, targetList, SWAP_PAYOUTS_TEXT, PAYOUT_NETWORKS_TEXT, type SwapSource, type SwapTarget } from "./swap/stable.js";
 import { MARK_VERSION } from "./version.js";
 import { mk, DEMO_SATS, WALLET_DOCS } from "./invocation.js";
 import os from "node:os";
@@ -98,12 +98,12 @@ export async function runMcp(network: NetworkName, o: CtxOptions = {}) {
   const swapIn = { from: z.enum(rails).optional().describe("where the BTC comes from (default lightning)"), to: z.enum(swapTo as any).optional().describe(`stablecoin payout (default usdc): ${targetList()}; or lightning/arkade for a Lightning ↔ Arkade swap`),
     sats: z.number().int().positive().optional().describe("sats to send (required for BTC → stablecoin and Lightning → Arkade; omit when an invoice pins an Arkade → Lightning payout)"),
     invoice: z.string().optional().describe("from arkade to lightning: a BOLT11 invoice with an amount"),
-    address: z.string().optional().describe("payout destination: a 0x address on the stablecoin's network (Arbitrum One, or Base for usdc-base) or an Ark address on https://arkade.computer (to arkade)") };
-  s.tool("swap_quote", `Quote a swap of BTC through Satora: Lightning or Arkade into USDC or USDT0 on Arbitrum One or USDC on Base (bridged over Circle CCTP), or Lightning ↔ Arkade. Fees depend on the route and are shown on the live quote (${SWAP_FEE_ALL_ROUTES_NOTE}). Nothing is created`, swapIn,
+    address: z.string().optional().describe(`payout destination: a 0x address on the stablecoin's network (${PAYOUT_NETWORKS_TEXT}) or an Ark address on https://arkade.computer (to arkade)`) };
+  s.tool("swap_quote", `Quote a swap of BTC through Satora: Lightning or Arkade into ${SWAP_PAYOUTS_TEXT} (bridged over Circle CCTP), or Lightning ↔ Arkade. Fees depend on the route and are shown on the live quote (${SWAP_FEE_ALL_ROUTES_NOTE}). Nothing is created`, swapIn,
     (a) => wrap(() => sw.swapQuote(c, a)));
   s.tool("swap_routes", `Every swap route Mark supports (BTC from Lightning or Arkade into USDC or USDT0 on Arbitrum One and back, into USDC on Base, plus Lightning ↔ Arkade) with Satora's live min/max sats. ${SWAP_FEE_ALL_ROUTES_NOTE}. When Satora can be reached each route also shows the live pair rate. Read-only: nothing is created. Limits are "unavailable" if Satora cannot be reached`, {},
     () => wrap(() => sw.swapRoutes(c)));
-  s.tool("swap_create", `Swap BTC through Satora: Lightning or Arkade into USDC or USDT0 on Arbitrum One or USDC on Base (settled on Arbitrum One, bridged to Base over Circle CCTP at claim), or Lightning ↔ Arkade. Fees are shown in the quote (${SWAP_FEE_ALL_ROUTES_NOTE}). REAL MONEY on mainnet. Without confirm: preview only. With confirm: creates the swap and returns what to pay once (a Lightning invoice, an Ark address + exact sats, or both for the rail). After paying a Lightning- or Arkade-to-stablecoin swap, or a Lightning-to-Arkade swap, call swap_claim with wait=true. After paying an Arkade-to-Lightning swap, call swap_status (or swap_claim with wait=true) to wait for Satora to pay the invoice; there is nothing for you to claim. Non-custodial: the claim key stays in this Mark home`,
+  s.tool("swap_create", `Swap BTC through Satora: Lightning or Arkade into ${SWAP_PAYOUTS_TEXT} (settled on Arbitrum One, bridged to Base over Circle CCTP at claim), or Lightning ↔ Arkade. Fees are shown in the quote (${SWAP_FEE_ALL_ROUTES_NOTE}). REAL MONEY on mainnet. Without confirm: preview only. With confirm: creates the swap and returns what to pay once (a Lightning invoice, an Ark address + exact sats, or both for the rail). After paying a Lightning- or Arkade-to-stablecoin swap, or a Lightning-to-Arkade swap, call swap_claim with wait=true. After paying an Arkade-to-Lightning swap, call swap_status (or swap_claim with wait=true) to wait for Satora to pay the invoice; there is nothing for you to claim. Non-custodial: the claim key stays in this Mark home`,
     { ...swapIn, confirm: confirmIn },
     runSwap);
   // the reverse direction: a stablecoin on Arbitrum -> BTC, gasless (the stablecoins go to this Mark home's deposit address)

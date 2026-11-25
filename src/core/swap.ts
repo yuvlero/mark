@@ -12,7 +12,7 @@ import { SWAP_UNPAID, SWAP_PAID, SWAP_WAITING, SWAP_CLAIMABLE, SWAP_DONE, isReve
 import { sleep } from "../util.js";
 import { reverse, loadReverse, waitReverse, reverseQuote, reverseRun, reverseStatus, reverseClaim, reverseRefund, reverseFund, reverseRecover } from "./swapReverse.js";
 import { loadRail, railQuote, railRun, railStatus, railClaim, railRefund } from "./swapRail.js";
-import { ARBISCAN_TX, sameHex, targetByContract, txLink, SWAP_MARKUP_BPS, SWAP_REFERRAL_ID, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkMarkupBps, formatSwapQuote, pct, swapFeeRates, swapFeeSummaryNote, swapSats, swapSource, swapTarget, units, swapRoute, allSwapRoutes, targetOfSwap, tokenLabel, bridgeFeeUnits, type StableToken, type SwapSource, type SwapTarget } from "../swap/stable.js";
+import { ARBISCAN_TX, STABLE_FLAGS, sameHex, txLink, SWAP_MARKUP_BPS, SWAP_REFERRAL_ID, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkMarkupBps, formatSwapQuote, pct, swapFeeRates, swapFeeSummaryNote, swapSats, swapSource, swapTarget, units, swapRoute, allSwapRoutes, targetOfSwap, tokenLabel, bridgeFeeUnits, type StableToken, type SwapSource, type SwapTarget } from "../swap/stable.js";
 
 /** sats: BTC -> stablecoin. amount (token units like 1.5) / invoice: stablecoin -> BTC (address is the payout target there). */
 export interface SwapQuoteInput { from?: string; to?: string; sats?: number | string; amount?: string | number; invoice?: string; address?: string }
@@ -36,8 +36,8 @@ async function stable(c: Ctx): Promise<Required<Pick<SwapProvider, "quoteStable"
 function route(i: SwapQuoteInput) {
   const r = swapRoute(i.from, i.to);
   if (r.dir === "to_btc" && i.sats !== undefined) throw new MarkError("USAGE", "--sats is for swaps from BTC; from a stablecoin use --amount <tokens> (or --invoice for a Lightning payout)");
-  if (r.dir === "to_stable") for (const k of ["amount", "invoice"] as const) if (i[k] !== undefined) throw new MarkError("USAGE", `--${k} is only for swaps from a stablecoin (--from usdc|usdt0)`);
-  if (r.dir === "rail" && i.amount !== undefined) throw new MarkError("USAGE", "--amount is only for swaps from a stablecoin (--from usdc|usdt0)");
+  if (r.dir === "to_stable") for (const k of ["amount", "invoice"] as const) if (i[k] !== undefined) throw new MarkError("USAGE", `--${k} is only for swaps from a stablecoin (--from ${STABLE_FLAGS})`);
+  if (r.dir === "rail" && i.amount !== undefined) throw new MarkError("USAGE", `--amount is only for swaps from a stablecoin (--from ${STABLE_FLAGS})`);
   return r;
 }
 const revIn = (r: { from: any; to: any }, i: SwapQuoteInput) => ({ from: r.from, to: r.to, amount: i.amount, invoice: i.invoice, address: i.address });
@@ -83,7 +83,7 @@ export async function swapRoutes(c: Ctx) {
     const t = SWAP_TARGETS[p.dir === "to_stable" ? p.to : p.from]; const rail = p.dir === "to_stable" ? p.from : p.to;
     return { from: p.from, to: p.to, direction: p.dir === "to_stable" ? "btc_to_stablecoin" : "stablecoin_to_btc", ...(p.dir === "to_stable" ? { source: SWAP_SOURCES[rail].chain } : { target: SWAP_SOURCES[rail].chain }),
       token: t.symbol, chain: t.network, chainId: Number(t.chain), contract: t.tokenId,
-      ...(t.bridge ? { bridge: { via: t.bridge.via, from: "Arbitrum One", note: "Satora settles on Arbitrum One; the payout is bridged to " + t.network + " at claim (bridge fee in the quote)" } } : {}),
+      ...(t.bridge ? { bridge: { via: t.bridge.via, from: t.bridge.settleNetwork, note: `Satora settles on ${t.bridge.settleNetwork}; the payout is bridged to ${t.network} at claim (bridge fee in the quote)` } } : {}),
       limits: ok ? { minSats: q.min_amount, maxSats: q.max_amount } : "unavailable",
       ...(fees ? { fees } : {}), ...fail };
   });
@@ -114,7 +114,7 @@ export async function swapRun(c: Ctx, i: SwapRunInput) {
   const quote = formatSwapQuote(q, p);
   if (p.sats < q.min_amount || p.sats > q.max_amount) throw new MarkError("SWAP_AMOUNT", `Satora accepts ${q.min_amount}..${q.max_amount} sats for ${p.from} -> ${tokenLabel(t)}`, { quote });
   if (!i.confirm) return { swap: "preview", quote, payoutAddress: address,
-    notice: `REAL MONEY: this swaps ${p.sats} sats of bitcoin mainnet into about ${quote.receive} ${tokenLabel(t)}, sent to ${address}${t.bridge ? ` (settled on Arbitrum One, then bridged to ${t.network} over ${t.bridge.via}: the same address receives it on ${t.network})` : ""}. Check the address: a payout to a wrong address cannot be undone. ${quote.markupNote}`,
+    notice: `REAL MONEY: this swaps ${p.sats} sats of bitcoin mainnet into about ${quote.receive} ${tokenLabel(t)}, sent to ${address}${t.bridge ? ` (settled on ${t.bridge.settleNetwork}, then bridged to ${t.network} over ${t.bridge.via}: the same address receives it on ${t.network})` : ""}. Check the address: a payout to a wrong address cannot be undone. ${quote.markupNote}`,
     next: `Nothing was created. To create it: ${mk()} swap --from ${p.from} --to ${p.to} --sats ${p.sats} --address ${address} --yes --wait` };
   const created = await s.createStable({ ...p, address });
   checkCreated(c, p, address, created, q.net_target_amount);
@@ -159,10 +159,11 @@ function checkCreated(c: Ctx, p: { from: SwapSource; to: SwapTarget; sats: numbe
   }
 }
 
-async function waitAndClaim(s: Awaited<ReturnType<typeof stable>>, id: string, o: { timeoutSec?: number; pollMs?: number }) {
-  const end = Date.now() + (o.timeoutSec ?? 900) * 1000; const poll = o.pollMs ?? 5000; let last = "unknown"; let claim: any;
+/** first: a read swapClaim just made, used for the first round instead of reading the swap again. */
+async function waitAndClaim(s: Awaited<ReturnType<typeof stable>>, id: string, o: { timeoutSec?: number; pollMs?: number }, first?: StableSwapInfo) {
+  const end = Date.now() + (o.timeoutSec ?? 900) * 1000; const poll = o.pollMs ?? 5000; let last = "unknown"; let claim: any; let pre = first;
   while (Date.now() < end) {
-    let info; try { info = await s.getStable(id); } catch { await sleep(poll); continue; }
+    let info; if (pre) { info = pre; pre = undefined; } else { try { info = await s.getStable(id); } catch { await sleep(poll); continue; } }
     last = info.status;
     if (SWAP_DONE.has(last)) return done(s, id, last, info.payoutTx ?? claim?.txHash, info);
     if (SWAP_CLAIMABLE.has(last) && !claim?.success) {
@@ -215,7 +216,7 @@ function bridgeInfo(t: StableToken, x: DoneInfo) {
   return { bridge: { to: t.network, via: t.bridge!.via, ...(x.bridgeTx ? { deliveryTx: x.bridgeTx, deliveryExplorer: t.explorerTx + x.bridgeTx } : {}),
     ...(x.targetAddress ? { payoutAddressExplorer: t.explorerAddress + x.targetAddress } : {}),
     ...(bridged !== undefined ? { bridgedAmount: bridged } : {}),
-    note: `payoutTx is the claim on Arbitrum One that hands the ${t.symbol} to ${t.bridge!.via}; it arrives at the payout address on ${t.network} shortly after (usually within a few minutes).${bridged !== undefined ? ` bridgedAmount (and targetUnits) is what leaves Arbitrum One: ${t.bridge!.via}'s bridge fee comes out of it, so a little less arrives on ${t.network} (the quote's receive is after that fee).` : ""} Check it with the ${t.network} explorer link. Do NOT pay again.` } };
+    note: `payoutTx is the claim on ${t.bridge!.settleNetwork} that hands the ${t.symbol} to ${t.bridge!.via}; it arrives at the payout address on ${t.network} shortly after (usually within a few minutes).${bridged !== undefined ? ` bridgedAmount (and targetUnits) is what leaves ${t.bridge!.settleNetwork}: ${t.bridge!.via}'s bridge fee comes out of it, so a little less arrives on ${t.network} (the quote's receive is after that fee).` : ""} Check it with the ${t.network} explorer link. Do NOT pay again.` } };
 }
 async function done(s: SwapProvider, id: string, status: string, tx?: string, x?: DoneInfo) {
   let got: { reverted?: boolean; receivedUnits?: string; receivedNote?: string } = {};
@@ -226,7 +227,7 @@ async function done(s: SwapProvider, id: string, status: string, tx?: string, x?
     if (!tx) return { id, status, swap: "done", ...bridgeInfo(t, info), note: `Claimed; the payout tx id is not known yet: check ${mk()} swap status ${id}. It is bridged to ${t.network} over ${t.bridge.via} after the claim.` };
     const state = await bridgedClaimState(s, tx, t.bridge.settleToken, info.targetAddress ?? "");
     if (state === "reverted") return { id, status, swap: "done", ...txLink(tx, "payoutTx"), reverted: true, payoutFailed: true,
-      note: "The payout transaction reverted on Arbitrum One: nothing was bridged from it. Check mark swap status." };
+      note: `The payout transaction reverted on ${t.bridge.settleNetwork}: nothing was bridged from it. Check mark swap status.` };
     return { id, status, swap: "done", ...txLink(tx, "payoutTx"), ...bridgeInfo(t, info),
       ...(state === "unknown" ? { receivedNote: "the claim transaction's receipt could not be read yet: check the explorer link before relying on the payout" } : {}),
       note: state === "unknown" ? `Satora reports the claim sent; its receipt could not be read yet. Once it is mined, the ${t.symbol} is bridged to ${t.network} over ${t.bridge.via}.` : `Stablecoins sent: bridging to ${t.network} over ${t.bridge.via}.` };
@@ -257,7 +258,7 @@ export async function swapStatus(c: Ctx, id: string) {
   const { raw: _raw, ...info } = x;
   const got: Record<string, unknown> = x.payoutTx && t && !t.bridge && x.targetAddress ? await arrived(s, x.payoutTx, t.tokenId, x.targetAddress, t.decimals) : {};
   const bridgedState = x.payoutTx && t?.bridge ? await bridgedClaimState(s, x.payoutTx, t.bridge.settleToken, x.targetAddress ?? "") : undefined;
-  if (bridgedState === "reverted") Object.assign(got, { reverted: true, payoutFailed: true, receivedNote: "the payout transaction reverted on Arbitrum One: nothing was bridged from it" });
+  if (bridgedState === "reverted") Object.assign(got, { reverted: true, payoutFailed: true, receivedNote: `the payout transaction reverted on ${t!.bridge!.settleNetwork}: nothing was bridged from it` });
   else if (bridgedState === "unknown") got.receivedNote = "the claim transaction's receipt could not be read yet: check the explorer link";
   return { ...info, ...(t ? { token: t.symbol, payoutNetwork: t.network } : {}), ...(t && x.targetUnits && !t.bridge ? { expectedReceive: units(x.targetUnits, t.decimals) } : {}), ...got,
     ...(x.payoutTx ? { explorer: ARBISCAN_TX + x.payoutTx } : {}), ...(t?.bridge && bridgedState !== "reverted" ? bridgeInfo(t, x) : t?.bridge ? {} : x.bridgeTargetChain ? { bridge: { to: x.bridgeTargetChain, note: "bridged to a chain Mark does not list: check the payout on that chain" } } : {}),
@@ -278,7 +279,7 @@ export async function swapClaim(c: Ctx, id: string, o: { wait?: boolean; timeout
     const [r, y] = await loadReverse(c, id); return reverseClaim(r, y);
   }
   if (isRailDir(x.direction)) { const [r, y] = await loadRail(c, id); return railClaim(r, y, o); }
-  if (o.wait) return waitAndClaim(s, id, o);
+  if (o.wait) return waitAndClaim(s, id, o, x);
   if (SWAP_DONE.has(x.status)) return done(s, id, x.status, x.payoutTx, x);
   if (!SWAP_CLAIMABLE.has(x.status)) return { id, status: x.status, claimed: false, note: SWAP_PAID.has(x.status) ? `Nothing to claim yet. ${PAID_NOTE} (${mk()} swap claim ${id} --wait claims as soon as it is funded)`
     : SWAP_UNPAID.has(x.status) ? "Not paid yet: nothing to claim. Pay the swap's invoice / Ark address once (shown when it was created)." : endedNote(x.status, id, x.direction) };

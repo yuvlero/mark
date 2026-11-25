@@ -52,18 +52,21 @@ export const SWAP_SOURCES = { lightning: { chain: "Lightning", tokenId: "btc" },
 export interface StableToken { chain: string; tokenId: string; symbol: string; decimals: number; network: string;
   /** Explorer URL prefixes on the payout chain. */
   explorerTx: string; explorerAddress: string;
-  bridge?: { name: string; via: string; settleChain: string; settleToken: string } }
+  bridge?: { name: string; via: string; settleChain: string; settleNetwork: string; settleToken: string } }
 export const ARB_USDC = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831";
 export const BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 export const ARBISCAN_TX = "https://arbiscan.io/tx/";
-const ARB = { explorerTx: ARBISCAN_TX, explorerAddress: "https://arbiscan.io/address/" };
+/** Arbitrum One: where every Satora stablecoin swap settles (a bridged payout too). The one place its chain id, name and explorer live. */
+const ARB = { chain: "42161", network: "Arbitrum One", explorerTx: ARBISCAN_TX, explorerAddress: "https://arbiscan.io/address/" };
+/** "Arbitrum One": the settlement network named in bridged-payout wording. */
+export const SWAP_HUB_NETWORK = ARB.network;
 /** What it turns into: USDC / USDT0 on Arbitrum One (chain 42161; USDT0 lives at the former USDT contract) or USDC on Base
  *  (chain 8453, bridged from Arbitrum over Circle CCTP). Each key names its network in `network`. */
 const TARGETS = {
-  usdc: { chain: "42161", tokenId: ARB_USDC, symbol: "USDC", decimals: 6, network: "Arbitrum One", ...ARB },
-  usdt0: { chain: "42161", tokenId: "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9", symbol: "USDT0", decimals: 6, network: "Arbitrum One", ...ARB },
+  usdc: { tokenId: ARB_USDC, symbol: "USDC", decimals: 6, ...ARB },
+  usdt0: { tokenId: "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9", symbol: "USDT0", decimals: 6, ...ARB },
   "usdc-base": { chain: "8453", tokenId: BASE_USDC, symbol: "USDC", decimals: 6, network: "Base", explorerTx: "https://basescan.org/tx/", explorerAddress: "https://basescan.org/address/",
-    bridge: { name: "Base", via: "Circle CCTP", settleChain: "42161", settleToken: ARB_USDC } },
+    bridge: { name: "Base", via: "Circle CCTP", settleChain: ARB.chain, settleNetwork: ARB.network, settleToken: ARB_USDC } },
 };
 export const SWAP_TARGETS: Record<keyof typeof TARGETS, StableToken> = TARGETS;
 export type SwapTarget = keyof typeof TARGETS;
@@ -74,6 +77,13 @@ export const targetList = (keys: readonly string[] = Object.keys(SWAP_TARGETS)) 
 /** Stablecoins Mark swaps back to BTC (gasless deposit on Arbitrum One). USDC on Base is a payout only: Satora funds a Base-sourced
  *  swap with a CCTP burn signed on Base, which needs ETH on Base at the deposit address (not gasless), so Mark does not offer it yet. */
 export const SWAP_STABLES = ["usdc", "usdt0"] as const;
+/** "usdc|usdt0" and "usdc or usdt0": the --from values of a swap from a stablecoin, for usage text. */
+export const STABLE_FLAGS = SWAP_STABLES.join("|"), STABLE_OR = SWAP_STABLES.join(" or ");
+/** Every payout grouped by network, in TARGETS order: "USDC or USDT0 on Arbitrum One or USDC on Base". */
+export const SWAP_PAYOUTS_TEXT = [...new Set(Object.values(TARGETS).map((t) => t.network))]
+  .map((n) => `${Object.values(TARGETS).filter((t) => t.network === n).map((t) => t.symbol).join(" or ")} on ${n}`).join(" or ");
+/** Where the 0x payout address must be: "Arbitrum One, or Base for usdc-base". */
+export const PAYOUT_NETWORKS_TEXT = [ARB.network, ...Object.entries(TARGETS).filter(([, t]) => t.network !== ARB.network).map(([k, t]) => `or ${t.network} for ${k}`)].join(", ");
 export const BASE_TO_BTC_UNSUPPORTED = "USDC on Base -> BTC is not supported yet (Satora funds it with a CCTP burn on Base that needs ETH on Base: not gasless). Bridge the USDC to Arbitrum One and use --from usdc, or swap BTC -> USDC on Base with --to usdc-base";
 export type SwapSource = keyof typeof SWAP_SOURCES;
 /** Same hex address, invoice or contract, ignoring case (a missing value never matches). */
@@ -86,7 +96,8 @@ export function targetOfSwap(x: { tokenContract?: string; bridgeTargetChain?: st
   if (x.bridgeTargetChain) return Object.values(SWAP_TARGETS).find((v) => v.bridge?.name === x.bridgeTargetChain && sameHex(v.tokenId, x.bridgeTargetToken) && sameHex(v.bridge?.settleToken, x.tokenContract));
   return targetByContract(x.tokenContract);
 }
-/** `{ [key]: tx, [explorerKey]: arbiscan link }`, or nothing without a tx. */
+/** `{ [key]: tx, [explorerKey]: arbiscan link }`, or nothing without a tx. Arbiscan on purpose: every Satora swap tx Mark links
+ *  (claim, fund, refund) is on Arbitrum One, a bridged payout's claim too; the Base delivery uses the target's explorerTx. */
 export const txLink = (tx: string | undefined, key = "txHash", explorerKey = "explorer") => tx ? { [key]: tx, [explorerKey]: ARBISCAN_TX + tx } : {};
 
 export function swapSource(v: string | undefined): SwapSource {
@@ -106,7 +117,7 @@ export function swapSats(v: unknown): number {
 }
 
 /** EIP-55: a mixed-case address must carry a valid checksum (catches typos); all-lowercase / all-uppercase are accepted. */
-export function checkEvmAddress(a: string | undefined, flag = "--address", network = "Arbitrum One"): string {
+export function checkEvmAddress(a: string | undefined, flag = "--address", network = ARB.network): string {
   const x = (a ?? "").trim();
   if (!/^0x[0-9a-fA-F]{40}$/.test(x)) throw new MarkError("BAD_DEST", `${flag} must be an EVM address on ${network} (0x followed by 40 hex characters)`);
   const hex = x.slice(2);
@@ -198,7 +209,7 @@ export function formatSwapQuote(q: SatoraQuote, o: { from: SwapSource; to: SwapT
     rate: `${q.exchange_rate} ${t.symbol} per BTC`,
     receive: units(q.net_target_amount, t.decimals), receiveUnits: q.net_target_amount,
     fees: t.bridge ? { ...v.fees, bridgeFee: bf !== undefined ? units(bf, t.decimals) : null, bridgeFeeUnits: bf ?? null, bridgeFeeToken: t.symbol } : v.fees,
-    ...(t.bridge ? { bridge: { to: t.network, via: t.bridge.via, from: "Arbitrum One", note: `Satora settles on Arbitrum One; at claim ${t.bridge.via} carries the ${t.symbol} to ${t.network} (usually within a few minutes). receive is after the bridge fee.` } } : {}),
+    ...(t.bridge ? { bridge: { to: t.network, via: t.bridge.via, from: t.bridge.settleNetwork, note: `Satora settles on ${t.bridge.settleNetwork}; at claim ${t.bridge.via} carries the ${t.symbol} to ${t.network} (usually within a few minutes). receive is after the bridge fee.` } } : {}),
     markupNote: `${v.totalFeeLine}${bridgeLine}. Paid inside the swap; nothing extra to send.`,
     limits: { minSats: q.min_amount, maxSats: q.max_amount },
     referral: SWAP_REFERRAL_ID,

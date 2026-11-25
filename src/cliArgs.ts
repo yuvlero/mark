@@ -1,7 +1,9 @@
 /** CLI usage checks (pure; tested without spawning). */
 import { str as s } from "./util.js";
 import { MarkError } from "./errors.js";
-import { SWAP_FEE_TOTAL_NOTE, SWAP_FEE_ALL_ROUTES_NOTE, SWAP_SOURCES, SWAP_TARGETS, SWAP_STABLES, BASE_TO_BTC_UNSUPPORTED } from "./swap/stable.js";
+import { SWAP_FEE_ALL_ROUTES_NOTE, SWAP_SOURCES, SWAP_TARGETS, SWAP_STABLES, BASE_TO_BTC_UNSUPPORTED, STABLE_FLAGS, STABLE_OR, PAYOUT_NETWORKS_TEXT, swapTarget } from "./swap/stable.js";
+/** "usdc|usdt0|usdc-base": every --to payout, for usage text. */
+const TARGET_FLAGS = Object.keys(SWAP_TARGETS).join("|");
 export function parseArgs(argv: string[]) {
   const pos: string[] = []; const f: Record<string, string | boolean> = {};
   for (let i = 0; i < argv.length; i++) {
@@ -37,8 +39,8 @@ export function checkDemoArgs(f: Record<string, string | boolean>) {
 }
 /** `mark swap` (BTC <-> USDC / USDT0 on Arbitrum One, BTC -> USDC on Base, via Satora; standalone, not tied to a deal). Key "create" is plain `mark swap` (`mark swap create` is the same). */
 export const SWAP_USAGE: Record<string, string> = {
-  quote: `mark swap quote [--from lightning|arkade] [--to usdc|usdt0|usdc-base] --sats N | mark swap quote --from lightning --to arkade --sats N | mark swap quote --from arkade --to lightning (--sats N | --invoice <bolt11>) | mark swap quote --from usdc|usdt0 --to lightning|arkade (--amount <tokens> | --invoice <bolt11>)   (rate, fees: ${SWAP_FEE_ALL_ROUTES_NOTE}; live rates are in the quote; nothing is created)`,
-  create: `mark swap [--from lightning|arkade] [--to usdc|usdt0|usdc-base] --sats N --address <0x... on the payout network: Arbitrum One, or Base for usdc-base> [--yes] [--wait] [--timeout <sec>] | mark swap --from lightning --to arkade --sats N --address <ark address on https://arkade.computer> [--yes] [--wait] | mark swap --from arkade --to lightning --invoice <bolt11 with an amount> [--yes] [--wait] | mark swap --from usdc|usdt0 --to lightning --invoice <bolt11 with an amount> [--yes] [--wait] | mark swap --from usdc|usdt0 --to arkade --address <ark address on https://arkade.computer> --amount <tokens> [--yes] [--wait]   (no --yes: preview only, nothing is created. usdc and usdt0 pay out on Arbitrum One; usdc-base pays USDC on Base (settled on Arbitrum One, bridged over Circle CCTP at claim). From a stablecoin (Arbitrum One only): gasless, Mark shows a deposit address, the exact amount and the token. ${SWAP_FEE_ALL_ROUTES_NOTE}; live rates are in the quote)`,
+  quote: `mark swap quote [--from lightning|arkade] [--to ${TARGET_FLAGS}] --sats N | mark swap quote --from lightning --to arkade --sats N | mark swap quote --from arkade --to lightning (--sats N | --invoice <bolt11>) | mark swap quote --from ${STABLE_FLAGS} --to lightning|arkade (--amount <tokens> | --invoice <bolt11>)   (rate, fees: ${SWAP_FEE_ALL_ROUTES_NOTE}; live rates are in the quote; nothing is created)`,
+  create: `mark swap [--from lightning|arkade] [--to ${TARGET_FLAGS}] --sats N --address <0x... on the payout network: ${PAYOUT_NETWORKS_TEXT}> [--yes] [--wait] [--timeout <sec>] | mark swap --from lightning --to arkade --sats N --address <ark address on https://arkade.computer> [--yes] [--wait] | mark swap --from arkade --to lightning --invoice <bolt11 with an amount> [--yes] [--wait] | mark swap --from ${STABLE_FLAGS} --to lightning --invoice <bolt11 with an amount> [--yes] [--wait] | mark swap --from ${STABLE_FLAGS} --to arkade --address <ark address on https://arkade.computer> --amount <tokens> [--yes] [--wait]   (no --yes: preview only, nothing is created. usdc and usdt0 pay out on Arbitrum One; usdc-base pays USDC on Base (settled on Arbitrum One, bridged over Circle CCTP at claim). From a stablecoin (Arbitrum One only): gasless, Mark shows a deposit address, the exact amount and the token. ${SWAP_FEE_ALL_ROUTES_NOTE}; live rates are in the quote)`,
   status: "mark swap status <id>",
   claim: "mark swap claim <id> [--wait] [--timeout <sec>]   (claim a paid swap's stablecoins to its address, or a Lightning-to-Arkade swap's Ark payout; --wait first waits for Satora to fund its side; Arkade-to-Lightning has nothing to claim (Satora pays the invoice); never funds a swap from a stablecoin (that is mark swap fund); safe to repeat)",
   fund: "mark swap fund <id> [--wait] [--timeout <sec>]   (swap from a stablecoin: once the deposit is at the deposit address, lock it into the swap, once, gasless; --wait waits for the deposit, then the payout)",
@@ -59,15 +61,17 @@ export function checkSwapArgs(sub: string | undefined, id: string | undefined, f
   if (f.timeout !== undefined && !/^\d+$/.test(String(f.timeout))) return usage("--timeout must be a whole number of seconds");
   if (f.timeout !== undefined && !waits.includes(key)) return usage("--timeout is only for mark swap (create), mark swap claim and mark swap fund");
   const priced = key === "create" || key === "quote";
+  const lc = (k: string) => f[k] !== undefined ? String(f[k]).toLowerCase() : "";
+  const from = lc("from"), to = lc("to");
   if (!priced) for (const k of ["from", "address", "sats", "amount", "invoice", ...(key === "refund" || key === "recover" ? [] : ["to"])]) if (f[k] !== undefined) return usage(`--${k} is only for mark swap and mark swap quote`);
-  if (f.from !== undefined && Object.hasOwn(SWAP_TARGETS, String(f.from).toLowerCase()) && !SWAP_STABLE.includes(String(f.from).toLowerCase())) return usage(BASE_TO_BTC_UNSUPPORTED);
-  if (f.from !== undefined && ![...SWAP_BTC, ...SWAP_STABLE].includes(String(f.from).toLowerCase())) return usage(`--from must be ${[...SWAP_BTC, ...SWAP_STABLES].join(", ")}`);
-  const rev = priced && SWAP_STABLE.includes(String(f.from ?? "").toLowerCase());
+  if (f.from !== undefined && Object.hasOwn(SWAP_TARGETS, from) && !SWAP_STABLE.includes(from)) return usage(BASE_TO_BTC_UNSUPPORTED);
+  if (f.from !== undefined && ![...SWAP_BTC, ...SWAP_STABLE].includes(from)) return usage(`--from must be ${[...SWAP_BTC, ...SWAP_STABLES].join(", ")}`);
+  const rev = priced && SWAP_STABLE.includes(from);
   if (priced && rev) {
-    if (f.to !== undefined && !SWAP_BTC.includes(String(f.to).toLowerCase())) return usage(`--to must be ${SWAP_BTC.join(" or ")} when --from is a stablecoin`);
+    if (f.to !== undefined && !SWAP_BTC.includes(to)) return usage(`--to must be ${SWAP_BTC.join(" or ")} when --from is a stablecoin`);
     if (f.sats !== undefined) return usage("--sats is for swaps from BTC; from a stablecoin use --amount <tokens> (or --invoice for a Lightning payout)");
     if (f.amount !== undefined && !/^\d+(\.\d+)?$/.test(String(f.amount))) return usage("--amount must be a token amount like 1.5");
-    const ln = String(f.to ?? "lightning").toLowerCase() === "lightning";
+    const ln = (to || "lightning") === "lightning";
     if (f.invoice !== undefined && !ln) return usage("--invoice is only for --to lightning");
     if (ln && f.address !== undefined) return usage("--to lightning takes --invoice <bolt11>, not --address (Lightning addresses are not supported for this direction)");
     if (f.invoice !== undefined && f.amount !== undefined) return usage("--invoice fixes the payout: do not add --amount");
@@ -75,14 +79,12 @@ export function checkSwapArgs(sub: string | undefined, id: string | undefined, f
     if (key === "create" && ln && f.invoice === undefined) return usage("--invoice <bolt11 with an amount> is required (Satora pays exactly that invoice)");
     if (key === "create" && !ln && !s(f.address)) return usage("--address <ark address> is required");
   } else if (priced) {
-    const from = f.from !== undefined ? String(f.from).toLowerCase() : "";
-    const to = f.to !== undefined ? String(f.to).toLowerCase() : "";
     if (!from && SWAP_BTC.includes(to)) {
-      return usage(`--to ${to} needs --from lightning or arkade (a Lightning ↔ Arkade swap) or --from usdc or usdt0`);
+      return usage(`--to ${to} needs --from lightning or arkade (a Lightning ↔ Arkade swap) or --from ${STABLE_OR}`);
     }
     if (SWAP_BTC.includes(from) && SWAP_BTC.includes(to)) {
       if (from === to) return usage(`--from and --to cannot both be ${from}`);
-      if (f.amount !== undefined) return usage("--amount is only for swaps from a stablecoin (--from usdc|usdt0)");
+      if (f.amount !== undefined) return usage(`--amount is only for swaps from a stablecoin (--from ${STABLE_FLAGS})`);
       if (to === "lightning") {
         if (f.address !== undefined) return usage("--to lightning takes --invoice <bolt11>, not --address (Lightning addresses are not supported for this direction)");
         if (f.invoice !== undefined && f.sats !== undefined) return usage("--invoice pins the Lightning payout: do not add --sats (the quote shows how many sats to send)");
@@ -96,11 +98,11 @@ export function checkSwapArgs(sub: string | undefined, id: string | undefined, f
         if (key === "create" && !s(f.address)) return usage("--address <ark address from an Arkade wallet on https://arkade.computer> is required");
       }
     } else {
-      if (f.to !== undefined && !SWAP_PAYOUT.includes(String(f.to).toLowerCase())) return usage(SWAP_BTC.includes(String(f.to).toLowerCase()) ? `--to ${String(f.to).toLowerCase()} needs --from lightning or arkade (a Lightning ↔ Arkade swap) or --from usdc or usdt0` : `--to must be ${Object.keys(SWAP_TARGETS).join(", ")}`);
-      for (const k of ["amount", "invoice"]) if (f[k] !== undefined) return usage(`--${k} is only for swaps from a stablecoin (--from usdc|usdt0) or, for --invoice, --from arkade --to lightning`);
+      if (f.to !== undefined && !SWAP_PAYOUT.includes(to)) return usage(SWAP_BTC.includes(to) ? `--to ${to} needs --from lightning or arkade (a Lightning ↔ Arkade swap) or --from ${STABLE_OR}` : `--to must be ${Object.keys(SWAP_TARGETS).join(", ")}`);
+      for (const k of ["amount", "invoice"]) if (f[k] !== undefined) return usage(`--${k} is only for swaps from a stablecoin (--from ${STABLE_FLAGS}) or, for --invoice, --from arkade --to lightning`);
       if (f.sats === undefined) return usage("--sats is required");
       if (!/^\d+$/.test(String(f.sats))) return usage("--sats must be a whole number of sats");
-      if (key === "create" && !s(f.address)) return usage(`--address <your 0x address on ${String(f.to ?? "usdc").toLowerCase() === "usdc-base" ? "Base" : "Arbitrum One"}> is required`);
+      if (key === "create" && !s(f.address)) return usage(`--address <your 0x address on ${SWAP_TARGETS[swapTarget(to || undefined)].network}> is required`);
     }
   }
   if (["status", "claim", "fund", "refund", "recover"].includes(key) && !id) return usage("swap id required");

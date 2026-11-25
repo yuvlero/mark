@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { SatoraProvider } from "../dist/src/swap/satora.js";
-import { SWAP_REFERRAL_ID, SWAP_MARKUP_BPS, SWAP_TARGETS, SWAP_STABLES, ARB_USDC, BASE_USDC, BASE_TO_BTC_UNSUPPORTED, formatSwapQuote, swapRoute, allSwapRoutes, checkEvmAddress, targetOfSwap, routeFeeNote, SWAP_FEE_ALL_ROUTES_NOTE } from "../dist/src/swap/stable.js";
+import { SWAP_REFERRAL_ID, SWAP_MARKUP_BPS, SWAP_TARGETS, SWAP_STABLES, ARB_USDC, BASE_USDC, BASE_TO_BTC_UNSUPPORTED, formatSwapQuote, swapRoute, allSwapRoutes, checkEvmAddress, targetOfSwap, routeFeeNote, SWAP_FEE_ALL_ROUTES_NOTE, SWAP_PAYOUTS_TEXT, PAYOUT_NETWORKS_TEXT, STABLE_FLAGS, STABLE_OR, SWAP_HUB_NETWORK } from "../dist/src/swap/stable.js";
 import * as sw from "../dist/src/core/swap.js";
 import { checkSwapArgs, parseArgs, SWAP_USAGE } from "../dist/src/cliArgs.js";
 import { payoutArk } from "./mockApi.mjs";
@@ -45,7 +45,7 @@ const ctxWith = (p) => ({ network: "bitcoin", cfg: { arkServerUrl: "https://arka
 test("usdc-base: USDC on Base (chain 8453, native USDC), bridged from Arbitrum One USDC over Circle CCTP; a payout only", () => {
   const t = SWAP_TARGETS["usdc-base"];
   assert.deepEqual({ chain: t.chain, tokenId: t.tokenId, symbol: t.symbol, network: t.network }, { chain: "8453", tokenId: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", symbol: "USDC", network: "Base" });
-  assert.deepEqual(t.bridge, { name: "Base", via: "Circle CCTP", settleChain: "42161", settleToken: ARB_USDC });
+  assert.deepEqual(t.bridge, { name: "Base", via: "Circle CCTP", settleChain: "42161", settleNetwork: "Arbitrum One", settleToken: ARB_USDC });
   assert.equal(SWAP_TARGETS.usdc.bridge, undefined); assert.equal(SWAP_TARGETS.usdt0.bridge, undefined);
   assert.deepEqual([...SWAP_STABLES], ["usdc", "usdt0"]);
   const r = allSwapRoutes().map((x) => `${x.dir}:${x.from}->${x.to}`);
@@ -166,9 +166,28 @@ test("usdc-base: an unreadable claim receipt is reported as unknown, never as a 
   assert.equal(r.payoutTx, undefined); assert.equal(r.bridge.to, "Base"); assert.match(r.note, /payout tx id is not known yet/);
 });
 test("usdc-base waits for the claim like any stablecoin payout (wait=true claims once funded)", async () => {
-  const { client, calls } = mockClient({ statuses: ["serverfunded", "serverfunded", "serverredeemed"] }); const p = provider(client);
+  const { client, calls } = mockClient({ statuses: ["serverfunded", "serverfunded", "serverredeemed"] });
+  let readsAtClaim; const claim0 = client.claim; client.claim = async (id) => { readsAtClaim ??= calls.getSwap.length; return claim0(id); };
+  const p = provider(client);
   const r = await sw.swapClaim(ctxWith(p), "sw-b", { wait: true, pollMs: 1 });
   assert.equal(calls.claim.length, 1); assert.equal(r.swap, "done"); assert.equal(r.bridge.to, "Base");
+  // the direction read swapClaim makes is reused as the first wait round: exactly one read before the claim
+  assert.equal(readsAtClaim, 1);
+});
+
+test("payout wording is derived from SWAP_TARGETS (one source): payout list, 0x networks, stablecoin flags, hub network", () => {
+  assert.equal(SWAP_PAYOUTS_TEXT, "USDC or USDT0 on Arbitrum One or USDC on Base");
+  assert.equal(PAYOUT_NETWORKS_TEXT, "Arbitrum One, or Base for usdc-base");
+  assert.equal(STABLE_FLAGS, "usdc|usdt0"); assert.equal(STABLE_OR, "usdc or usdt0"); assert.equal(SWAP_HUB_NETWORK, "Arbitrum One");
+  for (const t of Object.values(SWAP_TARGETS)) if (t.bridge) assert.equal(t.bridge.settleNetwork, SWAP_HUB_NETWORK);
+  // swaps back to BTC: exactly the targets that are not bridged (a new bridged payout is never offered in reverse by accident)
+  assert.deepEqual([...SWAP_STABLES], Object.entries(SWAP_TARGETS).filter(([, t]) => !t.bridge).map(([k]) => k));
+  assert.ok(SWAP_USAGE.create.includes(`--address <0x... on the payout network: ${PAYOUT_NETWORKS_TEXT}>`));
+  assert.ok(SWAP_USAGE.quote.includes("[--to usdc|usdt0|usdc-base]"));
+  for (const [to, net] of [["usdc-base", "Base"], ["usdc", "Arbitrum One"], ["usdt", "Arbitrum One"], [undefined, "Arbitrum One"]]) {
+    const e = checkSwapArgs(undefined, undefined, { sats: "5000", ...(to ? { to } : {}) });
+    assert.match(e.message, new RegExp(`--address <your 0x address on ${net}> is required`));
+  }
 });
 
 test("targetOfSwap: a bridged swap maps to its bridge target only when chain, destination token and settlement token all match", () => {
