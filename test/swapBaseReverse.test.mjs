@@ -216,3 +216,11 @@ test("refund of a locked Base swap uses the existing gasless refund; recover aft
   await assert.rejects(sw.swapRecover(ctxWith(p), "rb-1", undefined), (e) => e.code === "USAGE");
   const r = await sw.swapRecover(ctxWith(p), "rb-1", ME); assert.equal(r.recovered, true); assert.equal(m.calls.recoverCctp.length, 1);
 });
+
+test("hardening: a burn with no funding time refuses recover (resume first); a provider without a Base reader refuses before create", async () => {
+  const m = mockClient({ statuses: ["pending"] }); const p = provider(m.client, { base: { usdc: 2_000_000n, eth: NEED_WEI } }); await create(p);
+  m.stored["rb-1"].cctpBurnTxid = BURN; // burn known to the swap library, no attempt record in this home
+  await assert.rejects(sw.swapRecover(ctxWith(p), "rb-1", ME), (e) => e.code === "SWAP_FUNDING" && /swap fund rb-1/.test(e.message)); assert.equal(m.calls.recoverCctp.length, 0);
+  const m2 = mockClient(); const p2 = provider(m2.client); p2.evmOn = undefined;
+  await assert.rejects(create(p2), (e) => e.code === "BAD_CONFIG"); assert.equal(m2.calls.createSwap.length, 0);
+});

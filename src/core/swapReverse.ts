@@ -111,6 +111,7 @@ export interface ReverseRunInput extends ReverseInput { confirm?: boolean; wait?
  *  address, fund the swap once the deposit is there (gasless), and wait for the payout. */
 export async function reverseRun(c: Ctx, i: ReverseRunInput) {
   const p = parseReverse(c, i); const s = await reverse(c);
+  if (p.token.bridge) readerOf(s, p.token); // a provider that cannot read the deposit chain refuses before anything is created
   const [q, gas] = await Promise.all([quoteOf(s, p), gasOf(s, p.token)]); const quote = formatReverseQuote(q, { ...p, gas });
   if (!inRange(q)) throw new MarkError("SWAP_AMOUNT", `Satora accepts ${q.min_amount}..${q.max_amount} sats for ${p.token.symbol} -> ${p.to}`, { quote });
   const payout = p.invoice ? `the Lightning invoice you gave (${p.invoiceSats} sats)` : `the Ark address ${p.arkAddress}`;
@@ -401,6 +402,9 @@ export async function reverseRecover(c: Ctx, id: string, to: string | undefined)
       if (isDone(x)) return { id, recovered: false, note: "This swap paid out: nothing to recover." };
       if (locked) return { id, recovered: false, note: `Its deposit is locked in the swap: if it does not pay out, run ${mk()} swap refund ${id} first.` };
       const burn = await s.cctpBurn?.(id);
+      // a burn with no funding time in this home (a lost record): the settlement may still be running, so resume it first;
+      // that records the time, and recover works 30 minutes later
+      if (burn && at === undefined && x.status === "pending" && !x.fundTx) throw new MarkError("SWAP_FUNDING", `swap ${id} has a CCTP burn (${burn}) but this Mark home has no funding time for it: run ${mk()} swap fund ${id} to resume the settlement first; if it does not settle, recover works 30 minutes after that`);
       if (burn) {
         // the USDC left Base: Circle mints it to the deposit account on the settlement chain; both steps are sponsored (no ETH)
         const r = await s.recoverReverse(id, dest);
