@@ -13,7 +13,7 @@ import { SWAP_CLAIMABLE, SWAP_DONE, SWAP_FAILED, SWAP_PAID, isReverseDir, revers
 import { pinMismatch } from "../swap/reversePin.js";
 import { sleep } from "../util.js";
 import { ARBISCAN_TX, SWAP_MARKUP_BPS, sameHex, stableOfReverse, txLink, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkMarkupBps,
-  formatReverseQuote, pct, tokenUnits, units, ethText, BRIDGE_IN_TX_NAMES, SWEEP_TX, type GasEstimate, type StableToken, type SwapRail, type SwapStable } from "../swap/stable.js";
+  formatReverseQuote, pct, tokenUnits, units, ethText, bridgeFeeUnits, tokenLabel, BRIDGE_IN_TX_NAMES, SWEEP_TX, type GasEstimate, type StableToken, type SwapRail, type SwapStable } from "../swap/stable.js";
 import { gasNeedWei, type EvmReader } from "../swap/evm.js";
 
 export interface ReverseInput { from: SwapStable; to: SwapRail; amount?: string | number; invoice?: string; address?: string }
@@ -111,8 +111,10 @@ export interface ReverseRunInput extends ReverseInput { confirm?: boolean; wait?
  *  address, fund the swap once the deposit is there (gasless), and wait for the payout. */
 export async function reverseRun(c: Ctx, i: ReverseRunInput) {
   const p = parseReverse(c, i); const s = await reverse(c);
-  if (p.token.bridge) readerOf(s, p.token); // a provider that cannot read the deposit chain refuses before anything is created
+  // a bridged deposit needs the deposit chain's reader and the burn record (resume, recover): refuse before anything is created
+  if (p.token.bridge) { readerOf(s, p.token); if (!s.cctpBurn) throw new MarkError("BAD_CONFIG", `swap provider ${s.name} cannot track a ${p.token.bridge.via} burn; not creating a swap from ${tokenLabel(p.token)}`); }
   const [q, gas] = await Promise.all([quoteOf(s, p), gasOf(s, p.token)]); const quote = formatReverseQuote(q, { ...p, gas });
+  if (p.token.bridge && bridgeFeeUnits(q) === undefined) throw new MarkError("QUOTE_UNAVAILABLE", `Satora's quote has no ${p.token.bridge.via} fee for ${tokenLabel(p.token)}; nothing was created. Retry later.`, { quote });
   if (!inRange(q)) throw new MarkError("SWAP_AMOUNT", `Satora accepts ${q.min_amount}..${q.max_amount} sats for ${p.token.symbol} -> ${p.to}`, { quote });
   const payout = p.invoice ? `the Lightning invoice you gave (${p.invoiceSats} sats)` : `the Ark address ${p.arkAddress}`;
   if (!i.confirm) return { swap: "preview", quote, payout: target(p),
@@ -265,7 +267,7 @@ function notReverse(x: ReverseSwapInfo) { if (!isReverseDir(x.direction)) throw 
 /** After the swap stops: what to do. Funded and failed: refund it to the deposit address, then recover it; unfunded: recover any deposit. */
 function nextNote(x: ReverseSwapInfo) {
   if (isDone(x)) return "Done.";
-  const t = tokenOf(x); const where = t?.bridge ? ` (after the ${t.network} burn the USDC is recovered on ${t.bridge.settleNetwork}, to the same --to address there)` : "";
+  const t = tokenOf(x); const where = t?.bridge ? ` (after the ${t.network} burn the ${t.symbol} is recovered on ${t.bridge.settleNetwork}, to the same --to address there)` : "";
   if (SWAP_FAILED.has(x.status)) return /refunded/.test(x.status) && x.status !== "clientfundedserverrefunded"
     ? `Refunded to the deposit address: send it to your wallet with ${mk()} swap recover ${x.id} --to <your 0x address>${where}.`
     : x.fundTx || x.status === "clientfundedserverrefunded" || x.status === "clientfundedtoolate" || x.status === "serverwontfund"
@@ -288,7 +290,7 @@ export async function waitReverse(s: Rev, id: string, o: { timeoutSec?: number; 
       return { id, status: x.status, funded: false, note: `Not funded yet: claim never funds a swap. Once the deposit is there, run ${mk()} swap fund ${id} --wait. If you already sent it, do NOT send again.` };
     if (x.status === "pending" && !x.fundTx && !fund?.success) {
       const f = await fundState(s, x);
-      if (f.attempted !== undefined && !fund && await resumable(s, x)) {
+      if (!fund && await resumable(s, x)) {
         const r = await s.fundReverse(id); fund = r;
         if (!r.success && !r.skipped) return fundOut(x, r);
       } else if (f.have !== undefined && f.have >= f.need && f.attempted === undefined) {

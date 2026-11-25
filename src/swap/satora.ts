@@ -93,13 +93,13 @@ export class SatoraProvider implements SwapProvider {
   evmBase: EvmReader = baseReader();
   evmOn(chainId: number): EvmReader {
     if (chainId === BASE_CHAIN_ID) return this.evmBase;
-    if (chainId === 42161) return this.evm;
+    if (chainId === Number(SWAP_TARGETS.usdc.chain)) return this.evm;
     throw new MarkError("SWAP_FAILED", `Mark has no reader for chain ${chainId}`);
   }
   /** About how many USD one ETH is (CoinGecko through the swap library; best effort, 5 s). */
   async ethUsd(): Promise<number | undefined> {
     try {
-      const r = await Promise.race([getUsdPrices([{ symbol: "ETH", chain: "8453", token_id: "eth", name: "Ether", decimals: 18 } as any]), new Promise<never>((_, no) => setTimeout(() => no(new Error("timeout")), 5000).unref?.())]);
+      const r = await Promise.race([getUsdPrices([{ symbol: "ETH", chain: String(BASE_CHAIN_ID), token_id: "eth", name: "Ether", decimals: 18 } as any]), new Promise<never>((_, no) => setTimeout(() => no(new Error("timeout")), 5000).unref?.())]);
       const v = r?.[0]?.usdPrice; return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined;
     } catch { return undefined; }
   }
@@ -314,7 +314,8 @@ export class SatoraProvider implements SwapProvider {
     return this.exclusive(async () => {
       const at = this.fundAttemptedAt(id);
       // a CCTP burn already sent (USDC on Base): funding again only resumes the settlement from that burn, it never burns again
-      const burn = at !== undefined ? await this.cctpBurn(id) : undefined;
+      // (read even without a funding time in this home: a lost record must not lead to a second burn)
+      const burn = await this.cctpBurn(id);
       // a submitted or uncertain funding is never signed again (only a clear refusal clears the record)
       if (at !== undefined && !burn) return { success: false, skipped: `a funding was already submitted at ${new Date(at).toISOString()}; Mark never signs it again` };
       // the resume after a burn locked it already (the swap library recorded the lock): never again, even if Satora lags
@@ -366,17 +367,19 @@ export class SatoraProvider implements SwapProvider {
     let signer: any;
     try { const k: any = await (this.c as any).getSwapDepositorKey(id); signer = await this.signerFor(k.privateKey, Number(t.chain)); }
     catch (e) { this.markAttempt(id, undefined); return { success: false, message: `could not load the deposit key: ${errText(e)}` }; }
+    // every transaction the swap library sends from the deposit key goes through this counter: a failure before the first send
+    // proves nothing was signed or broadcast (the mempool or a balance cannot prove that: an unrecorded burn may be mined already)
+    let sends = 0; const send = signer.sendTransaction;
+    const counted = { ...signer, sendTransaction: (tx: any) => { sends++; return send(tx); } };
     try {
-      const f: any = await stdoutToStderr(() => (this.c as any).fundSwap(id, signer));
+      const f: any = await stdoutToStderr(() => (this.c as any).fundSwap(id, counted));
       return { success: true, txHash: f?.txHash ?? undefined, burnTx: f?.cctp?.burnTxHash ?? burn };
     } catch (e) {
       const message = errText(e); const b = await this.cctpBurn(id);
       if (b) return { success: false, message, uncertain: true, burnTx: b };
-      // nothing burned for sure only when no burn is recorded, the USDC is still all there and no transaction of the deposit
-      // address is waiting in the mempool; then a later fund is safe. Anything else stays uncertain: Mark never signs it again.
-      let clear = false;
-      try { clear = !(await r.hasPendingTx?.(dep) ?? true) && (await r.tokenBalance(t.tokenId, dep)) >= need; } catch { clear = false; }
-      if (clear) { this.markAttempt(id, undefined); return { success: false, message }; }
+      // retried only when nothing was ever sent in this attempt (a resume sends nothing on Base either). Anything else stays
+      // uncertain: Mark never signs it again, and recover works 30 minutes later.
+      if (sends === 0 && !burn) { this.markAttempt(id, undefined); return { success: false, message }; }
       return { success: false, message, uncertain: true };
     }
   }

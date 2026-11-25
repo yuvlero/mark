@@ -45,9 +45,10 @@ export const SWAP_FEE_ALL_ROUTES_NOTE = `Fees depend on the route and are shown 
 /** Top-level routes / docs note. `live` is used only when every listed route returned a quote and they all agreed on the same rates (unusual once Lightning ↔ Arkade is included). */
 export function swapFeeSummaryNote(live?: { satoraFeeRate: number; totalFeeRate: number; markupBps?: number } | null) {
   const bps = live?.markupBps ?? SWAP_MARKUP_BPS;
-  if (live) return `Every swap costs ${ratePct(live.totalFeeRate)} total (Satora ${ratePct(live.satoraFeeRate)} + Agent Escrow ${pct(bps)}) plus network fee. Paid inside the swap; nothing extra to send.`;
-  return `${SWAP_FEE_ALL_ROUTES_NOTE}. Paid inside the swap; nothing extra to send.`;
+  if (live) return `Every swap costs ${ratePct(live.totalFeeRate)} total (Satora ${ratePct(live.satoraFeeRate)} + Agent Escrow ${pct(bps)}) plus network fee${bridgedSummary()}. ${SWAP_FEE_PAID_NOTE}.`;
+  return `${SWAP_FEE_ALL_ROUTES_NOTE}. ${SWAP_FEE_PAID_NOTE}.`;
 }
+
 
 /** Where the BTC comes from (a Satora source asset). */
 export const SWAP_SOURCES = { lightning: { chain: "Lightning", tokenId: "btc" }, arkade: { chain: "Arkade", tokenId: "btc" } } as const;
@@ -110,6 +111,12 @@ export function stableOfReverse(x: { tokenContract?: string; bridgeSourceChain?:
   if (x.bridgeSourceChain) return Object.values(SWAP_TARGETS).find((v) => v.bridge?.name === x.bridgeSourceChain && sameHex(v.tokenId, x.bridgeSourceToken) && sameHex(v.bridge?.settleToken, x.tokenContract));
   return targetByContract(x.tokenContract);
 }
+/** Bridged tokens, from the table: "USDC on Base", and their deposit networks: "Base". */
+const BRIDGED = Object.values(SWAP_TARGETS).filter((t) => t.bridge);
+const BRIDGED_NAMES = BRIDGED.map((t) => `${t.symbol} on ${t.network}`).join(" or ");
+const bridgedSummary = () => BRIDGED.length ? `, plus Circle's CCTP fee for ${BRIDGED_NAMES}` : "";
+/** Fees come out of the swap; the one extra is gas on a bridged deposit chain (ETH on Base for a swap from USDC on Base). */
+export const SWAP_FEE_PAID_NOTE = `Paid inside the swap; nothing extra to send${BRIDGED.length ? `, except a little ETH on ${BRIDGED.map((t) => t.network).join(" or ")} at the deposit address for a swap from ${BRIDGED_NAMES}` : ""}`;
 /** The swap stablecoin with this contract on Arbitrum One (not a bridged payout), if any. */
 export const targetByContract = (contract: unknown) => Object.values(SWAP_TARGETS).find((v) => !v.bridge && sameHex(v.tokenId, contract));
 /** A forward swap's payout token: a bridged payout (bridge_target_chain set) is the target with that bridge and destination
@@ -292,7 +299,7 @@ export function gasView(g: GasEstimate) {
 export function formatReverseQuote(q: SatoraQuote, o: { from: SwapStable; to: SwapRail; bps: number; gas?: GasEstimate | null }) {
   const t = SWAP_TARGETS[o.from]; const gross = Number(q.target_amount); const v = quoteFeeView(splitSwapFees(q, Number.isSafeInteger(gross) ? gross : 0, o.bps));
   const bf = t.bridge ? bridgeFeeUnits(q) : undefined, gas = t.bridge && o.gas ? gasView(o.gas) : undefined;
-  const bridgeLine = !t.bridge ? "" : ` Also ${bf !== undefined ? `${units(bf, t.decimals)} ${t.symbol}` : "a"} ${t.bridge.via} fee (taken from the deposit) and Base gas for ${BRIDGE_IN_TX_NAMES}, paid in ETH on ${t.network} by the deposit address: ${gas ? `about ${gas.eth} ETH${gas.usd ? ` (${gas.usd})` : ""} with headroom` : "estimate unavailable right now"}.`;
+  const bridgeLine = !t.bridge ? "" : ` Also ${bf !== undefined ? `${units(bf, t.decimals)} ${t.symbol}` : "a"} ${t.bridge.via} fee (taken from the deposit) and ${t.network} gas for ${BRIDGE_IN_TX_NAMES}, paid in ETH on ${t.network} by the deposit address: ${gas ? `about ${gas.eth} ETH${gas.usd ? ` (${gas.usd})` : ""} with headroom` : "estimate unavailable right now"}.`;
   return {
     from: o.from, to: o.to, token: { symbol: t.symbol, network: t.network, chainId: Number(t.chain), contract: t.tokenId },
     send: units(q.source_amount, t.decimals), sendUnits: q.source_amount,

@@ -86,7 +86,7 @@ test("quote total fee rate comes from the live quote, never a hard-coded 1%", ()
   assert.equal(q.markupNote, "Total fee: 0.98% (Satora 0.48% + Agent Escrow 0.5%) plus 13 sats network fee. Paid inside the swap; nothing extra to send.");
   assert.equal(ratePct(0.01), "1%"); assert.equal(ratePct(0.005), "0.5%"); assert.equal(SWAP_FEE_TOTAL_NOTE, "about 1% total (Satora ~0.5% + Agent Escrow 0.5%) plus network fee");
   assert.match(swapFeeSummaryNote(), /about 1% total \(Satora ~0\.5% \+ Agent Escrow 0\.5%\) plus network fee/);
-  assert.equal(swapFeeSummaryNote({ satoraFeeRate: 0.005, totalFeeRate: 0.01, markupBps: 50 }), "Every swap costs 1% total (Satora 0.5% + Agent Escrow 0.5%) plus network fee. Paid inside the swap; nothing extra to send.");
+  assert.equal(swapFeeSummaryNote({ satoraFeeRate: 0.005, totalFeeRate: 0.01, markupBps: 50 }), "Every swap costs 1% total (Satora 0.5% + Agent Escrow 0.5%) plus network fee, plus Circle's CCTP fee for USDC on Base. Paid inside the swap; nothing extra to send, except a little ETH on Base at the deposit address for a swap from USDC on Base.");
   // a quote whose combined rate is below our markup: do not invent a higher total, and never print NaN
   const low = formatSwapQuote({ ...Q, protocol_fee: 30, protocol_fee_rate: 0.003 }, { from: "lightning", to: "usdc", sats: 100000, bps: SWAP_MARKUP_BPS });
   assert.equal(low.fees.satoraFeeRate, 0); assert.equal(low.fees.totalFeeRate, 0.003); assert.equal(low.fees.totalFeePercent, "0.3%");

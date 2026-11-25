@@ -52,7 +52,7 @@ function mockClient(o = {}) {
     fundSwap: async (id, signer) => { calls.fundSwap.push({ id, signer, resume: stored[id]?.cctpBurnTxid });
       if (o.burnThenFail || o.burns !== false) stored[id].cctpBurnTxid ??= BURN; // the SDK records the burn as soon as it is sent
       if (o.burnThenFail) throw new Error("attestation timed out");
-      if (o.fundError) { if (o.burns === false) delete stored[id].cctpBurnTxid; throw new Error(o.fundError); }
+      if (o.fundError) { if (o.burns === false) delete stored[id].cctpBurnTxid; if (o.sendBeforeFail) await signer.sendTransaction({ to: B.tokenId, data: "0x" }); throw new Error(o.fundError); }
       stored[id].evmFundTxid = "0xlock"; return { txHash: "0xlock", cctp: { burnTxHash: stored[id].cctpBurnTxid } }; },
     fundSwapGasless: async (id) => { calls.gasless.push(id); return { txHash: "0xgasless" }; },
     getSwapDepositorKey: async () => ({ privateKey: "0x" + "11".repeat(32), address: DEP }),
@@ -71,7 +71,7 @@ function provider(client, o = {}) {
   const st = { usdc: 0n, eth: 0n, pending: false, ...(o.base ?? {}) }; const reads = { arbToken: 0 }; const sent = [];
   p.evm = { tokenBalance: async () => { reads.arbToken++; return o.arbUsdc ?? 0n; }, ethBalance: async () => 0n, gasPrice: async () => 20_000_000n };
   p.evmBase = { tokenBalance: async (token) => { assert.equal(token, B.tokenId); return st.usdc; }, ethBalance: async () => st.eth, gasPrice: async () => 6_000_000n,
-    l1Fee: async (bytes) => BigInt(bytes) * 4_000_000n, hasPendingTx: async () => st.pending };
+    l1Fee: async (bytes) => BigInt(bytes) * 4_000_000n };
   p.ethUsd = async () => o.usd;
   p.signerFor = async (k, chainId) => ({ address: DEP, chainId, fake: true,
     sendTransaction: async (tx) => { sent.push({ chainId, ...tx }); return "0x" + "77".repeat(32); }, waitForReceipt: async () => ({ status: "success" }) });
@@ -179,12 +179,16 @@ test("fund: a burn sent then a failure is uncertain; fund again RESUMES from the
   assert.equal(r2.funded, true); assert.equal(m.calls.fundSwap.length, 2); assert.equal(m.calls.fundSwap[1].resume, BURN);
 });
 
-test("fund: a failure with no burn recorded, the USDC all there and nothing pending clears the attempt; anything else stays uncertain", async () => {
-  const m = mockClient({ fundError: "approve rejected by RPC", burns: false }); const p = provider(m.client, { base: { usdc: 2_000_000n, eth: NEED_WEI } }); await create(p);
+test("fund: a failure before anything was sent clears the attempt; once a transaction was sent it stays uncertain, even with the USDC still there", async () => {
+  const m = mockClient({ fundError: "gas estimation failed", burns: false }); const p = provider(m.client, { base: { usdc: 2_000_000n, eth: NEED_WEI } }); await create(p);
   const r = await p.fundReverse("rb-1"); assert.equal(r.success, false); assert.equal(r.uncertain, undefined); assert.equal(p.fundAttemptedAt("rb-1"), undefined);
-  // a transaction still pending at the deposit address: uncertain, never signed again
-  p.st.pending = true; const r2 = await p.fundReverse("rb-1"); assert.equal(r2.uncertain, true); assert.notEqual(p.fundAttemptedAt("rb-1"), undefined);
-  const r3 = await p.fundReverse("rb-1"); assert.match(r3.skipped, /never signs it again/); assert.equal(m.calls.fundSwap.length, 2);
+  assert.equal(p.sent.length, 0);
+  // regression (review): a burn sent and mined but not recorded, the deposit address overfunded so it still holds >= the amount,
+  // nothing pending: never cleared, never signed again
+  const m2 = mockClient({ fundError: "burn receipt timeout", burns: false, sendBeforeFail: true }); const p2 = provider(m2.client, { base: { usdc: 4_000_000n, eth: NEED_WEI } }); await create(p2);
+  const r2 = await p2.fundReverse("rb-1"); assert.equal(r2.uncertain, true); assert.notEqual(p2.fundAttemptedAt("rb-1"), undefined); assert.equal(p2.sent.length, 1);
+  const r3 = await p2.fundReverse("rb-1"); assert.match(r3.skipped, /never signs it again/); assert.equal(m2.calls.fundSwap.length, 1);
+  const r4 = await sw.swapFund(ctxWith(p2), "rb-1"); assert.equal(r4.funded, false); assert.equal(m2.calls.fundSwap.length, 1);
 });
 
 test("recover before the burn: one USDC transfer on Base from the deposit address, after a Base gas check", async () => {
@@ -223,4 +227,21 @@ test("hardening: a burn with no funding time refuses recover (resume first); a p
   await assert.rejects(sw.swapRecover(ctxWith(p), "rb-1", ME), (e) => e.code === "SWAP_FUNDING" && /swap fund rb-1/.test(e.message)); assert.equal(m.calls.recoverCctp.length, 0);
   const m2 = mockClient(); const p2 = provider(m2.client); p2.evmOn = undefined;
   await assert.rejects(create(p2), (e) => e.code === "BAD_CONFIG"); assert.equal(m2.calls.createSwap.length, 0);
+});
+
+test("lost funding time: a recorded burn still resumes (fund and fund --wait), never a second burn", async () => {
+  for (const wait of [false, true]) {
+    const m = mockClient({ statuses: ["pending"] }); const p = provider(m.client, { base: { usdc: 0n, eth: 0n } }); await create(p);
+    m.stored["rb-1"].cctpBurnTxid = BURN; assert.equal(p.fundAttemptedAt("rb-1"), undefined);
+    const r = await sw.swapFund(ctxWith(p), "rb-1", wait ? { wait: true, timeoutSec: 1, pollMs: 1 } : {});
+    assert.equal(m.calls.fundSwap.length, 1, `wait=${wait}`); assert.equal(m.calls.fundSwap[0].resume, BURN); assert.notEqual(p.fundAttemptedAt("rb-1"), undefined);
+    if (!wait) assert.equal(r.funded, true);
+  }
+});
+
+test("create refuses a provider that cannot track the burn, and a Base quote without Circle's fee", async () => {
+  const m = mockClient(); const p = provider(m.client); p.cctpBurn = undefined;
+  await assert.rejects(create(p), (e) => e.code === "BAD_CONFIG" && /burn/.test(e.message)); assert.equal(m.calls.createSwap.length, 0);
+  const m2 = mockClient({ quote: { ...RQ, bridge_fee: undefined } }); const p2 = provider(m2.client);
+  await assert.rejects(create(p2), (e) => e.code === "QUOTE_UNAVAILABLE"); assert.equal(m2.calls.createSwap.length, 0);
 });
