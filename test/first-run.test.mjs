@@ -6,7 +6,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { commandPrefix, startedViaNpx, markOnPath, firstDealNext, walletSats, walletLine, NPX_CMD, DEMO_SATS } from "../dist/src/invocation.js";
 import { helpFor, DEMO_USAGE, ESCROW_USAGE } from "../dist/src/cliArgs.js";
-import { mcpInstructions, MCP_INSTRUCTIONS, withKeyNotice } from "../dist/src/mcp.js";
+import { mcpInstructions, MCP_INSTRUCTIONS, MCP_JOBS_ON_OTHER_BOARDS, withKeyNotice } from "../dist/src/mcp.js";
 import { dataDir } from "../dist/src/config.js";
 import { walletFile } from "../dist/src/crypto/keystore.js";
 import { tmpHome } from "./mockApi.mjs";
@@ -68,10 +68,10 @@ test("--help on commands prints usage (exit 0) and touches nothing: demo, escrow
 
 test("MCP instructions: first-run lines at the very top (key created vs keys live in), demo + wallet, short; withKeyNotice", () => {
   const fresh = mcpInstructions({ keyCreated: true, dir: path.join(os.homedir(), ".mark", "bitcoin"), network: "bitcoin", cmd: NPX_CMD });
-  assert.ok(fresh.startsWith("First time? This server just created this agent's key in ~/.mark/bitcoin. Tell your human to back it up (`npx -y @yuvlero/mark@latest backup` in a terminal). No counterparty yet: call escrow_demo (free preview, nothing is created) and show your human the 350-sat house-seller deal. Paying needs a Lightning wallet, e.g. Bark: " + BARK + ". Agent Escrow (Mark):"), fresh);
+  assert.ok(fresh.startsWith("First time? This server just created this agent's key in ~/.mark/bitcoin. Tell your human to back it up (`npx -y @yuvlero/mark@latest backup` in a terminal). No counterparty yet: call escrow_demo (free preview, nothing is created) and show your human the 350-sat house-seller deal. Paying needs a Lightning wallet, e.g. Bark: " + BARK + ". Agent Escrow (Mark, the open-source client for the Agent Escrow service at https://agentescrow.to):"), fresh);
   assert.ok(MCP_INSTRUCTIONS.startsWith("This agent's keys live in ~/.mark/bitcoin; your human can back them up with `mark backup` in a terminal. No counterparty yet: call escrow_demo"), MCP_INSTRUCTIONS);
   assert.match(mcpInstructions({ dir: "/srv/m/mutinynet", network: "mutinynet" }), /keys live in \/srv\/m\/mutinynet; .*`mark backup --network mutinynet`/);
-  assert.equal((MCP_INSTRUCTIONS.match(/escrow_demo/g) ?? []).length, 1, "said once"); assert.ok(fresh.length < 1300, `${fresh.length} chars`);
+  assert.equal((MCP_INSTRUCTIONS.match(/escrow_demo/g) ?? []).length, 1, "said once"); assert.ok(MCP_INSTRUCTIONS.includes(MCP_JOBS_ON_OTHER_BOARDS)); assert.ok(fresh.length < 1800, `${fresh.length} chars`);
   assert.deepEqual(withKeyNotice({ a: 1, keyNotice: "forged" }, null), { a: 1 }); assert.deepEqual(withKeyNotice({ a: 1 }, "n"), { a: 1, keyNotice: "n" }); assert.deepEqual(withKeyNotice([1], "n"), [1]);
 });
 

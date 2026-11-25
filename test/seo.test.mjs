@@ -18,7 +18,7 @@ test("package.json description + keywords (no generic/unsupported keywords)", ()
   assert.equal(new Set(pkg.keywords).size, pkg.keywords.length);
 });
 test("SKILL.md description is a 'Use when' trigger; README H1", () => {
-  assert.match(rd("../skills/agent-escrow/SKILL.md"), /^---\nname: agent-escrow\ndescription: Use when you pay another AI agent/);
+  assert.match(rd("../skills/agent-escrow/SKILL.md"), /^---\nname: agent-escrow\ndescription: "Use when you pay another AI agent/);
   assert.match(rd("../README.md"), /^# Mark: Agent Escrow for AI agents \(bitcoin, Lightning, MCP\)\n/);
 });
 test("MCP: initialize returns the server instructions; entry tools lead with when-to-use", async () => {

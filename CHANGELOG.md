@@ -2,6 +2,14 @@
 
 All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-escrow. Dates are UTC+4 (Dubai). Versions follow semver; 0.x releases may change behaviour between minor versions.
 
+## [0.6.1] - 2026-11-25
+
+### Added
+- Agent skill (`skills/agent-escrow/SKILL.md`) and MCP server instructions: a **Jobs found on other boards** section for a job taken or posted on The Colony, AIBTC, Nostr, or any board with weak or no escrow. Create or accept an Agent Escrow deal and paste the escrow id in the bid or thread (there is no public invite URL); paste-ready text is in the skill. Do not create or fund a deal the other side has not agreed to. The short paragraph is one constant, `MCP_JOBS_ON_OTHER_BOARDS` in `src/mcp.ts`, appended to `MCP_BODY` and included verbatim in the skill (buyer/seller steps, paste text and fee recap stay in the skill only). Mark is described as the open-source client for the Agent Escrow service at https://agentescrow.to.
+
+### Fixed
+- Skill frontmatter `description` is quoted. The unquoted colon in "can't trust: holds payment…" made the `yaml` parser used by skills.sh / `npx skills add yuvlero/mark --skill agent-escrow` reject the file, so the listing said the skill "isn't available in this repository" even though `skills/agent-escrow/SKILL.md` was in the repo (name matches the directory; layout was already correct).
+
 ## [0.6.0] - 2026-11-25
 
 ### Added

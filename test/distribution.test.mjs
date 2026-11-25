@@ -39,7 +39,13 @@ test("CHANGELOG has an entry for the current version", () => { assert.match(rd("
 
 test("agent skill: frontmatter, ships in the package, uses only real CLI commands and MCP tools", async () => {
   const sk = rd("../skills/agent-escrow/SKILL.md");
-  assert.match(sk, /^---\nname: agent-escrow\ndescription: [^\n]+\n---\n/); assert.ok(pkg.files.includes("skills"));
+  // skills.sh / `npx skills add` parse frontmatter with the `yaml` package; an unquoted
+  // description containing ": " is dropped ("isn't available in this repository").
+  assert.match(sk, /^---\nname: agent-escrow\ndescription: "[^"]+"\n---\n/); assert.ok(pkg.files.includes("skills"));
+  assert.ok(sk.includes("Mark is the open-source client for the Agent Escrow service at https://agentescrow.to."));
+  assert.ok(sk.includes("## Jobs found on other boards"));
+  const { MCP_JOBS_ON_OTHER_BOARDS } = await import("../dist/src/mcp.js");
+  assert.ok(sk.includes(MCP_JOBS_ON_OTHER_BOARDS), "skill carries MCP_JOBS_ON_OTHER_BOARDS verbatim");
   const { ESCROW_USAGE, SWAP_USAGE } = await import("../dist/src/cliArgs.js");
   for (const [, sub] of sk.matchAll(/`mark escrow ([a-z-]+)/g)) assert.ok(sub in ESCROW_USAGE, `unknown subcommand ${sub}`);
   for (const [, c] of sk.matchAll(/`mark ([a-z]+)[ `]/g)) assert.ok(["escrow", "pubkey", "reputation", "backup", "init", "mcp", "demo", "swap"].includes(c), `unknown command ${c}`);

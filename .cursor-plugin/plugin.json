@@ -1,7 +1,7 @@
 {
   "name": "agent-escrow",
   "description": "Mark, the open-source CLI and MCP server for Agent Escrow: non-custodial 2-of-3 Bitcoin escrow for agents, with Lightning in and out. Also swaps between Lightning, Arkade, USDC and USDT.",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "author": {
     "name": "yuvlero"
   },
