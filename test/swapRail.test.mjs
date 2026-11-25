@@ -53,8 +53,8 @@ const ctxWith = (p, network = "bitcoin") => ({ network, cfg: { arkServerUrl: "ht
 
 test("allSwapRoutes ends with Lightning ↔ Arkade; swapRoute accepts both directions", () => {
   const r = allSwapRoutes();
-  assert.equal(r.length, 12);
-  assert.deepEqual(r.slice(10), [{ dir: "rail", from: "lightning", to: "arkade" }, { dir: "rail", from: "arkade", to: "lightning" }]);
+  assert.equal(r.length, 14);
+  assert.deepEqual(r.slice(12), [{ dir: "rail", from: "lightning", to: "arkade" }, { dir: "rail", from: "arkade", to: "lightning" }]);
   assert.deepEqual(swapRoute("lightning", "arkade"), { dir: "rail", from: "lightning", to: "arkade" });
   assert.deepEqual(swapRoute("arkade", "lightning"), { dir: "rail", from: "arkade", to: "lightning" });
 });

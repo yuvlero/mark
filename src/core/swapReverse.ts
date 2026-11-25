@@ -1,6 +1,8 @@
-/** `mark swap` from a stablecoin: USDC / USDT0 on Arbitrum -> BTC over Lightning (a BOLT11 invoice) or to
- *  an Ark address, through Satora. Gasless: the stablecoins go to this Mark home's deposit address (its own EVM key, kept in the
- *  encrypted swap storage); Mark then locks them into the swap (no wallet, no ETH). */
+/** `mark swap` from a stablecoin: USDC / USDT0 on Arbitrum One or USDC on Base -> BTC over Lightning (a BOLT11 invoice) or to
+ *  an Ark address, through Satora. The stablecoins go to this Mark home's deposit address (its own EVM key, kept in the encrypted
+ *  swap storage); Mark then locks them into the swap. Arbitrum One: gasless (no wallet, no ETH). USDC on Base: Mark signs a USDC
+ *  approve and a Circle CCTP burn on Base from the deposit address, which pays that gas in ETH on Base (checked before anything is
+ *  signed); Circle's mint and the lock are sponsored. */
 import { MarkError } from "../errors.js";
 import type { Ctx } from "./context.js";
 import type { ReverseSwapCreated, ReverseSwapInfo, SwapProvider } from "../swap/provider.js";
@@ -10,8 +12,9 @@ import { decodeInvoice, networkOk } from "../lightning/invoice.js";
 import { SWAP_CLAIMABLE, SWAP_DONE, SWAP_FAILED, SWAP_PAID, isReverseDir, reverseDir } from "../swap/states.js";
 import { pinMismatch } from "../swap/reversePin.js";
 import { sleep } from "../util.js";
-import { ARBISCAN_TX, SWAP_MARKUP_BPS, sameHex, targetByContract, txLink, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkMarkupBps,
-  formatReverseQuote, pct, tokenUnits, units, type SwapRail, type SwapStable } from "../swap/stable.js";
+import { ARBISCAN_TX, SWAP_MARKUP_BPS, sameHex, stableOfReverse, txLink, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkMarkupBps,
+  formatReverseQuote, pct, tokenUnits, units, ethText, BRIDGE_IN_TX_NAMES, SWEEP_TX, type GasEstimate, type StableToken, type SwapRail, type SwapStable } from "../swap/stable.js";
+import { gasNeedWei, type EvmReader } from "../swap/evm.js";
 
 export interface ReverseInput { from: SwapStable; to: SwapRail; amount?: string | number; invoice?: string; address?: string }
 /** What mark swap from a stablecoin needs from the swap provider. */
@@ -23,6 +26,27 @@ export async function reverse(c: Ctx): Promise<Rev> {
   const s = await c.swaps();
   for (const k of REV_KEYS) if (!(s as any)[k]) throw new MarkError("BAD_CONFIG", `swap provider ${s.name} does not support mark swap from a stablecoin`);
   return s as Rev;
+}
+
+/** The reader for the chain the stablecoin is deposited on (Base for USDC on Base, else Arbitrum One). */
+function readerOf(s: Rev, t: StableToken): EvmReader {
+  if (!t.bridge) return s.evm;
+  if (!s.evmOn) throw new MarkError("BAD_CONFIG", `swap provider ${s.name} cannot read ${t.network}`);
+  return s.evmOn(Number(t.chain));
+}
+/** ETH the deposit address needs on the bridge chain for the approve + burn (with headroom), and a USD hint; null when unreadable. */
+async function gasOf(s: Rev, t: StableToken): Promise<GasEstimate | null> {
+  if (!t.bridge) return null;
+  try { const [wei, usd] = await Promise.all([gasNeedWei(readerOf(s, t)), s.ethUsd?.().catch(() => undefined)]); return { network: t.network, txs: BRIDGE_IN_TX_NAMES, wei, usdPerEth: usd }; }
+  catch { return null; }
+}
+/** How the deposit address pays the bridge-chain gas, for deposit instructions (empty for a gasless token). */
+const gasHow = (t: StableToken, dep: string | undefined, g: GasEstimate | null) => !t.bridge ? "" :
+  ` Also keep at least ${g ? ethText(g.wei) : "0.0001"} ETH on ${t.network} at ${dep} for gas (Mark signs ${BRIDGE_IN_TX_NAMES} on ${t.network} from it; usually well under 0.0001 ETH; send ETH once, it stays there for later swaps).`;
+/** The clear error when the deposit address lacks ETH on the bridge chain: how much is needed, how much it holds, what to send. */
+function needGas(id: string, t: StableToken, dep: string, needWei: bigint, holdsWei: bigint): never {
+  throw new MarkError("SWAP_NEEDS_GAS", `the deposit address ${dep} needs ${ethText(needWei)} ETH on ${t.network} for gas (${BRIDGE_IN_TX_NAMES}, with headroom) and holds ${ethText(holdsWei)} ETH. Send at least ${ethText(needWei - holdsWei)} ETH on ${t.network} (not another chain) to ${dep}, then run ${mk()} swap fund ${id}. Nothing was signed; the ${t.symbol} stays at the deposit address. ${DO_NOT_RESEND}`,
+    { id, depositAddress: dep, network: t.network, needEth: ethText(needWei), holdsEth: ethText(holdsWei), sendEth: ethText(needWei - holdsWei) });
 }
 
 /** The provider and a fresh read of swap `id`. */
@@ -76,8 +100,8 @@ function inRange(q: any) { const gross = Number(q.target_amount); return !(Numbe
 
 /** Quote only (nothing is created). */
 export async function reverseQuote(c: Ctx, i: ReverseInput) {
-  const p = parseReverse(c, i, "quote"); const s = await reverse(c); const q = await quoteOf(s, p);
-  return { quote: formatReverseQuote(q, p), ...(inRange(q) ? {} : { note: `amount out of range: Satora accepts ${q.min_amount}..${q.max_amount} sats for this route` }),
+  const p = parseReverse(c, i, "quote"); const s = await reverse(c); const [q, gas] = await Promise.all([quoteOf(s, p), gasOf(s, p.token)]);
+  return { quote: formatReverseQuote(q, { ...p, gas }), ...(inRange(q) ? {} : { note: `amount out of range: Satora accepts ${q.min_amount}..${q.max_amount} sats for this route` }),
     next: `${mk()} swap ${flags(p)} previews it; add --yes to create it` };
 }
 
@@ -87,7 +111,7 @@ export interface ReverseRunInput extends ReverseInput { confirm?: boolean; wait?
  *  address, fund the swap once the deposit is there (gasless), and wait for the payout. */
 export async function reverseRun(c: Ctx, i: ReverseRunInput) {
   const p = parseReverse(c, i); const s = await reverse(c);
-  const q = await quoteOf(s, p); const quote = formatReverseQuote(q, p);
+  const [q, gas] = await Promise.all([quoteOf(s, p), gasOf(s, p.token)]); const quote = formatReverseQuote(q, { ...p, gas });
   if (!inRange(q)) throw new MarkError("SWAP_AMOUNT", `Satora accepts ${q.min_amount}..${q.max_amount} sats for ${p.token.symbol} -> ${p.to}`, { quote });
   const payout = p.invoice ? `the Lightning invoice you gave (${p.invoiceSats} sats)` : `the Ark address ${p.arkAddress}`;
   if (!i.confirm) return { swap: "preview", quote, payout: target(p),
@@ -104,12 +128,14 @@ export async function reverseRun(c: Ctx, i: ReverseRunInput) {
     const x = await s.createReverse({ from: p.from, to: p.to, bps: p.bps, ...(p.invoice ? { invoice: p.invoice } : { sourceUnits: p.sourceUnits }), ...(p.arkAddress ? { arkAddress: p.arkAddress } : {}) });
     // checked and recorded before the lock is released: the next create (any process) sees this swap as open and its invoice as used
     checkReverseCreated(c, p, x, q, s.depositAddress());
-    s.pinReverse(x.id, { ...(p.invoice ? { invoice: p.invoice } : { arkAddress: p.arkAddress }), depositAddress: s.depositAddress(), tokenContract: x.tokenContract!, sourceUnits: x.sourceUnits!, targetSats: x.targetSats!, evmChainId: x.evmChainId! });
+    s.pinReverse(x.id, { ...(p.invoice ? { invoice: p.invoice } : { arkAddress: p.arkAddress }), depositAddress: s.depositAddress(), tokenContract: x.tokenContract!, sourceUnits: x.sourceUnits!, targetSats: x.targetSats!, evmChainId: x.evmChainId!,
+      ...(p.token.bridge ? { bridgeSourceChain: x.bridgeSourceChain!, bridgeSourceToken: x.bridgeSourceToken! } : {}) });
     return x;
   });
   const deposit = await depositInfo(s, created);
+  const how = p.token.bridge ? `Mark signs ${BRIDGE_IN_TX_NAMES} on ${p.token.network}, gas paid in ETH on ${p.token.network} by the deposit address` : "gasless";
   const first = { swap: "created", id: created.id, status: created.status, from: p.from, to: p.to, payout: { ...target(p), sats: created.targetSats }, quote, deposit,
-    next: i.wait && i.onProgress ? "Waiting for the deposit; then Mark funds the swap (gasless) and waits for the payout." : `After the deposit, run: ${mk()} swap fund ${created.id} --wait  (Mark locks the deposit; no ETH needed)` };
+    next: i.wait && i.onProgress ? `Waiting for the deposit; then Mark funds the swap (${how}) and waits for the payout.` : `After the deposit, run: ${mk()} swap fund ${created.id} --wait  (Mark locks the deposit; ${p.token.bridge ? how : "no ETH needed"})` };
   if (!i.wait || !i.onProgress) return first; // waiting only helps once the depositor has seen the address
   i.onProgress(first);
   return { ...(await waitReverse(s, created.id, { timeoutSec: i.timeoutSec, pollMs: i.pollMs })), from: p.from, to: p.to };
@@ -124,8 +150,13 @@ function checkReverseCreated(c: Ctx, p: Parsed, x: ReverseSwapCreated, q: any, m
   if (!x?.id) bad("no swap id");
   if (x.status !== "pending") bad(`status ${x.status}, not a new unfunded swap`);
   if (x.gasless !== true) bad("not a gasless swap");
-  if (x.evmChainId !== Number(t.chain) || (x.sourceChain !== undefined && x.sourceChain !== t.chain)) bad(`chain ${x.evmChainId} (token chain ${x.sourceChain}) is not ${t.network} (${t.chain})`);
-  if (!sameHex(x.tokenContract, t.tokenId)) bad(`token ${x.tokenContract} is not ${t.symbol} (${t.tokenId})`);
+  // a bridged stablecoin (USDC on Base) is deposited on its chain and locked as the settlement token on the settlement chain
+  const lockChain = t.bridge ? t.bridge.settleChain : t.chain, lockToken = t.bridge ? t.bridge.settleToken : t.tokenId;
+  if (x.evmChainId !== Number(lockChain) || (x.sourceChain !== undefined && x.sourceChain !== lockChain)) bad(`chain ${x.evmChainId} (token chain ${x.sourceChain}) is not ${t.bridge ? t.bridge.settleNetwork : t.network} (${lockChain})`);
+  if (!sameHex(x.tokenContract, lockToken)) bad(`token ${x.tokenContract} is not ${t.symbol} (${lockToken})`);
+  if (t.bridge ? (x.bridgeSourceChain !== t.bridge.name || !sameHex(x.bridgeSourceToken, t.tokenId)) : x.bridgeSourceChain !== undefined)
+    bad(`deposit chain ${x.bridgeSourceChain ?? t.network} / token ${x.bridgeSourceToken ?? x.tokenContract} is not ${t.symbol} on ${t.network}`);
+  if (stableOfReverse(x) !== t) bad(`token ${x.tokenContract} is not ${t.symbol} on ${t.network}`);
   if (x.targetChain !== rail.chain) bad(`payout chain ${x.targetChain} is not ${rail.chain}`);
   let dep = ""; try { dep = checkEvmAddress(x.depositAddress, "deposit address"); } catch { bad(`deposit address ${x.depositAddress} is not an EVM address`); }
   if (!sameHex(dep, myDeposit)) bad(`deposit address ${dep} is not this Mark home's own gasless address`);
@@ -148,16 +179,19 @@ function checkReverseCreated(c: Ctx, p: Parsed, x: ReverseSwapCreated, q: any, m
 
 /** Where to deposit, how much is still missing (the deposit address may already hold some of the token), and how to send it. */
 async function depositInfo(s: Rev, x: ReverseSwapCreated) {
-  const t = targetByContract(x.tokenContract)!;
-  const need = BigInt(x.sourceUnits!); let have: bigint | undefined; try { have = await s.evm.tokenBalance(t.tokenId, x.depositAddress!); } catch { have = undefined; }
-  const base = { address: x.depositAddress, token: t.symbol, contract: t.tokenId, network: t.network, chainId: Number(t.chain), amount: units(need, t.decimals), amountUnits: need.toString() };
-  if (have === undefined) return { ...base, howToDeposit: `Send exactly ${units(need, t.decimals)} ${t.symbol} (the ERC-20 at ${t.tokenId} on ${t.network}) to ${x.depositAddress}, ONCE. No ETH needed. Mark could not read the address's balance just now: if you already sent it, do not send again; check ${mk()} swap status ${x.id}.` };
-  if (have >= need) return { ...base, alreadyThere: units(have, t.decimals), howToDeposit: `The deposit address already holds ${units(have, t.decimals)} ${t.symbol}: send NOTHING. Run ${mk()} swap fund ${x.id} to lock it into this swap.` };
+  const t = stableOfReverse(x)!; const r = readerOf(s, t);
+  const need = BigInt(x.sourceUnits!); let have: bigint | undefined; try { have = await r.tokenBalance(t.tokenId, x.depositAddress!); } catch { have = undefined; }
+  const g = await gasOf(s, t); let eth: bigint | undefined; if (t.bridge) { try { eth = await r.ethBalance(x.depositAddress!); } catch { eth = undefined; } }
+  const gas = t.bridge ? { gas: { network: t.network, needEth: g ? ethText(g.wei) : null, holdsEth: eth !== undefined ? ethText(eth) : null, ...(g && eth !== undefined && eth < g.wei ? { sendEth: ethText(g.wei - eth) } : {}) } } : {};
+  const noEth = t.bridge ? gasHow(t, x.depositAddress, g) : " No ETH needed.";
+  const base = { address: x.depositAddress, token: t.symbol, contract: t.tokenId, network: t.network, chainId: Number(t.chain), amount: units(need, t.decimals), amountUnits: need.toString(), ...gas };
+  if (have === undefined) return { ...base, howToDeposit: `Send exactly ${units(need, t.decimals)} ${t.symbol} (the ERC-20 at ${t.tokenId} on ${t.network}) to ${x.depositAddress}, ONCE.${noEth} Mark could not read the address's balance just now: if you already sent it, do not send again; check ${mk()} swap status ${x.id}.` };
+  if (have >= need) return { ...base, alreadyThere: units(have, t.decimals), howToDeposit: `The deposit address already holds ${units(have, t.decimals)} ${t.symbol}: send NOTHING more of it. Run ${mk()} swap fund ${x.id} to lock it into this swap.${t.bridge ? noEth : ""}` };
   return { ...base, ...(have > 0n ? { alreadyThere: units(have, t.decimals) } : {}), send: units(need - have, t.decimals), sendUnits: (need - have).toString(),
-    howToDeposit: `Send exactly ${units(need - have, t.decimals)} ${t.symbol} (the ERC-20 at ${t.tokenId} on ${t.network}, not another chain) to ${x.depositAddress}, in ONE transfer. No ETH needed: Mark locks it into the swap.` };
+    howToDeposit: `Send exactly ${units(need - have, t.decimals)} ${t.symbol} (the ERC-20 at ${t.tokenId} on ${t.network}, not another chain) to ${x.depositAddress}, in ONE transfer.${t.bridge ? noEth : " No ETH needed: Mark locks it into the swap."}` };
 }
 
-const tokenOf = (x: ReverseSwapCreated) => targetByContract(x.tokenContract);
+const tokenOf = (x: ReverseSwapCreated) => stableOfReverse(x);
 const isDone = (x: ReverseSwapInfo) => SWAP_DONE.has(x.status) || (x.targetChain === "Lightning" && x.lightningSettled === true);
 const doneOut = (x: ReverseSwapInfo) => ({ id: x.id, status: x.status, swap: "done", sats: x.targetSats, ...txLink(x.fundTx, "fundTx", "fundExplorer"), ...(x.payoutTx ? { payoutTx: x.payoutTx } : {}),
   note: x.targetChain === "Lightning" ? "Paid out over Lightning." : "Paid out to your Ark address." });
@@ -165,9 +199,16 @@ const doneOut = (x: ReverseSwapInfo) => ({ id: x.id, status: x.status, swap: "do
 /** What the swap needs next. Never asks for a deposit again once the deposit address holds it, or once a funding was submitted. */
 async function fundState(s: Rev, x: ReverseSwapInfo) {
   const t = tokenOf(x); const need = BigInt(x.sourceUnits ?? "0");
-  let have: bigint | undefined; try { have = t && x.depositAddress ? await s.evm.tokenBalance(t.tokenId, x.depositAddress) : undefined; } catch { have = undefined; }
+  let have: bigint | undefined; try { have = t && x.depositAddress ? await readerOf(s, t).tokenBalance(t.tokenId, x.depositAddress) : undefined; } catch { have = undefined; }
   return { t, need, have, attempted: s.fundAttemptedAt(x.id) };
 }
+/** A bridged stablecoin (USDC on Base): ETH the deposit address needs on that chain and holds (null when unreadable); else null. */
+async function gasState(s: Rev, t: StableToken | undefined, dep: string | undefined) {
+  if (!t?.bridge || !dep) return null;
+  try { const r = readerOf(s, t); const [need, holds] = await Promise.all([gasNeedWei(r), r.ethBalance(dep)]); return { need, holds }; } catch { return null; }
+}
+/** A burn was sent and the swap waits for its settlement: funding again resumes it (no new burn). */
+const resumable = async (s: Rev, x: ReverseSwapInfo) => !!x.bridgeSourceChain && x.status === "pending" && !x.fundTx && !!(await s.cctpBurn?.(x.id));
 
 /** Lock the deposit into the swap (gasless), once. wait: first wait for the deposit, then for the payout. */
 export async function reverseFund(c: Ctx, id: string, o: { wait?: boolean; timeoutSec?: number; pollMs?: number } = {}) {
@@ -177,15 +218,27 @@ export async function reverseFund(c: Ctx, id: string, o: { wait?: boolean; timeo
   const x = pinned(s, await s.getReverse(id), "act");
   if (isDone(x)) return doneOut(x);
   if (x.status !== "pending" || x.fundTx) return { id, status: x.status, funded: false, note: x.status === "pending" ? `Funding seen (tx ${x.fundTx}). ${DO_NOT_RESEND}` : `Already past funding (${x.status}): ${nextNote(x)}` };
+  if (await resumable(s, x)) return fundOut(x, await s.fundReverse(id));
   const f = await fundState(s, x);
   if (f.have === undefined) return { id, status: x.status, funded: false, note: "Could not read the deposit address's balance; retry shortly. If you already sent the stablecoins, do NOT send again." };
   if (f.have < f.need && f.attempted !== undefined) return { id, status: x.status, funded: false, note: `A funding was submitted at ${new Date(f.attempted).toISOString()}; wait for Satora to see it (${mk()} swap status ${id}). ${DO_NOT_RESEND}` };
   if (f.have < f.need) return { id, status: x.status, funded: false, deposit: { address: x.depositAddress, seen: units(f.have, f.t!.decimals), required: units(f.need, f.t!.decimals) },
     note: f.have > 0n ? `The deposit address holds ${units(f.have, f.t!.decimals)} of ${units(f.need, f.t!.decimals)} ${f.t!.symbol}: only the missing ${units(f.need - f.have, f.t!.decimals)} completes it (do NOT resend the full amount), or get it back with ${mk()} swap recover ${id} --to <0x...>.` : "No deposit seen yet at the deposit address (shown when the swap was created). Run this again once it is sent." };
+  // USDC on Base: the approve + burn are paid in ETH on Base by the deposit address; check it before anything is signed
+  if (f.t?.bridge && f.attempted === undefined) {
+    const g = await gasState(s, f.t, x.depositAddress);
+    if (!g) return { id, status: x.status, funded: false, note: `Could not read the deposit address's ETH on ${f.t.network} just now; nothing was signed. Retry shortly. ${DO_NOT_RESEND}` };
+    if (g.holds < g.need) needGas(id, f.t, x.depositAddress!, g.need, g.holds);
+  }
   return fundOut(x, await s.fundReverse(id));
 }
 function fundOut(x: ReverseSwapInfo, r: Awaited<ReturnType<Rev["fundReverse"]>>) {
-  if (r.success) return { id: x.id, status: x.status, funded: true, ...txLink(r.txHash, "fundTx"), note: `The deposit is locked. ${DO_NOT_RESEND} Watch it with ${mk()} swap status ${x.id}.` };
+  const t = tokenOf(x);
+  if (r.needEth && t) needGas(x.id, t, x.depositAddress!, BigInt(r.needEth.needWei), BigInt(r.needEth.holdsWei));
+  const burn = r.burnTx && t?.bridge ? { burnTx: r.burnTx, burnExplorer: t.explorerTx + r.burnTx } : {};
+  if (r.success) return { id: x.id, status: x.status, funded: true, ...txLink(r.txHash, "fundTx"), ...burn, note: `The deposit is locked.${t?.bridge ? ` Its ${t.symbol} was burned on ${t.network} and carried over ${t.bridge.via}.` : ""} ${DO_NOT_RESEND} Watch it with ${mk()} swap status ${x.id}.` };
+  if (r.burnTx && t?.bridge) return { id: x.id, status: x.status, funded: false, fundFailed: true, message: r.message, ...burn,
+    note: `The ${t.symbol} was burned on ${t.network} (tx ${r.burnTx}) but the swap is not locked yet. Run ${mk()} swap fund ${x.id} again: it resumes from that burn (no new burn, no gas). If it never settles, after 30 minutes ${mk()} swap recover ${x.id} --to <your 0x address> sends the USDC to that address on ${t.bridge.settleNetwork} (sponsored, no ETH). ${DO_NOT_RESEND}` };
   if (r.skipped) return { id: x.id, status: x.status, funded: false, note: `${r.skipped}. ${DO_NOT_RESEND} Check ${mk()} swap status ${x.id}.` };
   if (r.stop) return { id: x.id, status: x.status, funded: false, fundFailed: true, message: r.message, note: `Nothing was signed or locked. If you sent the stablecoins, get them back with ${mk()} swap recover ${x.id} --to <your 0x address> (and start a new swap with a fresh invoice if you still want it). ${DO_NOT_RESEND}` };
   return { id: x.id, status: x.status, funded: false, fundFailed: true, message: r.message, note: r.uncertain
@@ -211,10 +264,11 @@ function notReverse(x: ReverseSwapInfo) { if (!isReverseDir(x.direction)) throw 
 /** After the swap stops: what to do. Funded and failed: refund it to the deposit address, then recover it; unfunded: recover any deposit. */
 function nextNote(x: ReverseSwapInfo) {
   if (isDone(x)) return "Done.";
+  const t = tokenOf(x); const where = t?.bridge ? ` (after the ${t.network} burn the USDC is recovered on ${t.bridge.settleNetwork}, to the same --to address there)` : "";
   if (SWAP_FAILED.has(x.status)) return /refunded/.test(x.status) && x.status !== "clientfundedserverrefunded"
-    ? `Refunded to the deposit address: send it to your wallet with ${mk()} swap recover ${x.id} --to <your 0x address>.`
+    ? `Refunded to the deposit address: send it to your wallet with ${mk()} swap recover ${x.id} --to <your 0x address>${where}.`
     : x.fundTx || x.status === "clientfundedserverrefunded" || x.status === "clientfundedtoolate" || x.status === "serverwontfund"
-      ? `Ended without a payout after your deposit was locked: run ${mk()} swap refund ${x.id} (gasless), then ${mk()} swap recover ${x.id} --to <your 0x address>.`
+      ? `Ended without a payout after your deposit was locked: run ${mk()} swap refund ${x.id} (gasless), then ${mk()} swap recover ${x.id} --to <your 0x address>${where}.`
       : `Ended without a payout (${x.status}). If you deposited, get it back with ${mk()} swap recover ${x.id} --to <your 0x address>.`;
   if (SWAP_CLAIMABLE.has(x.status) && x.targetChain === "Arkade") return `Satora funded the Ark payout: claim it with ${mk()} swap claim ${x.id}.`;
   return `In progress (${x.status}). ${DO_NOT_RESEND}`;
@@ -224,6 +278,7 @@ function nextNote(x: ReverseSwapInfo) {
 /** noFund (claim --wait): never funds; a swap still waiting for its funding is handed back with how to fund it. */
 export async function waitReverse(s: Rev, id: string, o: { timeoutSec?: number; pollMs?: number; noFund?: boolean }) {
   const end = Date.now() + (o.timeoutSec ?? 1800) * 1000; const poll = o.pollMs ?? 5000; let last = "unknown"; let fund: any; let claimed = false;
+  let lowGas: { t: StableToken; dep: string; need: bigint; holds: bigint } | undefined;
   while (Date.now() < end) {
     let x: ReverseSwapInfo; try { x = await s.getReverse(id); } catch { await sleep(poll); continue; }
     x = pinned(s, x, "act"); last = x.status;
@@ -232,9 +287,19 @@ export async function waitReverse(s: Rev, id: string, o: { timeoutSec?: number; 
       return { id, status: x.status, funded: false, note: `Not funded yet: claim never funds a swap. Once the deposit is there, run ${mk()} swap fund ${id} --wait. If you already sent it, do NOT send again.` };
     if (x.status === "pending" && !x.fundTx && !fund?.success) {
       const f = await fundState(s, x);
-      if (f.have !== undefined && f.have >= f.need && f.attempted === undefined) {
+      if (f.attempted !== undefined && !fund && await resumable(s, x)) {
         const r = await s.fundReverse(id); fund = r;
-        if (!r.success && !r.skipped && !r.uncertain) return fundOut(x, r);
+        if (!r.success && !r.skipped) return fundOut(x, r);
+      } else if (f.have !== undefined && f.have >= f.need && f.attempted === undefined) {
+        // USDC on Base: wait (do not sign) until the deposit address also holds the ETH for the approve + burn
+        const g = f.t?.bridge ? await gasState(s, f.t, x.depositAddress) : undefined;
+        lowGas = g && g.holds < g.need ? { t: f.t!, dep: x.depositAddress!, need: g.need, holds: g.holds } : undefined;
+        if (g !== null && !lowGas) {
+          const r = await s.fundReverse(id); fund = r;
+          if (r.needEth) { lowGas = { t: f.t!, dep: x.depositAddress!, need: BigInt(r.needEth.needWei), holds: BigInt(r.needEth.holdsWei) }; fund = undefined; }
+          else if (!r.success && !r.skipped && !r.uncertain) return fundOut(x, r);
+          else if (r.uncertain && r.burnTx) return fundOut(x, r);
+        }
       }
     } else if (SWAP_CLAIMABLE.has(x.status) && x.targetChain === "Arkade" && !claimed) {
       const r = await s.claim(id, x.arkAddress!); claimed = r.success;
@@ -242,6 +307,7 @@ export async function waitReverse(s: Rev, id: string, o: { timeoutSec?: number; 
     } else if (SWAP_FAILED.has(x.status)) return { id, status: x.status, ended: true, note: nextNote(x) };
     await sleep(poll);
   }
+  if (lowGas && last === "pending" && !fund?.success) needGas(id, lowGas.t, lowGas.dep, lowGas.need, lowGas.holds);
   return { id, status: last, timeout: true, ...(fund?.txHash ? { fundTx: fund.txHash } : {}), note: `timeout at swap status ${last}. Check ${mk()} swap status ${id}; ${last === "pending" && !fund?.success ? `once the deposit is there run ${mk()} swap fund ${id}.` : "it continues without Mark."} ${DO_NOT_RESEND}` };
 }
 
@@ -257,10 +323,17 @@ export async function reverseStatus(s: Rev, x0: ReverseSwapInfo) {
   if (x.status === "pending" && !x.fundTx) {
     const f = await fundState(s, x);
     out.depositSeen = f.have === undefined ? "unknown (balance read failed)" : units(f.have, t!.decimals);
+    let lowEth: { need: bigint; holds: bigint } | undefined;
+    if (t?.bridge) {
+      const g = await gasState(s, t, x.depositAddress); const burn = await s.cctpBurn?.(x.id); if (g && g.holds < g.need) lowEth = g;
+      out.depositNetwork = t.network; out.gas = g ? { network: t.network, needEth: ethText(g.need), holdsEth: ethText(g.holds) } : "unknown (read failed)";
+      if (burn) { out.burnTx = burn; out.burnExplorer = t.explorerTx + burn; out.next = `The ${t.symbol} was burned on ${t.network}; the swap is not locked yet. Run ${mk()} swap fund ${x.id} to resume (no new burn, no gas). ${DO_NOT_RESEND}`; return out; }
+    }
     out.next = f.attempted !== undefined ? `A funding was submitted; wait for Satora to see it. ${DO_NOT_RESEND}`
       : f.have !== undefined && f.have >= f.need ? `Deposit seen: lock it with ${mk()} swap fund ${x.id}. ${DO_NOT_RESEND}`
       : f.have !== undefined && f.have > 0n ? `Deposit partly seen (${units(f.have, t!.decimals)} of ${units(f.need, t!.decimals)}): only the missing ${units(f.need - f.have, t!.decimals)} completes it; do NOT resend the full amount.`
       : f.have === undefined ? "Could not read the deposit address; if you sent the stablecoins, do NOT send again." : `Waiting for the deposit of ${units(f.need, t!.decimals)} ${t!.symbol} to ${x.depositAddress}.`;
+    if (lowEth && f.attempted === undefined) out.next += ` The deposit address also needs ${ethText(lowEth.need)} ETH on ${t!.network} for gas and holds ${ethText(lowEth.holds)}: send at least ${ethText(lowEth.need - lowEth.holds)} ETH on ${t!.network} to ${x.depositAddress}.`;
   } else out.next = nextNote(x);
   return out;
 }
@@ -289,11 +362,13 @@ export async function reverseRefund(s: Rev, x0: ReverseSwapInfo) {
     : { id: x.id, status: x.status, refunded: false, message: r.message, note: "Satora would not refund it collaboratively and its timelock has not passed (or the refund failed): retry later." };
 }
 
-/** Gas for one ERC-20 transfer from the deposit address, with headroom. */
-const SWEEP_GAS = 120_000n;
-/** Send the swap token from the deposit address to `to` (the stablecoins of an unfunded, failed or refunded swap). */
+/** Gas for one ERC-20 transfer from the deposit address on Arbitrum One, with headroom. */
+const SWEEP_GAS = SWEEP_TX.gas;
+/** Send the swap token from the deposit address to `to` (the stablecoins of an unfunded, failed or refunded swap). USDC on Base:
+ *  before its burn, the USDC on Base (gas in ETH on Base from the deposit address); after the burn, Circle's mint (if not yet) and
+ *  a sweep on the settlement chain (sponsored, no ETH), to the same `to` address there. */
 export async function reverseRecover(c: Ctx, id: string, to: string | undefined) {
-  if (!id || !to) throw new MarkError("USAGE", "mark swap recover <id> --to <your 0x address on Arbitrum>");
+  if (!id || !to) throw new MarkError("USAGE", "mark swap recover <id> --to <your 0x address>");
   const dest = checkEvmAddress(to, "--to"); const s = await reverse(c);
   const first = pinned(s, await s.getReverse(id), "return"); const t = tokenOf(first);
   if (!t) throw new MarkError("SWAP_FAILED", `unknown swap token ${first.tokenContract}`);
@@ -301,22 +376,45 @@ export async function reverseRecover(c: Ctx, id: string, to: string | undefined)
   return s.exclusive(async () => {
     // re-read under the lock: a funding that took the lock first is seen here, before anything is swept
     const x = pinned(s, await s.getReverse(id), "return"); const at = s.fundAttemptedAt(id);
-    if (!sameHex(x.tokenContract, t.tokenId)) throw new MarkError("SWAP_FAILED", `swap ${id} changed token while recovering (${x.tokenContract}); nothing was moved`);
+    if (tokenOf(x) !== t) throw new MarkError("SWAP_FAILED", `swap ${id} changed token while recovering (${x.tokenContract}); nothing was moved`);
     // a funding submitted in the last RECOVER_AFTER_FUND_MS may still land, whatever the status says (unless the swap ended)
     if (at !== undefined && Date.now() - at < RECOVER_AFTER_FUND_MS && !SWAP_FAILED.has(x.status) && !isDone(x)) throw new MarkError("SWAP_FUNDING", "a funding of this swap was submitted less than 30 minutes ago and may still land: wait for it (mark swap status) before recovering");
+    // another swap shares this deposit balance: same token, or either one bridged (USDC on Base is minted to the same account on
+    // the settlement chain), so it is treated as shared
+    const shares = (y: ReverseSwapInfo) => tokenOf(y) === t || !!t.bridge || !!y.bridgeSourceChain;
     // any other swap of this home funded in the last 30 minutes may still need the shared address's balance: unless its deposit
     // is already pulled (funding tx known) or it ended, do not sweep; a failed read refuses too
     const recent = s.fundAttemptsSince(Date.now() - RECOVER_AFTER_FUND_MS).filter((o) => o !== id);
     const reads = await Promise.all(recent.map((o) => s.getReverse(o).catch(() => undefined)));
     for (const [k, o] of recent.entries()) {
       const y = reads[k];
-      if (!y || (sameHex(y.tokenContract, t.tokenId) && !y.fundTx && !SWAP_FAILED.has(y.status) && !isDone(y)))
+      if (!y || (shares(y) && !y.fundTx && !SWAP_FAILED.has(y.status) && !isDone(y)))
         throw new MarkError("SWAP_FUNDING", `swap ${o} was funded from the same deposit address less than 30 minutes ago and may still need it: wait for it (${mk()} swap status ${o}) before recovering`);
     }
-    const others = (await s.openReverse()).filter((o) => o.id !== id && sameHex(o.tokenContract, t.tokenId));
-    if (others.length) throw new MarkError("SWAP_OPEN_DEPOSIT", `swap ${others[0].id} is waiting for a ${t.symbol} deposit at the same address: recovering now would take its deposit too. Finish it or let it expire first.`);
+    const others = (await s.openReverse()).filter((o) => o.id !== id && shares(o));
+    if (others.length) throw new MarkError("SWAP_OPEN_DEPOSIT", `swap ${others[0].id} is waiting for a deposit at the same address: recovering now would take its deposit too. Finish it or let it expire first.`);
+    const locked = x.fundTx && !SWAP_FAILED.has(x.status) && !isDone(x);
+    const done = (r: Awaited<ReturnType<Rev["recoverReverse"]>>, net: StableToken | { network: string; explorerTx: string }) => r.success
+      ? { id, recovered: true, to: dest, network: net.network, amount: r.amountUnits ? units(r.amountUnits, t.decimals) : undefined, token: t.symbol, ...(r.txHash ? { txHash: r.txHash, explorer: net.explorerTx + r.txHash } : {}) }
+      : { id, recovered: false, message: r.message, note: "Recovery failed; nothing was moved unless the explorer shows it. Retry later." };
+    if (t.bridge) {
+      if (isDone(x)) return { id, recovered: false, note: "This swap paid out: nothing to recover." };
+      if (locked) return { id, recovered: false, note: `Its deposit is locked in the swap: if it does not pay out, run ${mk()} swap refund ${id} first.` };
+      const burn = await s.cctpBurn?.(id);
+      if (burn) {
+        // the USDC left Base: Circle mints it to the deposit account on the settlement chain; both steps are sponsored (no ETH)
+        const r = await s.recoverReverse(id, dest);
+        return { ...done(r, { network: t.bridge.settleNetwork, explorerTx: ARBISCAN_TX }), burnTx: burn, ...(r.success ? { note: `Sent as ${t.symbol} on ${t.bridge.settleNetwork} to ${dest} (the burn on ${t.network} cannot be undone; your address is the same there).` } : {}) };
+      }
+      const r0 = readerOf(s, t); const bal = await r0.tokenBalance(t.tokenId, x.depositAddress!);
+      if (bal === 0n) return { id, recovered: false, note: `The deposit address holds no ${t.symbol} on ${t.network}. Nothing to recover.` };
+      const [eth, need] = await Promise.all([r0.ethBalance(x.depositAddress!), gasNeedWei(r0, [SWEEP_TX])]);
+      if (eth < need) return { id, recovered: false, holds: `${units(bal, t.decimals)} ${t.symbol}`, depositAddress: x.depositAddress, needEth: ethText(need), holdsEth: ethText(eth),
+        note: `Sending the ${t.symbol} out of the deposit address costs a little ETH on ${t.network} for gas: send at least ${ethText(need - eth)} ETH on ${t.network} to ${x.depositAddress}, then run this again.` };
+      return done(await s.recoverReverse(id, dest), t);
+    }
     const bal = await s.evm.tokenBalance(t.tokenId, x.depositAddress!);
-    if (bal === 0n) return { id, recovered: false, note: `The deposit address holds no ${t.symbol}. ${x.fundTx && !SWAP_FAILED.has(x.status) && !isDone(x) ? `Its deposit is locked in the swap: if it does not pay out, run ${mk()} swap refund ${id} first.` : "Nothing to recover."}` };
+    if (bal === 0n) return { id, recovered: false, note: `The deposit address holds no ${t.symbol}. ${locked ? `Its deposit is locked in the swap: if it does not pay out, run ${mk()} swap refund ${id} first.` : "Nothing to recover."}` };
     const [eth, gp] = await Promise.all([s.evm.ethBalance(x.depositAddress!), s.evm.gasPrice()]);
     const needWei = SWEEP_GAS * gp * 2n;
     if (eth < needWei) return { id, recovered: false, holds: `${units(bal, t.decimals)} ${t.symbol}`, depositAddress: x.depositAddress,

@@ -18,17 +18,24 @@ export interface StableSwapInfo { id: string; status: string; direction?: string
 
 /** `mark swap` from a stablecoin: Satora's own answer, checked before the deposit address is shown. depositAddress is where the
  *  stablecoins go (this Mark home's gasless depositor key, client_evm_address); sourceUnits the exact token units to deposit. */
+/** bridgeSource*: a swap from USDC on Base (Satora's bridge_source_chain / bridge_source_token_address): the deposit is on that
+ *  chain and Circle CCTP carries it to tokenContract on evmChainId (Arbitrum One), where the swap locks it. */
 export interface ReverseSwapCreated { id: string; status: string; direction?: string; gasless?: boolean; depositAddress?: string; sourceUnits?: string; tokenContract?: string;
-  sourceChain?: string; evmChainId?: number; targetChain?: string; targetSats?: number; invoice?: string; arkAddress?: string; raw?: unknown }
+  sourceChain?: string; evmChainId?: number; targetChain?: string; targetSats?: number; invoice?: string; arkAddress?: string; bridgeSourceChain?: string; bridgeSourceToken?: string; raw?: unknown }
 /** fundTx: the gasless funding tx once Satora saw it. local: this Mark home holds the swap's keys. */
 export interface ReverseSwapInfo extends ReverseSwapCreated { direction?: string; fundTx?: string; payoutTx?: string; lightningSettled?: boolean; createdAt?: string; local: boolean }
-export interface ReversePin { invoice?: string; arkAddress?: string; depositAddress: string; tokenContract: string; sourceUnits: string; targetSats?: number; evmChainId?: number }
+export interface ReversePin { invoice?: string; arkAddress?: string; depositAddress: string; tokenContract: string; sourceUnits: string; targetSats?: number; evmChainId?: number;
+  /** Set for a swap from a bridged stablecoin (USDC on Base): its bridge source chain ("Base") and token, confirmed at create. */
+  bridgeSourceChain?: string; bridgeSourceToken?: string }
 export interface ReverseQuoteInput { from: SwapStable; to: SwapRail; bps: number; sourceUnits?: bigint; targetSats?: number; destination?: string }
 export interface ReverseCreateInput { from: SwapStable; to: SwapRail; bps: number; sourceUnits?: bigint; invoice?: string; arkAddress?: string }
 /** A gasless funding attempt: at most one per swap. uncertain: a funding may already have been submitted (no clear refusal), so Mark never
  *  signs it again (only a clear refusal clears the record). stop: refused before signing (terms changed, no record, invoice
  *  too close to expiry). */
-export interface FundResult { success: boolean; txHash?: string; message?: string; uncertain?: boolean; skipped?: string; stop?: boolean }
+/** burnTx: a swap from USDC on Base whose CCTP burn was sent (the USDC left Base): funding again resumes from it, never burns again.
+ *  needEth: refused before anything was signed because the deposit address holds too little ETH on the bridge chain (wei). */
+export interface FundResult { success: boolean; txHash?: string; message?: string; uncertain?: boolean; skipped?: string; stop?: boolean; burnTx?: string;
+  needEth?: { network: string; needWei: string; holdsWei: string } }
 
 /** `mark swap` Lightning ↔ Arkade. Fields are Satora's own answer, checked before anything is shown to pay. */
 export interface RailSwapCreated {
@@ -88,8 +95,16 @@ export interface SwapProvider {
   fundAttemptsSince?(since: number): string[];
   /** A locked deposit that did not pay out back to the deposit address: Satora's collaborative refund, else the sponsored timelock refund. */
   refundReverse?(id: string): Promise<{ success: boolean; txHash?: string; how?: string; message?: string }>;
-  /** Sweep the swap token from the deposit address to `to` (needs a little ETH there for gas). */
-  recoverReverse?(id: string, to: string): Promise<{ success: boolean; txHash?: string; amountUnits?: string; message?: string }>;
+  /** Sweep the swap token from the deposit address to `to` (needs a little ETH there for gas). A swap from USDC on Base: before its
+   *  burn, the USDC on Base (Base gas from the deposit address); after it, Circle mints (if not yet) and the USDC is swept on
+   *  Arbitrum One (sponsored, no ETH). network: where `to` receives it. */
+  recoverReverse?(id: string, to: string): Promise<{ success: boolean; txHash?: string; amountUnits?: string; message?: string; network?: string }>;
+  /** The CCTP burn recorded for a swap from USDC on Base (the USDC left Base), if any. */
+  cctpBurn?(id: string): Promise<string | undefined>;
+  /** Reads on another chain than Arbitrum One (Base, for USDC on Base). */
+  evmOn?(chainId: number): import("./evm.js").EvmReader;
+  /** About how many USD one ETH is (best effort, for gas estimates; undefined when unavailable). */
+  ethUsd?(): Promise<number | undefined>;
   /** `mark swap` Lightning ↔ Arkade: same referral ID and markup on the quote and the create. */
   quoteRail?(p: RailQuoteInput): Promise<SatoraQuote>;
   createRail?(p: RailCreateInput): Promise<RailSwapCreated>;

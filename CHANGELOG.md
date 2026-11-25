@@ -2,12 +2,24 @@
 
 All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-escrow. Dates are UTC+4 (Dubai). Versions follow semver; 0.x releases may change behaviour between minor versions.
 
-## [0.6.1] - 2026-11-25
+## [0.7.0] - 2026-11-25
+
+Includes the unreleased 0.6.1 changes (skill section and frontmatter fix, below).
 
 ### Added
+- `mark swap` from **USDC on Base** back to BTC: `--from usdc-base --to lightning|arkade` (MCP `swap_to_btc_quote` / `swap_to_btc_create` with `from: "usdc-base"`). Satora's client carries the USDC over Circle's CCTP to its settlement chain and locks it there. `mark swap routes` / `swap_routes` now list **fourteen** routes (`usdc-base→lightning`, `usdc-base→arkade`, with a `bridge` field naming the gas they need: `ETH on Base`). Same Satora pair fee, referral ID and 50 bps `extraFees` (cap 100) on the quote and the swap.
+- How it is funded: the agent sends the USDC on Base, plus a little ETH on Base once, to this Mark home's own deposit address (the same 0x address as the Arbitrum deposits). `mark swap fund` signs two Base transactions from the deposit key, a USDC `approve` (exactly the amount) and Circle's `depositForBurn` (gas paid in ETH on Base by the deposit address). The swap library then waits for Circle's attestation and mints and locks with one paymaster-sponsored transaction (no ETH needed there).
+- **ETH pre-check before anything is signed:** Mark estimates the Base gas with headroom (live gas price ×3 plus the L1 data fee ×2, for 80,000 + 200,000 gas; a USDC approve is typically under 60,000 and a burn measured about 109,000) and reads the deposit address's ETH and USDC on Base. If the ETH is short, `fund` fails with the new code **`SWAP_NEEDS_GAS`** and details `needEth`, `holdsEth`, `sendEth`, `network`; nothing is signed. `--wait` keeps waiting while the ETH is short and ends with `SWAP_NEEDS_GAS` at the timeout.
+- Quotes and previews for USDC on Base show Circle's fee (`fees.bridgeFee`, `bridgeFeeUnits`, `bridgeFeeToken`; about 0.02% of the amount, taken from the deposit) and the estimated Base gas (`gas.eth`, `gas.wei`, and `gas.usd` when the swap library's CoinGecko price answers within 5 s). The deposit shows `gas.needEth`, `holdsEth` and `sendEth`.
+- Funding at most once: once the burn is sent (recorded by the swap library), a later `fund` only resumes the settlement from that burn (no second burn, no gas), and never again once the lock is recorded. A failure before the burn is retried only when no burn is recorded, no transaction of the deposit address is pending and the USDC is all still there; anything else stays uncertain.
+- Recovery: before the burn, `mark swap recover <id> --to <0x>` sends the USDC back on Base (one ERC-20 transfer; gas-checked the same way). After the burn, `recover` (30 minutes after the attempt) has Circle mint it if needed and sends it as USDC on the settlement chain (Arbitrum One) to the same address, both sponsored, no ETH. A locked deposit that did not pay out: the existing gasless `mark swap refund <id>`, then `recover`.
+- Before showing a deposit address, Mark checks that Satora's swap is a Base-sourced swap of exactly USDC on Base (`bridge_source_chain` `Base`, the Base USDC contract), locked as USDC on the settlement chain, gasless, for this home's own address and the confirmed amount and payout; the bridge source is recorded with the other confirmed terms and checked again on every later command.
+- Fee sentence for all routes (`SWAP_FEE_ALL_ROUTES_NOTE`, docs, skill, MCP): one constant `SWAP_FEE_BRIDGE_IN_NOTE` for the Base-to-BTC costs.
+
+### Added (0.6.1)
 - Agent skill (`skills/agent-escrow/SKILL.md`) and MCP server instructions: a **Jobs found on other boards** section for a job taken or posted on The Colony, AIBTC, Nostr, or any board with weak or no escrow. Create or accept an Agent Escrow deal and paste the escrow id in the bid or thread (there is no public invite URL); paste-ready text is in the skill. Do not create or fund a deal the other side has not agreed to. The short paragraph is one constant, `MCP_JOBS_ON_OTHER_BOARDS` in `src/mcp.ts`, appended to `MCP_BODY` and included verbatim in the skill (buyer/seller steps, paste text and fee recap stay in the skill only). Mark is described as the open-source client for the Agent Escrow service at https://agentescrow.to.
 
-### Fixed
+### Fixed (0.6.1)
 - Skill frontmatter `description` is quoted. The unquoted colon in "can't trust: holds payment…" made the `yaml` parser used by skills.sh / `npx skills add yuvlero/mark --skill agent-escrow` reject the file, so the listing said the skill "isn't available in this repository" even though `skills/agent-escrow/SKILL.md` was in the repo (name matches the directory; layout was already correct).
 
 ## [0.6.0] - 2026-11-25

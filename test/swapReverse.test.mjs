@@ -296,7 +296,7 @@ test("CLI: mark swap from a stablecoin, usage checks before any key or network a
   assert.match(chk(["swap", "--from", "usdc", "--to", "lightning", "--address", "a@b.co", "--amount", "1"]).message, /not supported/);
   assert.match(chk(["swap", "--from", "usdc", "--to", "arkade", "--amount", "1,5", "--address", "ark1x"]).message, /token amount/);
   assert.match(chk(["swap", "--sats", "1000", "--address", ME, "--amount", "1"]).message, /--amount is only for swaps from a stablecoin/);
-  assert.match(chk(["swap", "--sats", "1000", "--address", ME, "--to", "lightning"]).message, /needs --from lightning or arkade.*or --from usdc or usdt0/s);
+  assert.match(chk(["swap", "--sats", "1000", "--address", ME, "--to", "lightning"]).message, /needs --from lightning or arkade.*or --from usdc, usdt0 or usdc-base/s);
   assert.match(chk(["swap", "recover", "rv-1"]).message, /--to/); assert.match(chk(["swap", "fund"]).message, /swap id required/);
   assert.match(chk(["swap", "fund", "rv-1", "--amount", "1"]).message, /only for mark swap and mark swap quote/);
 });
@@ -310,8 +310,8 @@ test("MCP: the reverse tools are listed; create needs confirm, fund / recover / 
     const tools = Object.fromEntries((await cl.listTools()).tools.map((x) => [x.name, x]));
     for (const n of ["swap_to_btc_quote", "swap_to_btc_create", "swap_fund", "swap_recover"]) assert.ok(tools[n], n);
     assert.deepEqual(Object.keys(tools.swap_to_btc_create.inputSchema.properties).sort(), ["address", "amount", "confirm", "from", "invoice", "to"]);
-    assert.match(tools.swap_to_btc_create.inputSchema.properties.confirm.description, /must be true to create/); assert.match(tools.swap_to_btc_create.description, /Gasless/);
-    assert.deepEqual(tools.swap_to_btc_create.inputSchema.properties.from.enum, ["usdc", "usdt0"]); // USDC on Base is a payout only
+    assert.match(tools.swap_to_btc_create.inputSchema.properties.confirm.description, /must be true to create/); assert.match(tools.swap_to_btc_create.description, /gasless/); assert.match(tools.swap_to_btc_create.description, /ETH on Base/);
+    assert.deepEqual(tools.swap_to_btc_create.inputSchema.properties.from.enum, ["usdc", "usdt0", "usdc-base"]);
     assert.deepEqual(tools.swap_recover.inputSchema.required.sort(), ["id", "to"]); assert.deepEqual(tools.swap_refund.inputSchema.required, ["id"]);
     // without confirm nothing is created; mutinynet has no stablecoin routes, so it stops before Satora
     const r = JSON.parse((await cl.callTool({ name: "swap_to_btc_create", arguments: { from: "usdc", to: "lightning", invoice: "lnbc1x" } })).content[0].text);

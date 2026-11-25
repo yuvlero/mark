@@ -1,12 +1,12 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { Client } from "@satora/swap";
+import { Client, getUsdPrices } from "@satora/swap";
 import type { SwapProvider, SwapInfo, ClaimResult, StableSwapCreated, StableSwapInfo, ReverseQuoteInput, ReverseCreateInput, ReverseSwapCreated, ReverseSwapInfo, FundResult, ReversePin, RailQuoteInput, RailCreateInput, RailSwapCreated, RailSwapInfo } from "./provider.js";
 import { validPin, pinMismatch } from "./reversePin.js";
 import { isReverseDir } from "./states.js";
-import { arbitrumReader, viemSigner, type EvmReader } from "./evm.js";
-import { SWAP_REFERRAL_ID, SWAP_SOURCES, SWAP_TARGETS, checkMarkupBps, sameHex, type SatoraQuote, type SwapSource, type SwapTarget } from "./stable.js";
+import { arbitrumReader, baseReader, viemSigner, gasNeedWei, transferData, BASE_CHAIN_ID, type EvmReader } from "./evm.js";
+import { SWAP_REFERRAL_ID, SWAP_SOURCES, SWAP_TARGETS, SWEEP_TX, checkMarkupBps, sameHex, stableOfReverse, type SatoraQuote, type SwapSource, type SwapTarget } from "./stable.js";
 import { encryptWith, decryptWith } from "../crypto/keystore.js";
 import { MarkError } from "../errors.js";
 import { decodeInvoice } from "../lightning/invoice.js";
@@ -89,6 +89,30 @@ export class SatoraProvider implements SwapProvider {
   }
   /** Arbitrum reads (tests replace it). */
   evm: EvmReader = arbitrumReader();
+  /** Base reads, for swaps from USDC on Base (tests replace it). */
+  evmBase: EvmReader = baseReader();
+  evmOn(chainId: number): EvmReader {
+    if (chainId === BASE_CHAIN_ID) return this.evmBase;
+    if (chainId === 42161) return this.evm;
+    throw new MarkError("SWAP_FAILED", `Mark has no reader for chain ${chainId}`);
+  }
+  /** About how many USD one ETH is (CoinGecko through the swap library; best effort, 5 s). */
+  async ethUsd(): Promise<number | undefined> {
+    try {
+      const r = await Promise.race([getUsdPrices([{ symbol: "ETH", chain: "8453", token_id: "eth", name: "Ether", decimals: 18 } as any]), new Promise<never>((_, no) => setTimeout(() => no(new Error("timeout")), 5000).unref?.())]);
+      const v = r?.[0]?.usdPrice; return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined;
+    } catch { return undefined; }
+  }
+  /** The lock transaction the swap library recorded for a swap it funded, if any. */
+  private async storedFundTx(id: string): Promise<string | undefined> {
+    let st: any; try { st = await (this.c as any).getStoredSwap?.(id); } catch { return undefined; }
+    return typeof st?.evmFundTxid === "string" && st.evmFundTxid ? st.evmFundTxid : undefined;
+  }
+  /** The CCTP burn the swap library recorded for a swap from USDC on Base (the USDC left Base), if any. */
+  async cctpBurn(id: string): Promise<string | undefined> {
+    let st: any; try { st = await (this.c as any).getStoredSwap?.(id); } catch { return undefined; }
+    const b = st?.cctpBurnTxid; return typeof b === "string" && /^0x[0-9a-fA-F]{64}$/.test(b) ? b : undefined;
+  }
 
   static async create(opts: { baseUrl: string; arkServerUrl: string; esploraUrl: string; bitcoinNetwork: "mainnet" | "signet"; mnemonic: string; key: Buffer; dir: string; referralCode?: string }) {
     const sdir = path.join(opts.dir, "swaps"); fs.mkdirSync(sdir, { recursive: true, mode: 0o700 });
@@ -212,7 +236,8 @@ export class SatoraProvider implements SwapProvider {
     const extraFees = checkMarkupBps(p.bps);
     const targetAddress = p.to === "lightning" ? p.invoice : p.arkAddress;
     if (!targetAddress) throw new MarkError("USAGE", "a payout target is required");
-    this.assertGaslessFundingPlan(Number(SWAP_TARGETS[p.from].chain));
+    // a bridged stablecoin (USDC on Base) is minted and locked on its settlement chain by a sponsored UserOp: that plan must hold
+    const t = SWAP_TARGETS[p.from]; this.assertGaslessFundingPlan(Number(t.bridge ? t.bridge.settleChain : t.chain));
     const r: any = await stdoutToStderr(() => this.c.createSwap({ source: SWAP_TARGETS[p.from] as any, target: SWAP_SOURCES[p.to] as any, targetAddress, gasless: true,
       ...(p.invoice ? {} : { sourceAmount: p.sourceUnits?.toString() as any }), referralCode: SWAP_REFERRAL_ID, extraFees } as any));
     const out = reverseFields(r?.response ?? {});
@@ -288,8 +313,12 @@ export class SatoraProvider implements SwapProvider {
   private async fundOnce(id: string): Promise<FundResult> {
     return this.exclusive(async () => {
       const at = this.fundAttemptedAt(id);
+      // a CCTP burn already sent (USDC on Base): funding again only resumes the settlement from that burn, it never burns again
+      const burn = at !== undefined ? await this.cctpBurn(id) : undefined;
       // a submitted or uncertain funding is never signed again (only a clear refusal clears the record)
-      if (at !== undefined) return { success: false, skipped: `a funding was already submitted at ${new Date(at).toISOString()}; Mark never signs it again` };
+      if (at !== undefined && !burn) return { success: false, skipped: `a funding was already submitted at ${new Date(at).toISOString()}; Mark never signs it again` };
+      // the resume after a burn locked it already (the swap library recorded the lock): never again, even if Satora lags
+      if (burn) { const ft = await this.storedFundTx(id); if (ft) return { success: false, skipped: `the swap was already funded (tx ${ft}); Mark never funds it again` }; }
       let x: ReverseSwapInfo; try { x = await this.getReverse(id); } catch (e) { return { success: false, message: `could not read the swap: ${errText(e)}` }; }
       if (x.status !== "pending" || x.fundTx) return { success: false, skipped: `the swap is already past funding (${x.status}${x.fundTx ? `, funding tx ${x.fundTx}` : ""})` };
       if (!x.tokenContract || !x.depositAddress || !/^\d+$/.test(String(x.sourceUnits ?? ""))) return { success: false, message: "the swap has no deposit terms" };
@@ -302,6 +331,7 @@ export class SatoraProvider implements SwapProvider {
         let left = -1; try { left = decodeInvoice(pin.invoice).expiresAt - Date.now() / 1000; } catch { /* undecodable: refuse */ }
         if (left < FUND_MIN_INVOICE_SECS) return { success: false, stop: true, message: `the payout invoice ${left < 0 ? "has expired" : `expires in ${Math.floor(left)} s`}: Satora could not pay it after the deposit is locked, so Mark does not fund this swap` };
       }
+      if (pin.bridgeSourceChain !== undefined) return this.fundBridged(id, x, burn);
       let have: bigint; try { have = await this.evm.tokenBalance(x.tokenContract, x.depositAddress); } catch (e) { return { success: false, message: `could not read the deposit address: ${errText(e)}` }; }
       if (have < BigInt(x.sourceUnits!)) return { success: false, skipped: `the deposit address holds ${have} of the ${x.sourceUnits} token units this swap needs` };
       this.markAttempt(id, Date.now());
@@ -316,6 +346,39 @@ export class SatoraProvider implements SwapProvider {
         return { success: false, message, uncertain: true };
       }
     });
+  }
+  /** A swap from USDC on Base, under the deposit lock and after the pin checks: Mark signs USDC approve + CCTP burn on Base from the
+   *  deposit key (its gas paid in ETH on Base by the deposit address), then the swap library waits for Circle's attestation and
+   *  mints + locks on the settlement chain with a sponsored UserOp. Before anything is signed: the deposit address must hold the
+   *  USDC and enough ETH on Base (needEth otherwise). With a burn already recorded it resumes from it (no new burn, no gas). */
+  private async fundBridged(id: string, x: ReverseSwapInfo, burn: string | undefined): Promise<FundResult> {
+    const t = stableOfReverse(x);
+    if (!t?.bridge) return { success: false, stop: true, message: `unknown bridge source ${x.bridgeSourceChain} / ${x.bridgeSourceToken}; not funding it` };
+    const r = this.evmOn(Number(t.chain)), dep = x.depositAddress!, need = BigInt(x.sourceUnits!);
+    if (!burn) {
+      let have: bigint, eth: bigint, gas: bigint;
+      try { [have, eth, gas] = await Promise.all([r.tokenBalance(t.tokenId, dep), r.ethBalance(dep), gasNeedWei(r)]); }
+      catch (e) { return { success: false, message: `could not read the deposit address on ${t.network}: ${errText(e)}` }; }
+      if (have < need) return { success: false, skipped: `the deposit address holds ${have} of the ${need} ${t.symbol} units on ${t.network} this swap needs` };
+      if (eth < gas) return { success: false, skipped: `the deposit address needs ETH on ${t.network} for gas`, needEth: { network: t.network, needWei: gas.toString(), holdsWei: eth.toString() } };
+    }
+    this.markAttempt(id, Date.now());
+    let signer: any;
+    try { const k: any = await (this.c as any).getSwapDepositorKey(id); signer = await this.signerFor(k.privateKey, Number(t.chain)); }
+    catch (e) { this.markAttempt(id, undefined); return { success: false, message: `could not load the deposit key: ${errText(e)}` }; }
+    try {
+      const f: any = await stdoutToStderr(() => (this.c as any).fundSwap(id, signer));
+      return { success: true, txHash: f?.txHash ?? undefined, burnTx: f?.cctp?.burnTxHash ?? burn };
+    } catch (e) {
+      const message = errText(e); const b = await this.cctpBurn(id);
+      if (b) return { success: false, message, uncertain: true, burnTx: b };
+      // nothing burned for sure only when no burn is recorded, the USDC is still all there and no transaction of the deposit
+      // address is waiting in the mempool; then a later fund is safe. Anything else stays uncertain: Mark never signs it again.
+      let clear = false;
+      try { clear = !(await r.hasPendingTx?.(dep) ?? true) && (await r.tokenBalance(t.tokenId, dep)) >= need; } catch { clear = false; }
+      if (clear) { this.markAttempt(id, undefined); return { success: false, message }; }
+      return { success: false, message, uncertain: true };
+    }
   }
   /** In-process queue plus a lock file in the swaps dir (O_EXCL create; a lock older than LOCK_STALE_MS is taken over). */
   private lockTail: Promise<unknown> = Promise.resolve();
@@ -350,7 +413,12 @@ export class SatoraProvider implements SwapProvider {
       catch (x) { return { success: false, message: `collaborative refund: ${collab}; timelock refund: ${errText(x)}`.slice(0, 900) }; }
     });
   }
-  async recoverReverse(id: string, to: string) {
+  async recoverReverse(id: string, to: string): Promise<{ success: boolean; txHash?: string; amountUnits?: string; message?: string; network?: string }> {
+    let st: any; try { st = await (this.c as any).getStoredSwap?.(id); } catch { st = undefined; }
+    const resp = st?.response ?? {};
+    const t = resp.bridge_source_chain ? stableOfReverse({ tokenContract: resp.source_token?.token_id, bridgeSourceChain: resp.bridge_source_chain, bridgeSourceToken: resp.bridge_source_token_address }) : undefined;
+    if (resp.bridge_source_chain && !t?.bridge) return { success: false, message: `unknown bridge source ${resp.bridge_source_chain}; nothing was moved` };
+    if (t?.bridge) return (await this.cctpBurn(id)) ? this.recoverBurned(id, to, t.bridge.settleNetwork) : this.sweepOn(id, to, t.tokenId, Number(t.chain), t.network);
     return stdoutToStderr(async () => {
       try {
         const k: any = await (this.c as any).getSwapDepositorKey(id);
@@ -361,8 +429,35 @@ export class SatoraProvider implements SwapProvider {
       } catch (x) { return { success: false, message: errText(x) }; }
     });
   }
-  /** The recovery signer (tests replace it). The key never leaves this call. */
-  signerFor: (privateKey: string) => Promise<any> = (k) => viemSigner(k);
+  /** After the CCTP burn of a swap from USDC on Base: Circle mints it to the deposit account on the settlement chain if not yet, then
+   *  its USDC is swept to `to` there, both as sponsored UserOps (no ETH). */
+  private async recoverBurned(id: string, to: string, network: string) {
+    return stdoutToStderr(async () => {
+      try {
+        const r: any = await (this.c as any).recoverCctpInboundSwap(id, to);
+        const tx = r?.sweepTxHash ?? r?.sweepUserOpHash;
+        if (!tx) return { success: false, message: "the recovery returned no transaction; check the explorer before retrying", network };
+        return { success: true, txHash: tx, amountUnits: r?.recoveredAmount != null ? String(r.recoveredAmount) : undefined, network };
+      } catch (x) { return { success: false, message: errText(x), network }; }
+    });
+  }
+  /** One ERC-20 transfer of the deposit address's whole `token` balance to `to` on `chainId` (gas from the deposit address). */
+  private async sweepOn(id: string, to: string, token: string, chainId: number, network: string) {
+    return stdoutToStderr(async () => {
+      try {
+        const r = this.evmOn(chainId); const k: any = await (this.c as any).getSwapDepositorKey(id);
+        const signer = await this.signerFor(k.privateKey, chainId);
+        const bal = await r.tokenBalance(token, signer.address);
+        if (bal === 0n) return { success: false, message: "the deposit address holds none of the token; nothing was moved", network };
+        const txHash: string = await signer.sendTransaction({ to: token, data: transferData(to, bal) });
+        const rc: any = await signer.waitForReceipt(txHash);
+        if (rc?.status !== "success") return { success: false, message: `the transfer ${txHash} reverted; nothing was moved`, network };
+        return { success: true, txHash, amountUnits: bal.toString(), network };
+      } catch (x) { return { success: false, message: errText(x), network }; }
+    });
+  }
+  /** The deposit-key signer on Arbitrum One (default) or Base (tests replace it). The key never leaves this call. */
+  signerFor: (privateKey: string, chainId?: number) => Promise<any> = (k, chainId) => viemSigner(k, undefined, chainId);
 }
 
 /** A record (id -> value) in memory, mirrored to a 0600 JSON file in the swaps dir when there is one (written atomically). */
@@ -428,5 +523,6 @@ function reverseFields(r: any): ReverseSwapCreated {
     sourceUnits: r.source_amount != null ? String(r.source_amount) : undefined, tokenContract: r.source_token?.token_id ?? undefined,
     sourceChain: r.source_token?.chain ?? undefined, evmChainId: r.evm_chain_id != null ? Number(r.evm_chain_id) : undefined,
     targetChain: r.target_token?.chain ?? undefined, targetSats: r.target_amount != null ? Number(r.target_amount) : undefined,
-    invoice: r.client_lightning_invoice ?? undefined, arkAddress: r.target_arkade_address ?? undefined, raw: r };
+    invoice: r.client_lightning_invoice ?? undefined, arkAddress: r.target_arkade_address ?? undefined,
+    bridgeSourceChain: r.bridge_source_chain ?? undefined, bridgeSourceToken: r.bridge_source_token_address ?? undefined, raw: r };
 }

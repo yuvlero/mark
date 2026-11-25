@@ -9,7 +9,9 @@ export function validPin(v: unknown): boolean {
   const p = v as any;
   return !!p && typeof p === "object" && typeof p.depositAddress === "string" && typeof p.tokenContract === "string" && /^\d+$/.test(String(p.sourceUnits ?? ""))
     && (typeof p.invoice === "string") !== (typeof p.arkAddress === "string")
-    && (p.targetSats === undefined || Number.isSafeInteger(p.targetSats)) && (p.evmChainId === undefined || Number.isSafeInteger(p.evmChainId));
+    && (p.targetSats === undefined || Number.isSafeInteger(p.targetSats)) && (p.evmChainId === undefined || Number.isSafeInteger(p.evmChainId))
+    && (p.bridgeSourceChain === undefined || typeof p.bridgeSourceChain === "string") && (p.bridgeSourceToken === undefined || typeof p.bridgeSourceToken === "string")
+    && (p.bridgeSourceChain === undefined) === (p.bridgeSourceToken === undefined);
 }
 
 /** Why the swap no longer matches its record and this home's deposit address, or undefined. strict (before signing or claiming):
@@ -23,6 +25,9 @@ export function pinMismatch(pin: ReversePin, x: ReverseSwapInfo, myDeposit: stri
   if (ln === (typeof pin.arkAddress === "string")) return "the record has no single payout target";
   if (!sameHex(pin.tokenContract, x.tokenContract)) return `token ${x.tokenContract}`;
   if (pin.sourceUnits !== x.sourceUnits) return `deposit amount ${x.sourceUnits} units, confirmed ${pin.sourceUnits}`;
+  // a swap confirmed from Arbitrum must stay on Arbitrum, and one from a bridge chain (USDC on Base) on that chain and token
+  if ((pin.bridgeSourceChain ?? "") !== (x.bridgeSourceChain ?? "")) return `deposit chain ${x.bridgeSourceChain ?? "Arbitrum One"}, confirmed ${pin.bridgeSourceChain ?? "Arbitrum One"}`;
+  if (pin.bridgeSourceChain !== undefined && !sameHex(pin.bridgeSourceToken, x.bridgeSourceToken)) return `deposit token ${x.bridgeSourceToken}`;
   if (x.gasless !== true) return "no longer a gasless swap";
   if (pin.evmChainId !== undefined ? x.evmChainId !== pin.evmChainId : strict) return `chain ${x.evmChainId}`;
   if (pin.targetSats !== undefined ? x.targetSats !== pin.targetSats : strict) return `payout ${x.targetSats} sats, confirmed ${pin.targetSats ?? "unknown"}`;

@@ -12,7 +12,7 @@ import { SWAP_UNPAID, SWAP_PAID, SWAP_WAITING, SWAP_CLAIMABLE, SWAP_DONE, isReve
 import { sleep } from "../util.js";
 import { reverse, loadReverse, waitReverse, reverseQuote, reverseRun, reverseStatus, reverseClaim, reverseRefund, reverseFund, reverseRecover } from "./swapReverse.js";
 import { loadRail, railQuote, railRun, railStatus, railClaim, railRefund } from "./swapRail.js";
-import { ARBISCAN_TX, STABLE_FLAGS, sameHex, txLink, SWAP_MARKUP_BPS, SWAP_REFERRAL_ID, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkMarkupBps, formatSwapQuote, pct, swapFeeRates, swapFeeSummaryNote, swapSats, swapSource, swapTarget, units, swapRoute, allSwapRoutes, targetOfSwap, tokenLabel, bridgeFeeUnits, type StableToken, type SwapSource, type SwapTarget } from "../swap/stable.js";
+import { ARBISCAN_TX, STABLE_FLAGS, sameHex, txLink, SWAP_MARKUP_BPS, SWAP_REFERRAL_ID, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkMarkupBps, formatSwapQuote, BRIDGE_IN_TX_NAMES, pct, swapFeeRates, swapFeeSummaryNote, swapSats, swapSource, swapTarget, units, swapRoute, allSwapRoutes, targetOfSwap, tokenLabel, bridgeFeeUnits, type StableToken, type SwapSource, type SwapTarget } from "../swap/stable.js";
 
 /** sats: BTC -> stablecoin. amount (token units like 1.5) / invoice: stablecoin -> BTC (address is the payout target there). */
 export interface SwapQuoteInput { from?: string; to?: string; sats?: number | string; amount?: string | number; invoice?: string; address?: string }
@@ -83,7 +83,8 @@ export async function swapRoutes(c: Ctx) {
     const t = SWAP_TARGETS[p.dir === "to_stable" ? p.to : p.from]; const rail = p.dir === "to_stable" ? p.from : p.to;
     return { from: p.from, to: p.to, direction: p.dir === "to_stable" ? "btc_to_stablecoin" : "stablecoin_to_btc", ...(p.dir === "to_stable" ? { source: SWAP_SOURCES[rail].chain } : { target: SWAP_SOURCES[rail].chain }),
       token: t.symbol, chain: t.network, chainId: Number(t.chain), contract: t.tokenId,
-      ...(t.bridge ? { bridge: { via: t.bridge.via, from: t.bridge.settleNetwork, note: `Satora settles on ${t.bridge.settleNetwork}; the payout is bridged to ${t.network} at claim (bridge fee in the quote)` } } : {}),
+      ...(t.bridge ? { bridge: p.dir === "to_stable" ? { via: t.bridge.via, from: t.bridge.settleNetwork, note: `Satora settles on ${t.bridge.settleNetwork}; the payout is bridged to ${t.network} at claim (bridge fee in the quote)` }
+        : { via: t.bridge.via, gas: `ETH on ${t.network}`, note: `${t.bridge.via} carries the deposit from ${t.network} (fee in the quote); the deposit address pays ${BRIDGE_IN_TX_NAMES} gas in ETH on ${t.network} (estimate in the quote)` } } : {}),
       limits: ok ? { minSats: q.min_amount, maxSats: q.max_amount } : "unavailable",
       ...(fees ? { fees } : {}), ...fail };
   });

@@ -32,12 +32,16 @@ export const SWAP_FEE_ARKADE_LN_NOTE = `about 0.80% total (Satora ~0.30% + Agent
 export function routeFeeNote(route: SwapRoute): string {
   if (route.dir === "rail") return route.from === "lightning" ? SWAP_FEE_LN_ARKADE_NOTE : SWAP_FEE_ARKADE_LN_NOTE;
   if (route.dir === "to_stable" && SWAP_TARGETS[route.to].bridge) return `${SWAP_FEE_TOTAL_NOTE}; ${SWAP_FEE_BRIDGE_NOTE}`;
+  if (route.dir === "to_btc" && SWAP_TARGETS[route.from].bridge) return `${SWAP_FEE_TOTAL_NOTE}; ${SWAP_FEE_BRIDGE_IN_NOTE}`;
   return SWAP_FEE_TOTAL_NOTE;
 }
 /** USDC on Base, no live quote: Satora bridges it from Arbitrum One over Circle CCTP; Circle's fee is taken from the payout in USDC. */
 export const SWAP_FEE_BRIDGE_NOTE = "USDC on Base also pays Circle's CCTP bridge fee (about 0.05 USDC, in USDC, taken from the payout; the live quote shows it)";
+/** USDC on Base -> BTC, no live quote: Circle's fast-transfer fee (IRIS: 1.3 bps, Satora caps it at +20%) comes out of the deposit;
+ *  the approve + burn on Base are paid in ETH on Base by the deposit address (see BRIDGE_IN_TXS). */
+export const SWAP_FEE_BRIDGE_IN_NOTE = "USDC from Base also pays Circle's CCTP fee (about 0.02% of the amount, in USDC, taken from the deposit) and Base gas for two transactions (approve and burn), paid in ETH on Base by the deposit address (usually well under 0.0001 ETH); the live quote shows both";
 /** Docs / MCP / routes summary: fees vary by route, so a single ~1% line would be wrong for Lightning ↔ Arkade. */
-export const SWAP_FEE_ALL_ROUTES_NOTE = `Fees depend on the route and are shown on the live quote. Lightning or Arkade to USDC or USDT0 on Arbitrum One (and back) or to USDC on Base is ${SWAP_FEE_TOTAL_NOTE}; ${SWAP_FEE_BRIDGE_NOTE}. Lightning to Arkade is ${SWAP_FEE_LN_ARKADE_NOTE}. Arkade to Lightning is ${SWAP_FEE_ARKADE_LN_NOTE}`;
+export const SWAP_FEE_ALL_ROUTES_NOTE = `Fees depend on the route and are shown on the live quote. Lightning or Arkade to USDC or USDT0 on Arbitrum One or USDC on Base (and back) is ${SWAP_FEE_TOTAL_NOTE}; ${SWAP_FEE_BRIDGE_NOTE}; ${SWAP_FEE_BRIDGE_IN_NOTE}. Lightning to Arkade is ${SWAP_FEE_LN_ARKADE_NOTE}. Arkade to Lightning is ${SWAP_FEE_ARKADE_LN_NOTE}`;
 /** Top-level routes / docs note. `live` is used only when every listed route returned a quote and they all agreed on the same rates (unusual once Lightning ↔ Arkade is included). */
 export function swapFeeSummaryNote(live?: { satoraFeeRate: number; totalFeeRate: number; markupBps?: number } | null) {
   const bps = live?.markupBps ?? SWAP_MARKUP_BPS;
@@ -74,20 +78,38 @@ export type SwapTarget = keyof typeof TARGETS;
 export const tokenLabel = (t: StableToken) => `${t.symbol} on ${t.network}`;
 /** Every target with its network, for usage and error text: "usdc (USDC on Arbitrum One), ...". */
 export const targetList = (keys: readonly string[] = Object.keys(SWAP_TARGETS)) => keys.map((k) => `${k} (${tokenLabel(SWAP_TARGETS[k as SwapTarget])})`).join(", ");
-/** Stablecoins Mark swaps back to BTC (gasless deposit on Arbitrum One). USDC on Base is a payout only: Satora funds a Base-sourced
- *  swap with a CCTP burn signed on Base, which needs ETH on Base at the deposit address (not gasless), so Mark does not offer it yet. */
-export const SWAP_STABLES = ["usdc", "usdt0"] as const;
-/** "usdc|usdt0" and "usdc or usdt0": the --from values of a swap from a stablecoin, for usage text. */
-export const STABLE_FLAGS = SWAP_STABLES.join("|"), STABLE_OR = SWAP_STABLES.join(" or ");
+/** Stablecoins Mark swaps back to BTC. On Arbitrum One the deposit is gasless (no ETH). USDC on Base (a bridged token): Mark signs
+ *  a USDC approve and a Circle CCTP burn on Base from the deposit address, so that address needs a little ETH on Base for gas;
+ *  the rest (mint and lock) is sponsored. */
+export const SWAP_STABLES = ["usdc", "usdt0", "usdc-base"] as const;
+/** Gas Mark pays on the bridge chain (Base) to fund a swap from a bridged stablecoin, from the deposit address: USDC approve,
+ *  then CCTP depositForBurn (measured ~56k and ~110k gas on Base, Nov 2026; limits here with headroom). bytes: calldata size
+ *  for the L1 data fee. The one place these numbers live (quote, fund pre-check, deposit instructions). */
+export const BRIDGE_IN_TXS = [{ name: "approve", gas: 80_000n, bytes: 140 }, { name: "burn", gas: 200_000n, bytes: 330 }] as const;
+/** One ERC-20 transfer out of the deposit address (recover on the bridge chain). */
+export const SWEEP_TX = { name: "transfer", gas: 120_000n, bytes: 140 } as const;
+/** Gas price headroom (price may rise between the check and the send) and L1 data fee headroom, for every ETH estimate. */
+export const GAS_PRICE_MARGIN = 3n, L1_FEE_MARGIN = 2n;
+/** "approve + burn": the bridge-chain transactions, for messages. */
+export const BRIDGE_IN_TX_NAMES = BRIDGE_IN_TXS.map((t) => t.name).join(" + ");
+/** ETH with at most 8 decimals, rounded up (never shows less than is needed): 5040000000000n -> "0.00000504". */
+export function ethText(wei: bigint): string { const step = 10n ** 10n; return units(((wei + step - 1n) / step) * step, 18)!; }
+/** "usdc|usdt0|usdc-base" and "usdc, usdt0 or usdc-base": the --from values of a swap from a stablecoin, for usage text. */
+export const STABLE_FLAGS = SWAP_STABLES.join("|"), STABLE_OR = `${SWAP_STABLES.slice(0, -1).join(", ")} or ${SWAP_STABLES.at(-1)}`;
 /** Every payout grouped by network, in TARGETS order: "USDC or USDT0 on Arbitrum One or USDC on Base". */
 export const SWAP_PAYOUTS_TEXT = [...new Set(Object.values(TARGETS).map((t) => t.network))]
   .map((n) => `${Object.values(TARGETS).filter((t) => t.network === n).map((t) => t.symbol).join(" or ")} on ${n}`).join(" or ");
 /** Where the 0x payout address must be: "Arbitrum One, or Base for usdc-base". */
 export const PAYOUT_NETWORKS_TEXT = [ARB.network, ...Object.entries(TARGETS).filter(([, t]) => t.network !== ARB.network).map(([k, t]) => `or ${t.network} for ${k}`)].join(", ");
-export const BASE_TO_BTC_UNSUPPORTED = "USDC on Base -> BTC is not supported yet (Satora funds it with a CCTP burn on Base that needs ETH on Base: not gasless). Bridge the USDC to Arbitrum One and use --from usdc, or swap BTC -> USDC on Base with --to usdc-base";
 export type SwapSource = keyof typeof SWAP_SOURCES;
 /** Same hex address, invoice or contract, ignoring case (a missing value never matches). */
 export const sameHex = (a: unknown, b: unknown) => typeof a === "string" && typeof b === "string" && a !== "" && a.toLowerCase() === b.toLowerCase();
+/** A swap from a stablecoin's token: a bridged-in swap (bridge_source_chain set) is the bridged target with that bridge, source
+ *  contract and settlement contract; otherwise the Arbitrum token by contract. A bridge Mark does not know returns undefined. */
+export function stableOfReverse(x: { tokenContract?: string; bridgeSourceChain?: string; bridgeSourceToken?: string }): StableToken | undefined {
+  if (x.bridgeSourceChain) return Object.values(SWAP_TARGETS).find((v) => v.bridge?.name === x.bridgeSourceChain && sameHex(v.tokenId, x.bridgeSourceToken) && sameHex(v.bridge?.settleToken, x.tokenContract));
+  return targetByContract(x.tokenContract);
+}
 /** The swap stablecoin with this contract on Arbitrum One (not a bridged payout), if any. */
 export const targetByContract = (contract: unknown) => Object.values(SWAP_TARGETS).find((v) => !v.bridge && sameHex(v.tokenId, contract));
 /** A forward swap's payout token: a bridged payout (bridge_target_chain set) is the target with that bridge and destination
@@ -216,7 +238,7 @@ export function formatSwapQuote(q: SatoraQuote, o: { from: SwapSource; to: SwapT
   };
 }
 
-// ---------- the reverse direction: a stablecoin on Arbitrum -> BTC (Lightning or Arkade) ----------
+// ---------- the reverse direction: a stablecoin -> BTC (Lightning or Arkade) ----------
 /** The same two tables, read the other way: SWAP_TARGETS are the stablecoins you send, SWAP_SOURCES the BTC rails paid out. */
 export type SwapStable = (typeof SWAP_STABLES)[number];
 export type SwapRail = SwapSource;
@@ -231,15 +253,14 @@ const isRail = (k: string) => Object.hasOwn(SWAP_SOURCES, k);
  *  (default --from lightning --to usdc). `--to lightning|arkade` without --from is refused (ambiguous). */
 export function swapRoute(from: string | undefined, to: string | undefined): SwapRoute {
   const f = (from ?? "").toLowerCase(), t = (to ?? "").toLowerCase();
-  if (f && Object.hasOwn(SWAP_TARGETS, f) && !isStable(f)) throw new MarkError("USAGE", BASE_TO_BTC_UNSUPPORTED);
   if (f && isStable(f)) {
     const rail = (to ?? "lightning").toLowerCase();
     if (!isRail(rail)) throw new MarkError("USAGE", `--to must be ${Object.keys(SWAP_SOURCES).join(" or ")} when --from is a stablecoin`);
     return { dir: "to_btc", from: swapTarget(f) as SwapStable, to: rail as SwapRail };
   }
   if (t && isRail(t)) {
-    if (!f) throw new MarkError("USAGE", `--to ${t} needs --from lightning or arkade (a Lightning ↔ Arkade swap) or --from ${SWAP_STABLES.join(" or ")} (from a stablecoin on Arbitrum One)`);
-    if (!isRail(f)) throw new MarkError("USAGE", `--to ${t} needs --from lightning or arkade, or a stablecoin --from (${SWAP_STABLES.join(" or ")})`);
+    if (!f) throw new MarkError("USAGE", `--to ${t} needs --from lightning or arkade (a Lightning ↔ Arkade swap) or --from ${STABLE_OR} (from a stablecoin)`);
+    if (!isRail(f)) throw new MarkError("USAGE", `--to ${t} needs --from lightning or arkade, or a stablecoin --from (${STABLE_OR})`);
     if (f === t) throw new MarkError("USAGE", `--from and --to cannot both be ${f}`);
     return { dir: "rail", from: f as SwapSource, to: t as SwapRail };
   }
@@ -262,15 +283,24 @@ export function tokenUnits(v: unknown, decimals: number, flag = "--amount"): big
 }
 /** The quote for stablecoin -> BTC as Mark shows it. Satora charges its fee and our markup in sats, on the swap's BTC amount
  *  (target_amount before fees); you send source_amount token units and receive net_target_amount sats. */
-export function formatReverseQuote(q: SatoraQuote, o: { from: SwapStable; to: SwapRail; bps: number }) {
+export interface GasEstimate { network: string; txs: string; wei: bigint; usdPerEth?: number }
+/** A gas estimate as Mark shows it: ETH (rounded up), wei, and about how many USD when a price was available. */
+export function gasView(g: GasEstimate) {
+  const usd = g.usdPerEth && Number.isFinite(g.usdPerEth) && g.usdPerEth > 0 ? Math.max(0.01, +((Number(g.wei) / 1e18) * g.usdPerEth).toFixed(2)) : undefined;
+  return { network: g.network, txs: g.txs, eth: ethText(g.wei), wei: g.wei.toString(), ...(usd !== undefined ? { usd: `~$${usd}` } : {}) };
+}
+export function formatReverseQuote(q: SatoraQuote, o: { from: SwapStable; to: SwapRail; bps: number; gas?: GasEstimate | null }) {
   const t = SWAP_TARGETS[o.from]; const gross = Number(q.target_amount); const v = quoteFeeView(splitSwapFees(q, Number.isSafeInteger(gross) ? gross : 0, o.bps));
+  const bf = t.bridge ? bridgeFeeUnits(q) : undefined, gas = t.bridge && o.gas ? gasView(o.gas) : undefined;
+  const bridgeLine = !t.bridge ? "" : ` Also ${bf !== undefined ? `${units(bf, t.decimals)} ${t.symbol}` : "a"} ${t.bridge.via} fee (taken from the deposit) and Base gas for ${BRIDGE_IN_TX_NAMES}, paid in ETH on ${t.network} by the deposit address: ${gas ? `about ${gas.eth} ETH${gas.usd ? ` (${gas.usd})` : ""} with headroom` : "estimate unavailable right now"}.`;
   return {
     from: o.from, to: o.to, token: { symbol: t.symbol, network: t.network, chainId: Number(t.chain), contract: t.tokenId },
     send: units(q.source_amount, t.decimals), sendUnits: q.source_amount,
     rate: `${q.exchange_rate} ${t.symbol} per BTC`,
     receiveSats: Number(q.net_target_amount),
-    fees: v.fees,
-    markupNote: `${v.totalFeeLine}. Taken inside the swap; nothing extra to send. No ETH needed: the deposit is gasless.`,
+    fees: t.bridge ? { ...v.fees, bridgeFee: bf !== undefined ? units(bf, t.decimals) : null, bridgeFeeUnits: bf ?? null, bridgeFeeToken: t.symbol } : v.fees,
+    ...(t.bridge ? { gas: gas ?? null } : {}),
+    markupNote: t.bridge ? `${v.totalFeeLine}. Taken inside the swap.${bridgeLine}` : `${v.totalFeeLine}. Taken inside the swap; nothing extra to send. No ETH needed: the deposit is gasless.`,
     limits: { minSats: q.min_amount, maxSats: q.max_amount },
     referral: SWAP_REFERRAL_ID,
   };
