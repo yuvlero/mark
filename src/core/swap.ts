@@ -307,7 +307,7 @@ export async function swapRefund(c: Ctx, id: string, to?: string) {
 }
 
 
-/** Swap from a stablecoin: lock the deposit into the swap (gasless, once). wait: wait for the deposit first, then the payout. */
+/** Swap from a stablecoin: lock the deposit into the swap (once; gasless on Arbitrum One, ETH-paid approve + burn on Base). wait: wait for the deposit first, then the payout. */
 export async function swapFund(c: Ctx, id: string, o: { wait?: boolean; timeoutSec?: number; pollMs?: number } = {}) { mainnetOnly(c); return reverseFund(c, id, o); }
 /** Swap from a stablecoin: send the stablecoins at the deposit address to your own address (unfunded, failed or refunded swap). */
 export async function swapRecover(c: Ctx, id: string, to?: string) { mainnetOnly(c); return reverseRecover(c, id, to); }

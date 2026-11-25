@@ -113,7 +113,7 @@ export async function reverseQuote(c: Ctx, i: ReverseInput) {
 export interface ReverseRunInput extends ReverseInput { confirm?: boolean; wait?: boolean; timeoutSec?: number; pollMs?: number; onProgress?: (x: unknown) => void }
 
 /** Preview (default) or create a swap from a stablecoin. confirm: create it and show where to deposit. wait: watch the deposit
- *  address, fund the swap once the deposit is there (gasless), and wait for the payout. */
+ *  address, fund the swap once the deposit is there (gasless on Arbitrum One; approve + burn on Base, after the ETH check), and wait for the payout. */
 export async function reverseRun(c: Ctx, i: ReverseRunInput) {
   const p = parseReverse(c, i); const s = await reverse(c);
   // a bridged deposit needs the deposit chain's reader and the burn record (resume, recover): refuse before anything is created
@@ -149,7 +149,7 @@ export async function reverseRun(c: Ctx, i: ReverseRunInput) {
   return { ...(await waitReverse(s, created.id, { timeoutSec: i.timeoutSec, pollMs: i.pollMs })), from: p.from, to: p.to };
 }
 
-/** Before showing a deposit address: the swap must be a new gasless swap on Arbitrum, from the chosen token, depositing to this
+/** Before showing a deposit address: the swap must be a new gasless swap locked on Arbitrum One (a Base deposit is bridged there), from the chosen token, depositing to this
  *  Mark home's own address, for the confirmed amount, paying out to the confirmed target. Else SWAP_FAILED: deposit nothing (an
  *  unfunded swap simply expires). */
 function checkReverseCreated(c: Ctx, p: Parsed, x: ReverseSwapCreated, q: any, myDeposit: string) {
@@ -216,9 +216,9 @@ async function gasState(s: Rev, t: StableToken | undefined, dep: string | undefi
   try { const r = readerOf(s, t); const [need, holds] = await Promise.all([gasNeedWei(r), r.ethBalance(dep)]); return { need, holds }; } catch { return null; }
 }
 /** A burn was sent and the swap waits for its settlement: funding again resumes it (no new burn). */
-const resumable = async (s: Rev, x: ReverseSwapInfo) => !!x.bridgeSourceChain && x.status === "pending" && !x.fundTx && !!(await s.cctpBurn?.(x.id));
+const resumable = async (s: Rev, x: ReverseSwapInfo) => !!x.bridgeSourceChain && x.status === "pending" && !x.fundTx && !!((await s.cctpBurn?.(x.id)) ?? s.sentBurn?.(x.id));
 
-/** Lock the deposit into the swap (gasless), once. wait: first wait for the deposit, then for the payout. */
+/** Lock the deposit into the swap, once (gasless on Arbitrum One; on Base approve + CCTP burn paid in ETH, checked first). wait: first wait for the deposit, then for the payout. */
 export async function reverseFund(c: Ctx, id: string, o: { wait?: boolean; timeoutSec?: number; pollMs?: number } = {}) {
   if (!id) throw new MarkError("USAGE", "mark swap fund <id>");
   const s = await reverse(c);
@@ -333,9 +333,12 @@ export async function reverseStatus(s: Rev, x0: ReverseSwapInfo) {
     out.depositSeen = f.have === undefined ? "unknown (balance read failed)" : units(f.have, t!.decimals);
     let lowEth: { need: bigint; holds: bigint } | undefined;
     if (t?.bridge) {
-      const g = await gasState(s, t, x.depositAddress); const burn = await s.cctpBurn?.(x.id); if (g && g.holds < g.need) lowEth = g;
+      const g = await gasState(s, t, x.depositAddress); const recorded = await s.cctpBurn?.(x.id), burn = recorded ?? s.sentBurn?.(x.id); if (g && g.holds < g.need) lowEth = g;
       out.depositNetwork = t.network; out.gas = g ? { network: t.network, needEth: ethText(g.need), holdsEth: ethText(g.holds) } : "unknown (read failed)";
-      if (burn) { out.burnTx = burn; out.burnExplorer = t.explorerTx + burn; out.next = `The ${t.symbol} was burned on ${t.network}; the swap is not locked yet. Run ${mk()} swap fund ${x.id} to resume (no new burn, no gas). ${DO_NOT_RESEND}`; return out; }
+      if (burn) { out.burnTx = burn; out.burnExplorer = t.explorerTx + burn;
+        out.next = recorded ? `The ${t.symbol} was burned on ${t.network}; the swap is not locked yet. Run ${mk()} swap fund ${x.id} to resume (no new burn, no gas). ${DO_NOT_RESEND}`
+          : `The ${t.symbol} was burned on ${t.network} but the swap library did not record it, so Mark will not fund this swap again. If it does not settle, ${mk()} swap recover ${x.id} --to <your 0x address> (30 minutes after the attempt) sends it as ${t.symbol} on ${t.bridge.settleNetwork}. ${DO_NOT_RESEND}`;
+        return out; }
     }
     out.next = f.attempted !== undefined ? `A funding was submitted; wait for Satora to see it. ${DO_NOT_RESEND}`
       : f.have !== undefined && f.have >= f.need ? `Deposit seen: lock it with ${mk()} swap fund ${x.id}. ${DO_NOT_RESEND}`
@@ -411,7 +414,7 @@ export async function reverseRecover(c: Ctx, id: string, to: string | undefined)
       const burn = (await s.cctpBurn?.(id)) ?? s.sentBurn?.(id);
       // a burn with no funding time in this home (a lost record): the settlement may still be running, so resume it first;
       // that records the time, and recover works 30 minutes later
-      if (burn && at === undefined && x.status === "pending" && !x.fundTx) throw new MarkError("SWAP_FUNDING", `swap ${id} has a CCTP burn (${burn}) but this Mark home has no funding time for it: run ${mk()} swap fund ${id} to resume the settlement first; if it does not settle, recover works 30 minutes after that`);
+      if (burn && at === undefined && x.status === "pending" && !x.fundTx) throw new MarkError("SWAP_FUNDING", `swap ${id} has a CCTP burn (${burn}) but this Mark home has no funding time for it: run ${mk()} swap fund ${id} first (it resumes the settlement, or records the time); if it does not settle, recover works 30 minutes after that`);
       if (burn) {
         // the USDC left Base: Circle mints it to the deposit account on the settlement chain; both steps are sponsored (no ETH)
         const r = await s.recoverReverse(id, dest);

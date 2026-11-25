@@ -80,9 +80,9 @@ function dirOf(s: any): SwapInfo["direction"] {
   return "other";
 }
 
-interface BridgeSends { pre?: string; burn?: string; unknown?: true }
+interface BridgeSends { pre?: string; nonce?: string; burn?: string; unknown?: true }
 const validSends = (v: unknown) => !!v && typeof v === "object" && Object.entries(v as object).every(([k, x]) =>
-  (k === "pre" && typeof x === "string" && /^\d+$/.test(x)) || (k === "burn" && typeof x === "string" && /^0x[0-9a-fA-F]{64}$/.test(x)) || (k === "unknown" && x === true));
+  ((k === "pre" || k === "nonce") && typeof x === "string" && /^\d+$/.test(x)) || (k === "burn" && typeof x === "string" && /^0x[0-9a-fA-F]{64}$/.test(x)) || (k === "unknown" && x === true));
 /** A CCTP burn tx (0x + 64 hex) the swap library recorded on its swap record, if any. */
 const burnOf = (st: any): string | undefined => { const b = st?.cctpBurnTxid; return typeof b === "string" && /^0x[0-9a-fA-F]{64}$/.test(b) ? b : undefined; };
 /** The lock transaction the swap library recorded for a swap it funded, if any. */
@@ -335,6 +335,7 @@ export class SatoraProvider implements SwapProvider {
       if (burn && ft) return { success: false, skipped: `the swap was already funded (tx ${ft}); Mark never funds it again` };
       // a burn (or a send with an unknown outcome) only Mark saw: the swap library would burn again, so Mark never funds it again
       const mine = this.sends.read()[id];
+      if (!burn && (mine?.burn || mine?.unknown) && at === undefined) this.markAttempt(id, Date.now()); // starts the 30-minute recover clock
       if (!burn && (mine?.burn || mine?.unknown)) return { success: false, skipped: `a funding transaction of this swap was already sent${mine.burn ? ` (burn ${mine.burn})` : " with an unknown outcome"}; Mark never signs it again. After 30 minutes, mark swap recover moves the USDC` };
       let x: ReverseSwapInfo; try { x = await this.getReverse(id); } catch (e) { return { success: false, message: `could not read the swap: ${errText(e)}` }; }
       if (x.status !== "pending" || x.fundTx) return { success: false, skipped: `the swap is already past funding (${x.status}${x.fundTx ? `, funding tx ${x.fundTx}` : ""})` };
@@ -376,12 +377,14 @@ export class SatoraProvider implements SwapProvider {
     const t = stableOfReverse(x);
     if (!t?.bridge) return { success: false, stop: true, message: `unknown bridge source ${x.bridgeSourceChain} / ${x.bridgeSourceToken}; not funding it` };
     const r = this.evmOn(Number(t.chain)), dep = x.depositAddress!, need = BigInt(x.sourceUnits!);
+    let pre: bigint | undefined;
     if (!burn) {
       let have: bigint, eth: bigint, gas: bigint;
       try { [have, eth, gas] = await Promise.all([r.tokenBalance(t.tokenId, dep), r.ethBalance(dep), gasNeedWei(r)]); }
       catch (e) { return { success: false, message: `could not read the deposit address on ${t.network}: ${errText(e)}` }; }
       if (have < need) return { success: false, skipped: `the deposit address holds ${have} of the ${need} ${t.symbol} units on ${t.network} this swap needs` };
       if (eth < gas) return { success: false, skipped: `the deposit address needs ETH on ${t.network} for gas`, needEth: { network: t.network, needWei: gas.toString(), holdsWei: eth.toString() } };
+      pre = have;
     }
     this.markAttempt(id, Date.now());
     let signer: any;
@@ -390,7 +393,9 @@ export class SatoraProvider implements SwapProvider {
     // every transaction the swap library sends from the deposit key goes through this counter: a failure before the first send
     // proves nothing was signed or broadcast (the mempool or a balance cannot prove that: an unrecorded burn may be mined already)
     let sends = 0; const send = signer.sendTransaction;
-    if (!burn) { let pre: bigint | undefined; try { pre = await r.tokenBalance(t.tokenId, dep); } catch { pre = undefined; } this.sends.set(id, { ...(pre !== undefined ? { pre: pre.toString() } : {}) }); }
+    // before anything is sent: the USDC and the deposit address's transaction count (the evidence a later recover needs)
+    if (!burn) { let nonce: bigint | undefined; try { nonce = await r.txCount?.(dep); } catch { nonce = undefined; }
+      this.sends.set(id, { ...(pre !== undefined ? { pre: pre.toString() } : {}), ...(nonce !== undefined ? { nonce: nonce.toString() } : {}) }); }
     const counted = { ...signer, sendTransaction: async (tx: any) => {
       sends++;
       try {
@@ -458,12 +463,13 @@ export class SatoraProvider implements SwapProvider {
       if (burnOf(st)) return this.recoverBurned(id, to, t.bridge.settleNetwork);
       // a burn Mark's signer sent but the swap library did not record: recover on the settlement chain from that burn
       if (mine?.burn) return this.recoverBurned(id, to, t.bridge.settleNetwork, mine.burn);
-      // a send that failed with an unknown outcome: sweep on Base only while the USDC is all still there (no burn mined)
+      // a send that failed with an unknown outcome: a balance proves nothing (the address is shared, a later deposit can refill it).
+      // Only the deposit address's transaction count proves it: unchanged since before the attempt means nothing of it was sent
       if (mine?.unknown) {
-        let now: bigint; try { now = await this.evmOn(Number(t.chain)).tokenBalance(t.tokenId, resp.client_evm_address ?? this.depositAddress()); }
+        let now: bigint | undefined; try { now = await this.evmOn(Number(t.chain)).txCount?.(this.depositAddress()); }
         catch (e) { return { success: false, message: `could not read the deposit address on ${t.network} (${errText(e)}); nothing was moved`, network: t.network }; }
-        if (mine.pre === undefined || now < BigInt(mine.pre)) return { success: false, network: t.network,
-          message: `a ${t.network} transaction of this swap's funding was sent with an unknown outcome and the deposit address no longer holds all its ${t.symbol}: a burn may have gone through. Nothing was moved; check the deposit address on ${t.network}'s explorer for a burn` };
+        if (mine.nonce === undefined || now === undefined || now !== BigInt(mine.nonce)) return { success: false, network: t.network,
+          message: `a ${t.network} transaction of this swap's funding was sent with an unknown outcome and the deposit address has sent transactions since: a burn may have gone through. Nothing was moved. Check the deposit address on ${t.network}'s explorer for a Circle CCTP burn (depositForBurn); that burn is recovered on ${t.bridge.settleNetwork}, not by a ${t.network} sweep` };
       }
       return this.sweepOn(id, to, t.tokenId, Number(t.chain), t.network);
     }

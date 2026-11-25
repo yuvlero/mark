@@ -10,6 +10,8 @@ export interface EvmReader {
   gasPrice(): Promise<bigint>;
   /** OP-stack chains (Base): upper bound of the L1 data fee for a transaction of `bytes` calldata, in wei. */
   l1Fee?(bytes: number): Promise<bigint>;
+  /** Transactions `owner` has sent, counting the mempool (the pending nonce). */
+  txCount?(owner: string): Promise<bigint>;
   /** Units of `token` transferred to `to` in tx (its ERC-20 Transfer logs); undefined while the receipt is not available. */
   /** undefined: no receipt yet; null: the tx reverted (nothing moved). */
   transferredTo?(txHash: string, token: string, to: string): Promise<bigint | undefined | null>;
@@ -63,6 +65,7 @@ function evmReader(chainId: number, urls: readonly string[], fetchImpl: typeof f
     async ethBalance(owner) { return big(await rpc("eth_getBalance", [owner, "latest"])); },
     async gasPrice() { return big(await rpc("eth_gasPrice", [])); },
     ...(chainId === BASE_CHAIN_ID ? { async l1Fee(bytes: number) { return big(await rpc("eth_call", [{ to: GAS_ORACLE, data: L1_UPPER_BOUND + BigInt(bytes).toString(16).padStart(64, "0") }, "latest"])); } } : {}),
+    async txCount(owner) { return big(await rpc("eth_getTransactionCount", [owner, "pending"])); },
     async transferredTo(txHash, token, to) {
       const r = await rpcAny("eth_getTransactionReceipt", [txHash], (x) => x === null || (typeof x === "object" && Array.isArray((x as any).logs)));
       if (!r) return undefined;

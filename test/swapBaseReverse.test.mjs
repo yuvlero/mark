@@ -75,7 +75,7 @@ function provider(client, o = {}) {
   const st = { usdc: 0n, eth: 0n, pending: false, ...(o.base ?? {}) }; const reads = { arbToken: 0 }; const sent = [];
   p.evm = { tokenBalance: async () => { reads.arbToken++; return o.arbUsdc ?? 0n; }, ethBalance: async () => 0n, gasPrice: async () => 20_000_000n };
   p.evmBase = { tokenBalance: async (token) => { assert.equal(token, B.tokenId); return st.usdc; }, ethBalance: async () => st.eth, gasPrice: async () => 6_000_000n,
-    l1Fee: async (bytes) => BigInt(bytes) * 4_000_000n };
+    l1Fee: async (bytes) => BigInt(bytes) * 4_000_000n, txCount: async () => BigInt(st.nonce ?? 0) };
   p.ethUsd = async () => o.usd;
   p.signerFor = async (k, chainId) => ({ address: DEP, chainId, fake: true,
     sendTransaction: async (tx) => { if (p.failSend) throw new Error("rpc timeout after broadcast?"); sent.push({ chainId, ...tx }); return "0x" + (sent.length.toString(16).padStart(2, "0")).repeat(32); }, waitForReceipt: async () => ({ status: "success" }) });
@@ -277,20 +277,27 @@ test("a burn Mark's signer sent but the swap library did not record: never funde
   const r = await p.fundReverse("rb-1"); assert.equal(r.uncertain, true); assert.equal(m.stored["rb-1"].cctpBurnTxid, undefined);
   const burn = p.sent[1] && "0x" + "02".repeat(32); assert.equal(p.sentBurn("rb-1"), burn);
   // even with the funding time lost, no second burn
-  p.markAttempt("rb-1", undefined); const again = await p.fundReverse("rb-1"); assert.match(again.skipped, /already sent \(burn 0x0202/); assert.equal(m.calls.fundSwap.length, 1);
+  p.markAttempt("rb-1", undefined); p.st.usdc = 0n;
+  const st = await sw.swapStatus(ctxWith(p), "rb-1"); assert.equal(st.burnTx, burn); assert.match(st.next, /did not record it/); assert.doesNotMatch(st.next, /Waiting for the deposit/);
+  const fr = await sw.swapFund(ctxWith(p), "rb-1"); assert.equal(fr.funded, false); assert.match(fr.note, /already sent \(burn 0x0202/); assert.doesNotMatch(fr.note, /No deposit seen/);
+  assert.notEqual(p.fundAttemptedAt("rb-1"), undefined); // the lost funding time is recorded again: the recover clock runs
+  await assert.rejects(sw.swapRecover(ctxWith(p), "rb-1", ME), (e) => e.code === "SWAP_FUNDING"); // not before 30 minutes
+  assert.equal(m.calls.fundSwap.length, 1);
   p.markAttempt("rb-1", Date.now() - 31 * 60 * 1000); p.st.usdc = 0n; p.st.eth = 0n;
   const rec = await sw.swapRecover(ctxWith(p), "rb-1", ME);
   assert.equal(rec.recovered, true); assert.equal(rec.network, "Arbitrum One"); assert.deepEqual(m.calls.recoverCctp, [{ id: "rb-1", to: ME, opts: { burnTxHash: burn } }]);
 });
 
-test("a Base send with an unknown outcome: recover sweeps only while all the USDC is still there", async () => {
+test("a Base send with an unknown outcome: recover sweeps only when the deposit address's transaction count proves nothing was sent", async () => {
   const m = mockClient({ statuses: ["pending"] }); const p = provider(m.client, { base: { usdc: 2_000_000n, eth: NEED_WEI } }); await create(p);
   m.client.fundSwap = async (id, signer) => { m.calls.fundSwap.push({ id }); await signer.sendTransaction({ to: TOKEN_MESSENGER_V2, data: "0x" }); };
   p.failSend = true; const r = await p.fundReverse("rb-1"); assert.equal(r.uncertain, true); p.failSend = false;
   assert.match((await p.fundReverse("rb-1")).skipped ?? "", /never signs it again/);
   p.markAttempt("rb-1", Date.now() - 31 * 60 * 1000);
-  p.st.usdc = 1_000_000n; const r1 = await sw.swapRecover(ctxWith(p), "rb-1", ME); assert.equal(r1.recovered, false); assert.match(r1.message, /a burn may have gone through/); assert.equal(p.sent.length, 0);
-  p.st.usdc = 2_000_000n; const r2 = await sw.swapRecover(ctxWith(p), "rb-1", ME); assert.equal(r2.recovered, true); assert.equal(r2.network, "Base"); assert.equal(p.sent.length, 1);
+  // the deposit address sent a transaction since (a burn may have mined) and a later deposit refilled it: no sweep
+  p.st.nonce = 1; p.st.usdc = 4_000_000n; const r1 = await sw.swapRecover(ctxWith(p), "rb-1", ME); assert.equal(r1.recovered, false); assert.match(r1.message, /a burn may have gone through/); assert.equal(p.sent.length, 0);
+  // nothing sent from the deposit address since before the attempt (same transaction count): the USDC is still on Base
+  p.st.nonce = 0; p.st.usdc = 2_000_000n; const r2 = await sw.swapRecover(ctxWith(p), "rb-1", ME); assert.equal(r2.recovered, true); assert.equal(r2.network, "Base"); assert.equal(p.sent.length, 1);
 });
 
 test("a pinned Base swap with no swap-library record is not funded", async () => {
