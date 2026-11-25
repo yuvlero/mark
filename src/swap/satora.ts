@@ -235,9 +235,19 @@ export class SatoraProvider implements SwapProvider {
   // ---------- `mark swap` from a stablecoin: USDC / USDT0 on Arbitrum -> BTC (Lightning or Arkade), gasless ----------
   async quoteReverse(p: ReverseQuoteInput): Promise<SatoraQuote> {
     const extraFees = checkMarkupBps(p.bps); const s = SWAP_TARGETS[p.from], t = SWAP_SOURCES[p.to];
-    return await this.c.getQuote({ sourceChain: s.chain as any, sourceToken: s.tokenId, targetChain: t.chain as any, targetToken: t.tokenId,
+    const quote = (src: { chain: string; tokenId: string }, dest?: string) => this.c.getQuote({ sourceChain: src.chain as any, sourceToken: src.tokenId, targetChain: t.chain as any, targetToken: t.tokenId,
       ...(p.sourceUnits !== undefined ? { sourceAmount: p.sourceUnits.toString() as any } : { targetAmount: p.targetSats as any }),
-      ...(p.destination ? { lightningDestination: p.destination } : {}), referralCode: SWAP_REFERRAL_ID, extraFees }) as any;
+      ...(dest ? { lightningDestination: dest } : {}), referralCode: SWAP_REFERRAL_ID, extraFees }) as Promise<any>;
+    // A bridged source paying a Lightning invoice: Satora's exact Lightning-send quote does not take the bridge source chain (live,
+    // 25 Nov 2026: "unknown variant 8453") and the swap library then falls back to an estimate (low network fee, softer rate),
+    // which undershoots the swap Satora creates by ~2.5%. The swap is priced on its settlement chain, and the deposit on the
+    // bridge source is burned 1:1 to it (Circle's fee is taken from the mint): so the exact quote comes from the settlement chain,
+    // and Circle's fee from the composed quote on the bridge source.
+    if (s.bridge && p.destination) {
+      const settle = SWAP_TARGETS.usdc; const [exact, composed] = await Promise.all([quote(settle, p.destination), quote(s)]);
+      return { ...exact, bridge_fee: composed?.bridge_fee } as any;
+    }
+    return await quote(s, p.destination);
   }
   /** Created gasless: this Mark home's EVM key is the depositor, so no wallet or ETH is needed to fund it. Same referral ID and
    *  markup as the quote. */

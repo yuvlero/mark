@@ -118,6 +118,18 @@ test("quote: Base source chain, Circle's bridge fee and the Base gas in ETH and 
   const fa = formatReverseQuote({ ...RQ, bridge_fee: undefined }, { from: "usdc", to: "lightning", bps: 50 }); assert.equal(fa.gas, undefined); assert.match(fa.markupNote, /No ETH needed/);
 });
 
+test("invoice quote from Base (live bug, 25 Nov): exact Lightning quote on the settlement chain, Circle's fee from the Base quote", async () => {
+  const EXACT = { ...RQ, source_amount: "1986022", net_source_amount: undefined, network_fee: 18, target_amount: "3351", net_target_amount: "3300", bridge_fee: undefined };
+  const m = mockClient(); m.client.getQuote = async (p) => { m.calls.getQuote.push(p);
+    // Satora's exact Lightning-send quote rejects the Base chain; the composed Base quote underestimates (but carries the bridge fee)
+    return p.lightningDestination ? (p.sourceChain === "42161" ? EXACT : { ...RQ, source_amount: "1936485" }) : { ...RQ, source_amount: "1936485", bridge_fee: 301 }; };
+  const p = provider(m.client); const inv = INV();
+  const r = await sw.swapRun(ctxWith(p), { from: "usdc-base", to: "lightning", invoice: inv });
+  assert.equal(r.quote.sendUnits, "1986022"); assert.equal(r.quote.receiveSats, 3300); assert.equal(r.quote.fees.bridgeFeeUnits, "301");
+  const ex = m.calls.getQuote.find((q) => q.lightningDestination); assert.equal(ex.sourceChain, "42161"); assert.equal(ex.sourceToken, ARB_USDC); assert.equal(ex.lightningDestination, inv);
+  assert.ok(m.calls.getQuote.some((q) => q.sourceChain === "8453" && !q.lightningDestination)); assert.equal(m.calls.createSwap.length, 0);
+});
+
 test("create: a Base-sourced swap is accepted only as exactly USDC on Base, locked as USDC on the settlement chain; deposit shows ETH on Base", async () => {
   const m = mockClient(); const p = provider(m.client, { base: { eth: 0n } });
   const r = await create(p);
