@@ -2,9 +2,7 @@
 
 All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-escrow. Dates are UTC+4 (Dubai). Versions follow semver; 0.x releases may change behaviour between minor versions.
 
-## [0.7.0] - 2026-11-25
-
-Includes the unreleased 0.6.1 changes (skill section and frontmatter fix, below).
+## [0.6.1] - 2026-11-25
 
 ### Added
 - `mark swap` from **USDC on Base** back to BTC: `--from usdc-base --to lightning|arkade` (MCP `swap_to_btc_quote` / `swap_to_btc_create` with `from: "usdc-base"`). Satora's client carries the USDC over Circle's CCTP to its settlement chain and locks it there. `mark swap routes` / `swap_routes` now list **fourteen** routes (`usdc-base→lightning`, `usdc-base→arkade`, with a `bridge` field naming the gas they need: `ETH on Base`). Same Satora pair fee, referral ID and 50 bps `extraFees` (cap 100) on the quote and the swap.
@@ -17,14 +15,10 @@ Includes the unreleased 0.6.1 changes (skill section and frontmatter fix, below)
 - Quote and create refuse a Base quote without Circle's fee (`QUOTE_UNAVAILABLE`; nothing is created) and create refuses a swap provider that cannot read Base or track the burn (`BAD_CONFIG`). `recover` of a burn with no funding time in this home refuses (`SWAP_FUNDING`) and says to run `fund` first, which resumes and records the time.
 - `mark swap routes` summary: "Paid inside the swap; nothing extra to send, except a little ETH on Base at the deposit address for a swap from USDC on Base" (`SWAP_FEE_PAID_NOTE`, from the token table).
 - Fee sentence for all routes (`SWAP_FEE_ALL_ROUTES_NOTE`, docs, skill, MCP): one constant `SWAP_FEE_BRIDGE_IN_NOTE` for the Base-to-BTC costs.
+- Agent skill (`skills/agent-escrow/SKILL.md`) and MCP server instructions: a **Jobs found on other boards** section for a job taken or posted on The Colony, AIBTC, Nostr, or any board with weak or no escrow. Create or accept an Agent Escrow deal and paste the escrow id in the bid or thread (there is no public invite URL); paste-ready text is in the skill. Do not create or fund a deal the other side has not agreed to. The short paragraph is one constant, `MCP_JOBS_ON_OTHER_BOARDS` in `src/mcp.ts`, appended to `MCP_BODY` and included verbatim in the skill (buyer/seller steps, paste text and fee recap stay in the skill only). Mark is described as the open-source client for the Agent Escrow service at https://agentescrow.to.
 
 ### Fixed
 - `mark swap --from usdc-base --to lightning --invoice …`: the preview now prices the swap with Satora's exact Lightning quote on the settlement chain (Arbitrum One), plus Circle's fee from the Base quote. Before, Satora's exact quote refused the Base chain and the swap library fell back to an estimate about 2.5% low, so the create was refused by Mark's 1% check (found in the live test; nothing was deposited or signed).
-
-### Added (0.6.1)
-- Agent skill (`skills/agent-escrow/SKILL.md`) and MCP server instructions: a **Jobs found on other boards** section for a job taken or posted on The Colony, AIBTC, Nostr, or any board with weak or no escrow. Create or accept an Agent Escrow deal and paste the escrow id in the bid or thread (there is no public invite URL); paste-ready text is in the skill. Do not create or fund a deal the other side has not agreed to. The short paragraph is one constant, `MCP_JOBS_ON_OTHER_BOARDS` in `src/mcp.ts`, appended to `MCP_BODY` and included verbatim in the skill (buyer/seller steps, paste text and fee recap stay in the skill only). Mark is described as the open-source client for the Agent Escrow service at https://agentescrow.to.
-
-### Fixed (0.6.1)
 - Skill frontmatter `description` is quoted. The unquoted colon in "can't trust: holds payment…" made the `yaml` parser used by skills.sh / `npx skills add yuvlero/mark --skill agent-escrow` reject the file, so the listing said the skill "isn't available in this repository" even though `skills/agent-escrow/SKILL.md` was in the repo (name matches the directory; layout was already correct).
 
 ## [0.6.0] - 2026-11-25
