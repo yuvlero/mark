@@ -7,11 +7,14 @@ export interface SwapInfo { id: string; direction: "ln_to_ark" | "ark_to_ln" | "
 /** detail: the underlying error when the library's own message is generic (e.g. "All VTXOs have already been spent."). */
 export interface ClaimResult { success: boolean; txid?: string; message?: string; detail?: string }
 
-/** `mark swap` (BTC to a stablecoin on Arbitrum). */
+/** `mark swap` (BTC to a stablecoin on Arbitrum One, or USDC on Base bridged from Arbitrum One over CCTP). bridgeTarget*: Satora's
+ *  bridge destination (absent for an Arbitrum payout); tokenContract / evmChainId are then the Arbitrum settlement token and chain. */
 /** Fields are Satora's own answer (no fallback to what was requested), so Mark can check them before showing anything to pay. */
 export interface StableSwapCreated { id: string; status: string; invoice?: string; arkAddress?: string; payAmountSats: number; targetAddress?: string; receiveUnits?: string;
-  sourceChain?: string; targetChain?: string; tokenContract?: string; evmChainId?: number; raw?: unknown }
-export interface StableSwapInfo { id: string; status: string; direction?: string; sourceAmountSats?: number; targetUnits?: string; targetAddress?: string; tokenContract?: string; tokenSymbol?: string; evmChainId?: number; payoutTx?: string; feeSats?: number; createdAt?: string; local: boolean; raw?: unknown }
+  sourceChain?: string; targetChain?: string; tokenContract?: string; evmChainId?: number; bridgeTargetChain?: string; bridgeTargetToken?: string; raw?: unknown }
+export interface StableSwapInfo { id: string; status: string; direction?: string; sourceAmountSats?: number; targetUnits?: string; targetAddress?: string; tokenContract?: string; tokenSymbol?: string; evmChainId?: number; payoutTx?: string; feeSats?: number; createdAt?: string;
+  /** bridgeTx: the delivery on the bridge chain, when Satora reports it (Circle's Forwarding Service deliveries may not). */
+  bridgeTargetChain?: string; bridgeTargetToken?: string; bridgeTx?: string; local: boolean; raw?: unknown }
 
 /** `mark swap` from a stablecoin: Satora's own answer, checked before the deposit address is shown. depositAddress is where the
  *  stablecoins go (this Mark home's gasless depositor key, client_evm_address); sourceUnits the exact token units to deposit. */

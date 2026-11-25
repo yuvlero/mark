@@ -2,10 +2,18 @@
 
 All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-escrow. Dates are UTC+4 (Dubai). Versions follow semver; 0.x releases may change behaviour between minor versions.
 
-## [Unreleased]
+## [0.6.0] - 2026-11-25
 
 ### Added
+- `mark swap` pays out **USDC on Base** too: `--to usdc-base` (MCP `swap_quote` / `swap_create` with `to: "usdc-base"`), from Lightning or Arkade. Satora settles the swap in USDC on Arbitrum One and, at the (gasless) claim, Circle's CCTP carries it to the same 0x address on Base (native USDC `0x8335…2913`, chain 8453). Same Satora pair fee, same referral ID and 50 bps `extraFees` (cap 100) on the quote and the swap. Circle's bridge fee (about 0.05 USDC) is in USDC, taken from the payout, and shown in every quote and preview (`fees.bridgeFee`, `fees.bridgeFeeUnits`, `markupNote`, and a `bridge` block); `receive` is after it. Mark refuses to create the swap if Satora's quote has no bridge fee. `mark swap routes` / `swap_routes` now list twelve routes (`lightning→usdc-base`, `arkade→usdc-base`, with a `bridge` field).
+- Before showing anything to pay, Mark checks that Satora's swap settles in USDC on Arbitrum One and bridges to exactly USDC on Base (and that an Arbitrum payout does not bridge anywhere); otherwise `SWAP_FAILED`. For a Base payout, `payoutTx` is the claim on Arbitrum One (Arbiscan); `mark swap status` / `claim` add a Basescan link to the payout address and the Base delivery tx once Satora reports it, and never read the Arbitrum claim as the amount received. `expectedReceive` is never above the quote's amount after the bridge fee.
 - docs: Glama score badge
+
+### Changed
+- Swap text names each route's network instead of assuming Arbitrum: quotes, previews, `--to` / `--address` errors, CLI usage, MCP tool descriptions, README, quickstart and skill (e.g. "USDC on Base", "USDT0 on Arbitrum One").
+
+### Not supported
+- USDC on Base → BTC. Satora funds a Base-sourced swap with a CCTP burn signed on Base, which needs ETH on Base at the deposit address (not gasless). `--from usdc-base` is refused with a clear message; swaps from a stablecoin stay on Arbitrum One (`--from usdc|usdt0`).
 
 ## [0.5.2] - 2026-11-23
 

@@ -1,4 +1,4 @@
-/** `mark swap`: BTC (Lightning or Arkade) to a stablecoin on Arbitrum through Satora. Pure constants, fee math and input checks
+/** `mark swap`: BTC (Lightning or Arkade) to a stablecoin (USDC / USDT0 on Arbitrum One, USDC on Base) through Satora. Pure constants, fee math and input checks
  *  (no network, no keys), shared by the provider, the use-cases, the CLI and MCP. Standalone: nothing here touches the escrow. */
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { MarkError } from "../errors.js";
@@ -31,10 +31,13 @@ export const SWAP_FEE_ARKADE_LN_NOTE = `about 0.80% total (Satora ~0.30% + Agent
 /** Static wording for a route when no live quote is available. */
 export function routeFeeNote(route: SwapRoute): string {
   if (route.dir === "rail") return route.from === "lightning" ? SWAP_FEE_LN_ARKADE_NOTE : SWAP_FEE_ARKADE_LN_NOTE;
+  if (route.dir === "to_stable" && SWAP_TARGETS[route.to].bridge) return `${SWAP_FEE_TOTAL_NOTE}; ${SWAP_FEE_BRIDGE_NOTE}`;
   return SWAP_FEE_TOTAL_NOTE;
 }
+/** USDC on Base, no live quote: Satora bridges it from Arbitrum One over Circle CCTP; Circle's fee is taken from the payout in USDC. */
+export const SWAP_FEE_BRIDGE_NOTE = "USDC on Base also pays Circle's CCTP bridge fee (about 0.05 USDC, in USDC, taken from the payout; the live quote shows it)";
 /** Docs / MCP / routes summary: fees vary by route, so a single ~1% line would be wrong for Lightning ↔ Arkade. */
-export const SWAP_FEE_ALL_ROUTES_NOTE = `Fees depend on the route and are shown on the live quote. Lightning or Arkade to USDC or USDT0 (and back) is ${SWAP_FEE_TOTAL_NOTE}. Lightning to Arkade is ${SWAP_FEE_LN_ARKADE_NOTE}. Arkade to Lightning is ${SWAP_FEE_ARKADE_LN_NOTE}`;
+export const SWAP_FEE_ALL_ROUTES_NOTE = `Fees depend on the route and are shown on the live quote. Lightning or Arkade to USDC or USDT0 on Arbitrum One (and back) or to USDC on Base is ${SWAP_FEE_TOTAL_NOTE}; ${SWAP_FEE_BRIDGE_NOTE}. Lightning to Arkade is ${SWAP_FEE_LN_ARKADE_NOTE}. Arkade to Lightning is ${SWAP_FEE_ARKADE_LN_NOTE}`;
 /** Top-level routes / docs note. `live` is used only when every listed route returned a quote and they all agreed on the same rates (unusual once Lightning ↔ Arkade is included). */
 export function swapFeeSummaryNote(live?: { satoraFeeRate: number; totalFeeRate: number; markupBps?: number } | null) {
   const bps = live?.markupBps ?? SWAP_MARKUP_BPS;
@@ -44,18 +47,45 @@ export function swapFeeSummaryNote(live?: { satoraFeeRate: number; totalFeeRate:
 
 /** Where the BTC comes from (a Satora source asset). */
 export const SWAP_SOURCES = { lightning: { chain: "Lightning", tokenId: "btc" }, arkade: { chain: "Arkade", tokenId: "btc" } } as const;
-/** What it turns into: stablecoins on Arbitrum One (chain 42161). USDT0 on Arbitrum lives at the former USDT contract. */
-export const SWAP_TARGETS = {
-  usdc: { chain: "42161", tokenId: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", symbol: "USDC", decimals: 6, network: "Arbitrum One" },
-  usdt0: { chain: "42161", tokenId: "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9", symbol: "USDT0", decimals: 6, network: "Arbitrum One" },
-} as const;
-export type SwapSource = keyof typeof SWAP_SOURCES;
-export type SwapTarget = keyof typeof SWAP_TARGETS;
+/** Where a stablecoin payout ends up. bridge: Satora settles the swap on Arbitrum One (the hub: USDC there) and Circle's CCTP
+ *  carries the USDC to this chain at claim; Satora's quote shows that bridge fee (bridge_fee, token units) and takes it from the payout. */
+export interface StableToken { chain: string; tokenId: string; symbol: string; decimals: number; network: string;
+  /** Explorer URL prefixes on the payout chain. */
+  explorerTx: string; explorerAddress: string;
+  bridge?: { name: string; via: string; settleChain: string; settleToken: string } }
+export const ARB_USDC = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831";
+export const BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 export const ARBISCAN_TX = "https://arbiscan.io/tx/";
+const ARB = { explorerTx: ARBISCAN_TX, explorerAddress: "https://arbiscan.io/address/" };
+/** What it turns into: USDC / USDT0 on Arbitrum One (chain 42161; USDT0 lives at the former USDT contract) or USDC on Base
+ *  (chain 8453, bridged from Arbitrum over Circle CCTP). Each key names its network in `network`. */
+const TARGETS = {
+  usdc: { chain: "42161", tokenId: ARB_USDC, symbol: "USDC", decimals: 6, network: "Arbitrum One", ...ARB },
+  usdt0: { chain: "42161", tokenId: "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9", symbol: "USDT0", decimals: 6, network: "Arbitrum One", ...ARB },
+  "usdc-base": { chain: "8453", tokenId: BASE_USDC, symbol: "USDC", decimals: 6, network: "Base", explorerTx: "https://basescan.org/tx/", explorerAddress: "https://basescan.org/address/",
+    bridge: { name: "Base", via: "Circle CCTP", settleChain: "42161", settleToken: ARB_USDC } },
+};
+export const SWAP_TARGETS: Record<keyof typeof TARGETS, StableToken> = TARGETS;
+export type SwapTarget = keyof typeof TARGETS;
+/** "USDC on Base", "USDT0 on Arbitrum One". */
+export const tokenLabel = (t: StableToken) => `${t.symbol} on ${t.network}`;
+/** Every target with its network, for usage and error text: "usdc (USDC on Arbitrum One), ...". */
+export const targetList = (keys: readonly string[] = Object.keys(SWAP_TARGETS)) => keys.map((k) => `${k} (${tokenLabel(SWAP_TARGETS[k as SwapTarget])})`).join(", ");
+/** Stablecoins Mark swaps back to BTC (gasless deposit on Arbitrum One). USDC on Base is a payout only: Satora funds a Base-sourced
+ *  swap with a CCTP burn signed on Base, which needs ETH on Base at the deposit address (not gasless), so Mark does not offer it yet. */
+export const SWAP_STABLES = ["usdc", "usdt0"] as const;
+export const BASE_TO_BTC_UNSUPPORTED = "USDC on Base -> BTC is not supported yet (Satora funds it with a CCTP burn on Base that needs ETH on Base: not gasless). Bridge the USDC to Arbitrum One and use --from usdc, or swap BTC -> USDC on Base with --to usdc-base";
+export type SwapSource = keyof typeof SWAP_SOURCES;
 /** Same hex address, invoice or contract, ignoring case (a missing value never matches). */
 export const sameHex = (a: unknown, b: unknown) => typeof a === "string" && typeof b === "string" && a !== "" && a.toLowerCase() === b.toLowerCase();
-/** The swap stablecoin with this contract on Arbitrum, if any. */
-export const targetByContract = (contract: unknown) => Object.values(SWAP_TARGETS).find((v) => sameHex(v.tokenId, contract));
+/** The swap stablecoin with this contract on Arbitrum One (not a bridged payout), if any. */
+export const targetByContract = (contract: unknown) => Object.values(SWAP_TARGETS).find((v) => !v.bridge && sameHex(v.tokenId, contract));
+/** A forward swap's payout token: a bridged payout (bridge_target_chain set) is the target with that bridge and destination
+ *  contract; otherwise the Arbitrum token by contract. A bridge Mark does not know returns undefined. */
+export function targetOfSwap(x: { tokenContract?: string; bridgeTargetChain?: string; bridgeTargetToken?: string }): StableToken | undefined {
+  if (x.bridgeTargetChain) return Object.values(SWAP_TARGETS).find((v) => v.bridge?.name === x.bridgeTargetChain && sameHex(v.tokenId, x.bridgeTargetToken) && sameHex(v.bridge?.settleToken, x.tokenContract));
+  return targetByContract(x.tokenContract);
+}
 /** `{ [key]: tx, [explorerKey]: arbiscan link }`, or nothing without a tx. */
 export const txLink = (tx: string | undefined, key = "txHash", explorerKey = "explorer") => tx ? { [key]: tx, [explorerKey]: ARBISCAN_TX + tx } : {};
 
@@ -66,7 +96,7 @@ export function swapSource(v: string | undefined): SwapSource {
 }
 export function swapTarget(v: string | undefined): SwapTarget {
   const k = (v ?? "usdc").toLowerCase().replace(/^usdt$/, "usdt0");
-  if (!Object.hasOwn(SWAP_TARGETS, k)) throw new MarkError("USAGE", `--to must be ${Object.keys(SWAP_TARGETS).join(" or ")} (on Arbitrum)`);
+  if (!Object.hasOwn(SWAP_TARGETS, k)) throw new MarkError("USAGE", `--to must be one of ${targetList()}`);
   return k as SwapTarget;
 }
 export function swapSats(v: unknown): number {
@@ -76,9 +106,9 @@ export function swapSats(v: unknown): number {
 }
 
 /** EIP-55: a mixed-case address must carry a valid checksum (catches typos); all-lowercase / all-uppercase are accepted. */
-export function checkEvmAddress(a: string | undefined, flag = "--address"): string {
+export function checkEvmAddress(a: string | undefined, flag = "--address", network = "Arbitrum One"): string {
   const x = (a ?? "").trim();
-  if (!/^0x[0-9a-fA-F]{40}$/.test(x)) throw new MarkError("BAD_DEST", `${flag} must be an EVM address on Arbitrum (0x followed by 40 hex characters)`);
+  if (!/^0x[0-9a-fA-F]{40}$/.test(x)) throw new MarkError("BAD_DEST", `${flag} must be an EVM address on ${network} (0x followed by 40 hex characters)`);
   const hex = x.slice(2);
   if (hex !== hex.toLowerCase() && hex !== hex.toUpperCase()) {
     const h = Buffer.from(keccak_256(new TextEncoder().encode(hex.toLowerCase()))).toString("hex");
@@ -101,7 +131,9 @@ export function units(v: string | number | bigint | undefined, decimals: number)
 
 /** The fee fields of a Satora quote (QuoteResponse). */
 export interface SatoraQuote { exchange_rate: string; network_fee: number; gasless_network_fee?: number; protocol_fee: number; protocol_fee_rate: number;
-  min_amount: number; max_amount: number; source_amount: string; target_amount: string; net_source_amount: string; net_target_amount: string }
+  min_amount: number; max_amount: number; source_amount: string; target_amount: string; net_source_amount: string; net_target_amount: string;
+  /** Bridged payouts only (USDC on Base): Circle's CCTP fee in payout-token units, already taken from net_target_amount. */
+  bridge_fee?: number | string }
 
 /** Satora's own rate and the combined rate, from a live `protocol_fee_rate` plus our markup. Never hard-coded. */
 export function feeRates(protocolFeeRate: number, bps: number) {
@@ -151,15 +183,23 @@ export function quoteFeeView(f: SplitFees) {
 }
 
 /** The quote as Mark shows it: what you pay, what you get, and every fee line, our markup named openly, plus the total rate. */
+/** The bridge fee of a bridged quote in token units ("55034"), or undefined when Satora's quote has none (or a bad one). */
+export function bridgeFeeUnits(q: { bridge_fee?: unknown }): string | undefined {
+  const b = q.bridge_fee; const x = typeof b === "number" ? (Number.isSafeInteger(b) && b >= 0 ? String(b) : "") : typeof b === "string" ? b : "";
+  return /^\d+$/.test(x) ? x : undefined;
+}
 export function formatSwapQuote(q: SatoraQuote, o: { from: SwapSource; to: SwapTarget; sats: number; bps: number }) {
   const t = SWAP_TARGETS[o.to]; const v = quoteFeeView(splitSwapFees(q, o.sats, o.bps));
+  const bf = t.bridge ? bridgeFeeUnits(q) : undefined;
+  const bridgeLine = !t.bridge ? "" : bf !== undefined ? ` plus ${units(bf, t.decimals)} ${t.symbol} ${t.bridge.via} bridge fee to ${t.bridge.name}` : ` plus a ${t.bridge.via} bridge fee to ${t.bridge.name} (not in Satora's quote)`;
   return {
     from: o.from, to: o.to, token: { symbol: t.symbol, network: t.network, chainId: Number(t.chain), contract: t.tokenId },
     payAmountSats: Number(q.net_source_amount ?? o.sats),
     rate: `${q.exchange_rate} ${t.symbol} per BTC`,
     receive: units(q.net_target_amount, t.decimals), receiveUnits: q.net_target_amount,
-    fees: v.fees,
-    markupNote: `${v.totalFeeLine}. Paid inside the swap; nothing extra to send.`,
+    fees: t.bridge ? { ...v.fees, bridgeFee: bf !== undefined ? units(bf, t.decimals) : null, bridgeFeeUnits: bf ?? null, bridgeFeeToken: t.symbol } : v.fees,
+    ...(t.bridge ? { bridge: { to: t.network, via: t.bridge.via, from: "Arbitrum One", note: `Satora settles on Arbitrum One; at claim ${t.bridge.via} carries the ${t.symbol} to ${t.network} (usually within a few minutes). receive is after the bridge fee.` } } : {}),
+    markupNote: `${v.totalFeeLine}${bridgeLine}. Paid inside the swap; nothing extra to send.`,
     limits: { minSats: q.min_amount, maxSats: q.max_amount },
     referral: SWAP_REFERRAL_ID,
   };
@@ -167,27 +207,28 @@ export function formatSwapQuote(q: SatoraQuote, o: { from: SwapSource; to: SwapT
 
 // ---------- the reverse direction: a stablecoin on Arbitrum -> BTC (Lightning or Arkade) ----------
 /** The same two tables, read the other way: SWAP_TARGETS are the stablecoins you send, SWAP_SOURCES the BTC rails paid out. */
-export type SwapStable = SwapTarget;
+export type SwapStable = (typeof SWAP_STABLES)[number];
 export type SwapRail = SwapSource;
 export type SwapRoute =
   | { dir: "to_stable"; from: SwapSource; to: SwapTarget }
   | { dir: "to_btc"; from: SwapStable; to: SwapRail }
   | { dir: "rail"; from: SwapSource; to: SwapRail };
-const isStable = (k: string) => Object.hasOwn(SWAP_TARGETS, k.replace(/^usdt$/, "usdt0"));
+const isStable = (k: string) => (SWAP_STABLES as readonly string[]).includes(k.replace(/^usdt$/, "usdt0"));
 const isRail = (k: string) => Object.hasOwn(SWAP_SOURCES, k);
 /** --from / --to to a route. A stablecoin --from is the reverse direction (default --to lightning). Both --from and --to a
  *  BTC rail (lightning or arkade, and different) is a Lightning ↔ Arkade swap. Anything else is BTC -> stablecoin
  *  (default --from lightning --to usdc). `--to lightning|arkade` without --from is refused (ambiguous). */
 export function swapRoute(from: string | undefined, to: string | undefined): SwapRoute {
   const f = (from ?? "").toLowerCase(), t = (to ?? "").toLowerCase();
+  if (f && Object.hasOwn(SWAP_TARGETS, f) && !isStable(f)) throw new MarkError("USAGE", BASE_TO_BTC_UNSUPPORTED);
   if (f && isStable(f)) {
     const rail = (to ?? "lightning").toLowerCase();
     if (!isRail(rail)) throw new MarkError("USAGE", `--to must be ${Object.keys(SWAP_SOURCES).join(" or ")} when --from is a stablecoin`);
-    return { dir: "to_btc", from: swapTarget(f), to: rail as SwapRail };
+    return { dir: "to_btc", from: swapTarget(f) as SwapStable, to: rail as SwapRail };
   }
   if (t && isRail(t)) {
-    if (!f) throw new MarkError("USAGE", `--to ${t} needs --from lightning or arkade (a Lightning ↔ Arkade swap) or --from ${Object.keys(SWAP_TARGETS).join(" or ")} (from a stablecoin)`);
-    if (!isRail(f)) throw new MarkError("USAGE", `--to ${t} needs --from lightning or arkade, or a stablecoin --from (${Object.keys(SWAP_TARGETS).join(" or ")})`);
+    if (!f) throw new MarkError("USAGE", `--to ${t} needs --from lightning or arkade (a Lightning ↔ Arkade swap) or --from ${SWAP_STABLES.join(" or ")} (from a stablecoin on Arbitrum One)`);
+    if (!isRail(f)) throw new MarkError("USAGE", `--to ${t} needs --from lightning or arkade, or a stablecoin --from (${SWAP_STABLES.join(" or ")})`);
     if (f === t) throw new MarkError("USAGE", `--from and --to cannot both be ${f}`);
     return { dir: "rail", from: f as SwapSource, to: t as SwapRail };
   }
@@ -197,7 +238,7 @@ export function swapRoute(from: string | undefined, to: string | undefined): Swa
 export function allSwapRoutes(): SwapRoute[] {
   const btc = Object.keys(SWAP_SOURCES) as SwapSource[], st = Object.keys(SWAP_TARGETS) as SwapTarget[];
   const rails = btc.flatMap((from) => btc.filter((to) => to !== from).map((to) => ({ dir: "rail" as const, from, to })));
-  return [...btc.flatMap((from) => st.map((to) => ({ dir: "to_stable" as const, from, to }))), ...st.flatMap((from) => btc.map((to) => ({ dir: "to_btc" as const, from, to }))), ...rails];
+  return [...btc.flatMap((from) => st.map((to) => ({ dir: "to_stable" as const, from, to }))), ...SWAP_STABLES.flatMap((from) => btc.map((to) => ({ dir: "to_btc" as const, from, to }))), ...rails];
 }
 /** "1.5" USDC -> 1500000n token units (at most `decimals` decimals, more than zero). */
 export function tokenUnits(v: unknown, decimals: number, flag = "--amount"): bigint {

@@ -91,7 +91,7 @@ export async function reverseRun(c: Ctx, i: ReverseRunInput) {
   if (!inRange(q)) throw new MarkError("SWAP_AMOUNT", `Satora accepts ${q.min_amount}..${q.max_amount} sats for ${p.token.symbol} -> ${p.to}`, { quote });
   const payout = p.invoice ? `the Lightning invoice you gave (${p.invoiceSats} sats)` : `the Ark address ${p.arkAddress}`;
   if (!i.confirm) return { swap: "preview", quote, payout: target(p),
-    notice: `REAL MONEY: this swaps about ${quote.send} ${p.token.symbol} on Arbitrum into ${quote.receiveSats} sats paid to ${payout}. Check the target: a payout to a wrong target cannot be undone. ${quote.markupNote}`,
+    notice: `REAL MONEY: this swaps about ${quote.send} ${p.token.symbol} on ${p.token.network} into ${quote.receiveSats} sats paid to ${payout}. Check the target: a payout to a wrong target cannot be undone. ${quote.markupNote}`,
     next: `Nothing was created. To create it: ${mk()} swap ${flags(p)} --yes --wait` };
   // one open deposit at a time: every swap from a stablecoin in this Mark home shares the same deposit address. The check and the
   // create run under the Mark home's deposit lock (other processes too), so two creates cannot both see "none open".

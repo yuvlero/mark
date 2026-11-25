@@ -153,7 +153,7 @@ export class SatoraProvider implements SwapProvider {
     return { success: !!r.success, txid: r.txId, message: r.message };
   }
 
-  // ---------- `mark swap`: BTC (Lightning / Arkade) -> stablecoin on Arbitrum ----------
+  // ---------- `mark swap`: BTC (Lightning / Arkade) -> stablecoin (on Arbitrum One, or USDC bridged to Base) ----------
   /** Satora getQuote with our referral ID and markup (extraFees in bps, checked against the cap before anything is sent). */
   async quoteStable(p: { from: SwapSource; to: SwapTarget; sats: number; bps: number }): Promise<SatoraQuote> {
     const extraFees = checkMarkupBps(p.bps); const s = SWAP_SOURCES[p.from], t = SWAP_TARGETS[p.to];
@@ -164,21 +164,25 @@ export class SatoraProvider implements SwapProvider {
    *  home's encrypted swap storage (derived from the agent key), never sent anywhere. */
   async createStable(p: { from: SwapSource; to: SwapTarget; sats: number; bps: number; address: string }): Promise<StableSwapCreated> {
     const extraFees = checkMarkupBps(p.bps);
-    const r: any = await stdoutToStderr(() => this.c.createSwap({ source: SWAP_SOURCES[p.from] as any, target: SWAP_TARGETS[p.to] as any, sourceAmount: p.sats, targetAddress: p.address,
+    const t = SWAP_TARGETS[p.to];
+    // a target on a bridge chain (Base) is settled on Arbitrum One and bridged at claim: the library adds the bridge itself
+    const r: any = await stdoutToStderr(() => this.c.createSwap({ source: SWAP_SOURCES[p.from] as any, target: { chain: t.chain, tokenId: t.tokenId } as any, sourceAmount: p.sats, targetAddress: p.address,
       referralCode: SWAP_REFERRAL_ID, extraFees }));
     const res = r?.response ?? {};
     // Satora's answer only: never default these to the request, so a missing or different value is caught before payment
     return { id: res.id, status: res.status, invoice: res.bolt11_invoice ?? undefined, arkAddress: res.btc_vhtlc_address ?? undefined,
       payAmountSats: res.source_amount != null ? Number(res.source_amount) : NaN, targetAddress: res.target_evm_address ?? undefined,
       receiveUnits: res.target_amount != null ? String(res.target_amount) : undefined, sourceChain: res.source_token?.chain ?? undefined, targetChain: res.target_token?.chain ?? undefined,
-      tokenContract: res.target_token?.token_id ?? undefined, evmChainId: res.evm_chain_id != null ? Number(res.evm_chain_id) : undefined, raw: res };
+      tokenContract: res.target_token?.token_id ?? undefined, evmChainId: res.evm_chain_id != null ? Number(res.evm_chain_id) : undefined,
+      bridgeTargetChain: res.bridge_target_chain ?? undefined, bridgeTargetToken: res.bridge_target_token_address ?? undefined, raw: res };
   }
   async getStable(id: string): Promise<StableSwapInfo> {
     const r: any = await this.c.getSwap(id, { updateStorage: true } as any);
     let local = false; try { local = !!(await (this.c as any).getStoredSwap?.(id)); } catch { /* unknown */ }
     return { id: r.id ?? id, status: r.status, direction: r.direction, sourceAmountSats: r.source_amount != null ? Number(r.source_amount) : undefined, targetUnits: r.target_amount != null ? String(r.target_amount) : undefined,
       targetAddress: r.target_evm_address ?? r.client_evm_address ?? undefined, tokenContract: r.target_token?.token_id ?? undefined, tokenSymbol: r.target_token?.symbol ?? undefined, evmChainId: r.evm_chain_id ?? undefined,
-      payoutTx: r.evm_claim_txid ?? undefined, feeSats: r.fee_sats ?? undefined, createdAt: r.created_at ?? undefined, local, raw: r };
+      payoutTx: r.evm_claim_txid ?? undefined, feeSats: r.fee_sats ?? undefined, createdAt: r.created_at ?? undefined,
+      bridgeTargetChain: r.bridge_target_chain ?? undefined, bridgeTargetToken: r.bridge_target_token_address ?? undefined, bridgeTx: r.bridge_target_txid ?? undefined, local, raw: r };
   }
   /** One claim per swap at a time: concurrent calls (MCP) share the in-flight claim instead of submitting a second one. */
   private claiming = new Map<string, Promise<{ success: boolean; txHash?: string; message?: string }>>();
