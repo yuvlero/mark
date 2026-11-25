@@ -101,6 +101,8 @@ export interface SwapProvider {
   recoverReverse?(id: string, to: string): Promise<{ success: boolean; txHash?: string; amountUnits?: string; message?: string; network?: string }>;
   /** The CCTP burn recorded for a swap from USDC on Base (the USDC left Base), if any. */
   cctpBurn?(id: string): Promise<string | undefined>;
+  /** A burn Mark's own signer sent for a swap from a bridged stablecoin, also when the swap library did not record it. */
+  sentBurn?(id: string): string | undefined;
   /** Reads on another chain than Arbitrum One (Base, for USDC on Base). */
   evmOn?(chainId: number): import("./evm.js").EvmReader;
   /** About how many USD one ETH is (best effort, for gas estimates; undefined when unavailable). */

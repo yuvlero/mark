@@ -99,8 +99,13 @@ async function quoteOf(s: Rev, p: Parsed) {
 function inRange(q: any) { const gross = Number(q.target_amount); return !(Number.isSafeInteger(q.min_amount) && Number.isSafeInteger(q.max_amount)) || (gross >= q.min_amount && gross <= q.max_amount); }
 
 /** Quote only (nothing is created). */
+/** A bridged quote must carry Circle's fee (it is taken from the deposit): refused otherwise, for a quote and before a create. */
+function needBridgeFee(t: StableToken, q: any) {
+  if (t.bridge && bridgeFeeUnits(q) === undefined) throw new MarkError("QUOTE_UNAVAILABLE", `Satora's quote has no ${t.bridge.via} fee for ${tokenLabel(t)}; nothing was created. Retry later.`);
+}
 export async function reverseQuote(c: Ctx, i: ReverseInput) {
   const p = parseReverse(c, i, "quote"); const s = await reverse(c); const [q, gas] = await Promise.all([quoteOf(s, p), gasOf(s, p.token)]);
+  needBridgeFee(p.token, q);
   return { quote: formatReverseQuote(q, { ...p, gas }), ...(inRange(q) ? {} : { note: `amount out of range: Satora accepts ${q.min_amount}..${q.max_amount} sats for this route` }),
     next: `${mk()} swap ${flags(p)} previews it; add --yes to create it` };
 }
@@ -114,7 +119,7 @@ export async function reverseRun(c: Ctx, i: ReverseRunInput) {
   // a bridged deposit needs the deposit chain's reader and the burn record (resume, recover): refuse before anything is created
   if (p.token.bridge) { readerOf(s, p.token); if (!s.cctpBurn) throw new MarkError("BAD_CONFIG", `swap provider ${s.name} cannot track a ${p.token.bridge.via} burn; not creating a swap from ${tokenLabel(p.token)}`); }
   const [q, gas] = await Promise.all([quoteOf(s, p), gasOf(s, p.token)]); const quote = formatReverseQuote(q, { ...p, gas });
-  if (p.token.bridge && bridgeFeeUnits(q) === undefined) throw new MarkError("QUOTE_UNAVAILABLE", `Satora's quote has no ${p.token.bridge.via} fee for ${tokenLabel(p.token)}; nothing was created. Retry later.`, { quote });
+  needBridgeFee(p.token, q);
   if (!inRange(q)) throw new MarkError("SWAP_AMOUNT", `Satora accepts ${q.min_amount}..${q.max_amount} sats for ${p.token.symbol} -> ${p.to}`, { quote });
   const payout = p.invoice ? `the Lightning invoice you gave (${p.invoiceSats} sats)` : `the Ark address ${p.arkAddress}`;
   if (!i.confirm) return { swap: "preview", quote, payout: target(p),
@@ -135,7 +140,7 @@ export async function reverseRun(c: Ctx, i: ReverseRunInput) {
       ...(p.token.bridge ? { bridgeSourceChain: x.bridgeSourceChain!, bridgeSourceToken: x.bridgeSourceToken! } : {}) });
     return x;
   });
-  const deposit = await depositInfo(s, created);
+  const deposit = await depositInfo(s, created, gas);
   const how = p.token.bridge ? `Mark signs ${BRIDGE_IN_TX_NAMES} on ${p.token.network}, gas paid in ETH on ${p.token.network} by the deposit address` : "gasless";
   const first = { swap: "created", id: created.id, status: created.status, from: p.from, to: p.to, payout: { ...target(p), sats: created.targetSats }, quote, deposit,
     next: i.wait && i.onProgress ? `Waiting for the deposit; then Mark funds the swap (${how}) and waits for the payout.` : `After the deposit, run: ${mk()} swap fund ${created.id} --wait  (Mark locks the deposit; ${p.token.bridge ? how : "no ETH needed"})` };
@@ -181,10 +186,10 @@ function checkReverseCreated(c: Ctx, p: Parsed, x: ReverseSwapCreated, q: any, m
 }
 
 /** Where to deposit, how much is still missing (the deposit address may already hold some of the token), and how to send it. */
-async function depositInfo(s: Rev, x: ReverseSwapCreated) {
+async function depositInfo(s: Rev, x: ReverseSwapCreated, gas0?: GasEstimate | null) {
   const t = stableOfReverse(x)!; const r = readerOf(s, t);
   const need = BigInt(x.sourceUnits!); let have: bigint | undefined; try { have = await r.tokenBalance(t.tokenId, x.depositAddress!); } catch { have = undefined; }
-  const g = await gasOf(s, t); let eth: bigint | undefined; if (t.bridge) { try { eth = await r.ethBalance(x.depositAddress!); } catch { eth = undefined; } }
+  const g = gas0 !== undefined ? gas0 : await gasOf(s, t); let eth: bigint | undefined; if (t.bridge) { try { eth = await r.ethBalance(x.depositAddress!); } catch { eth = undefined; } }
   const gas = t.bridge ? { gas: { network: t.network, needEth: g ? ethText(g.wei) : null, holdsEth: eth !== undefined ? ethText(eth) : null, ...(g && eth !== undefined && eth < g.wei ? { sendEth: ethText(g.wei - eth) } : {}) } } : {};
   const noEth = t.bridge ? gasHow(t, x.depositAddress, g) : " No ETH needed.";
   const base = { address: x.depositAddress, token: t.symbol, contract: t.tokenId, network: t.network, chainId: Number(t.chain), amount: units(need, t.decimals), amountUnits: need.toString(), ...gas };
@@ -403,7 +408,7 @@ export async function reverseRecover(c: Ctx, id: string, to: string | undefined)
     if (t.bridge) {
       if (isDone(x)) return { id, recovered: false, note: "This swap paid out: nothing to recover." };
       if (locked) return { id, recovered: false, note: `Its deposit is locked in the swap: if it does not pay out, run ${mk()} swap refund ${id} first.` };
-      const burn = await s.cctpBurn?.(id);
+      const burn = (await s.cctpBurn?.(id)) ?? s.sentBurn?.(id);
       // a burn with no funding time in this home (a lost record): the settlement may still be running, so resume it first;
       // that records the time, and recover works 30 minutes later
       if (burn && at === undefined && x.status === "pending" && !x.fundTx) throw new MarkError("SWAP_FUNDING", `swap ${id} has a CCTP burn (${burn}) but this Mark home has no funding time for it: run ${mk()} swap fund ${id} to resume the settlement first; if it does not settle, recover works 30 minutes after that`);

@@ -8,6 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { SatoraProvider } from "../dist/src/swap/satora.js";
+import { TOKEN_MESSENGER_V2 } from "@satora/swap";
 import { gasNeedWei } from "../dist/src/swap/evm.js";
 import { SWAP_TARGETS, SWAP_REFERRAL_ID, SWAP_MARKUP_BPS, SWAP_FEE_BRIDGE_IN_NOTE, SWEEP_TX, BRIDGE_IN_TXS, ethText, formatReverseQuote, routeFeeNote, swapRoute } from "../dist/src/swap/stable.js";
 import { validPin } from "../dist/src/swap/reversePin.js";
@@ -52,11 +53,14 @@ function mockClient(o = {}) {
     fundSwap: async (id, signer) => { calls.fundSwap.push({ id, signer, resume: stored[id]?.cctpBurnTxid });
       if (o.burnThenFail || o.burns !== false) stored[id].cctpBurnTxid ??= BURN; // the SDK records the burn as soon as it is sent
       if (o.burnThenFail) throw new Error("attestation timed out");
-      if (o.fundError) { if (o.burns === false) delete stored[id].cctpBurnTxid; if (o.sendBeforeFail) await signer.sendTransaction({ to: B.tokenId, data: "0x" }); throw new Error(o.fundError); }
+      if (o.fundError) { if (o.burns === false) delete stored[id].cctpBurnTxid;
+        if (o.sendBeforeFail) await signer.sendTransaction({ to: B.tokenId, data: "0x" });
+        if (o.burnUnrecorded) { await signer.sendTransaction({ to: B.tokenId, data: "0x095ea7b3" }); await signer.sendTransaction({ to: TOKEN_MESSENGER_V2, data: "0x8e0250ee" }); }
+        throw new Error(o.fundError); }
       stored[id].evmFundTxid = "0xlock"; return { txHash: "0xlock", cctp: { burnTxHash: stored[id].cctpBurnTxid } }; },
     fundSwapGasless: async (id) => { calls.gasless.push(id); return { txHash: "0xgasless" }; },
     getSwapDepositorKey: async () => ({ privateKey: "0x" + "11".repeat(32), address: DEP }),
-    recoverCctpInboundSwap: async (id, to) => { calls.recoverCctp.push({ id, to }); return { sweepTxHash: "0xsweep", recoveredAmount: 1999688n }; },
+    recoverCctpInboundSwap: async (id, to, opts) => { calls.recoverCctp.push({ id, to, ...(opts ? { opts } : {}) }); return { sweepTxHash: "0xsweep", recoveredAmount: 1999688n }; },
     recoverGaslessFunds: async (id, signer, to) => { calls.recoverGasless.push({ id, to }); return { txHash: "0xarb" }; },
     collabRefundEvmSwap: async (id) => { calls.collab.push(id); return { txHash: "0xcollab" }; },
     refundEvmSponsored: async () => ({ txHash: "0xsp" }),
@@ -74,7 +78,7 @@ function provider(client, o = {}) {
     l1Fee: async (bytes) => BigInt(bytes) * 4_000_000n };
   p.ethUsd = async () => o.usd;
   p.signerFor = async (k, chainId) => ({ address: DEP, chainId, fake: true,
-    sendTransaction: async (tx) => { sent.push({ chainId, ...tx }); return "0x" + "77".repeat(32); }, waitForReceipt: async () => ({ status: "success" }) });
+    sendTransaction: async (tx) => { if (p.failSend) throw new Error("rpc timeout after broadcast?"); sent.push({ chainId, ...tx }); return "0x" + (sent.length.toString(16).padStart(2, "0")).repeat(32); }, waitForReceipt: async () => ({ status: "success" }) });
   return Object.assign(p, { st, reads, sent });
 }
 const ctxWith = (p) => ({ network: "bitcoin", cfg: { arkServerUrl: "https://arkade.computer" }, swaps: async () => p });
@@ -244,6 +248,7 @@ test("create refuses a provider that cannot track the burn, and a Base quote wit
   await assert.rejects(create(p), (e) => e.code === "BAD_CONFIG" && /burn/.test(e.message)); assert.equal(m.calls.createSwap.length, 0);
   const m2 = mockClient({ quote: { ...RQ, bridge_fee: undefined } }); const p2 = provider(m2.client);
   await assert.rejects(create(p2), (e) => e.code === "QUOTE_UNAVAILABLE"); assert.equal(m2.calls.createSwap.length, 0);
+  await assert.rejects(sw.swapQuote(ctxWith(p2), { from: "usdc-base", to: "lightning", amount: "2" }), (e) => e.code === "QUOTE_UNAVAILABLE");
 });
 
 test("an unreadable local swap record is not 'no burn': fund and recover move nothing", async () => {
@@ -264,4 +269,45 @@ test("concurrent fund calls (same home, two providers) make one burn", async () 
   const [a, b, c] = await Promise.all([p.fundReverse("rb-1"), p.fundReverse("rb-1"), q.fundReverse("rb-1")]);
   assert.equal(m.calls.fundSwap.length, 1); assert.strictEqual(a, b); // p's two calls share one run
   assert.equal([a, c].filter((x) => x.success).length, 1); assert.ok((a.success ? c : a).skipped); // the other process is told it was funded
+});
+
+test("a burn Mark's signer sent but the swap library did not record: never funded again, recovered on the settlement chain from that burn", async () => {
+  const m = mockClient({ fundError: "storage write failed", burns: false, burnUnrecorded: true, statuses: ["pending"] });
+  const p = provider(m.client, { base: { usdc: 2_000_000n, eth: NEED_WEI } }); await create(p);
+  const r = await p.fundReverse("rb-1"); assert.equal(r.uncertain, true); assert.equal(m.stored["rb-1"].cctpBurnTxid, undefined);
+  const burn = p.sent[1] && "0x" + "02".repeat(32); assert.equal(p.sentBurn("rb-1"), burn);
+  // even with the funding time lost, no second burn
+  p.markAttempt("rb-1", undefined); const again = await p.fundReverse("rb-1"); assert.match(again.skipped, /already sent \(burn 0x0202/); assert.equal(m.calls.fundSwap.length, 1);
+  p.markAttempt("rb-1", Date.now() - 31 * 60 * 1000); p.st.usdc = 0n; p.st.eth = 0n;
+  const rec = await sw.swapRecover(ctxWith(p), "rb-1", ME);
+  assert.equal(rec.recovered, true); assert.equal(rec.network, "Arbitrum One"); assert.deepEqual(m.calls.recoverCctp, [{ id: "rb-1", to: ME, opts: { burnTxHash: burn } }]);
+});
+
+test("a Base send with an unknown outcome: recover sweeps only while all the USDC is still there", async () => {
+  const m = mockClient({ statuses: ["pending"] }); const p = provider(m.client, { base: { usdc: 2_000_000n, eth: NEED_WEI } }); await create(p);
+  m.client.fundSwap = async (id, signer) => { m.calls.fundSwap.push({ id }); await signer.sendTransaction({ to: TOKEN_MESSENGER_V2, data: "0x" }); };
+  p.failSend = true; const r = await p.fundReverse("rb-1"); assert.equal(r.uncertain, true); p.failSend = false;
+  assert.match((await p.fundReverse("rb-1")).skipped ?? "", /never signs it again/);
+  p.markAttempt("rb-1", Date.now() - 31 * 60 * 1000);
+  p.st.usdc = 1_000_000n; const r1 = await sw.swapRecover(ctxWith(p), "rb-1", ME); assert.equal(r1.recovered, false); assert.match(r1.message, /a burn may have gone through/); assert.equal(p.sent.length, 0);
+  p.st.usdc = 2_000_000n; const r2 = await sw.swapRecover(ctxWith(p), "rb-1", ME); assert.equal(r2.recovered, true); assert.equal(r2.network, "Base"); assert.equal(p.sent.length, 1);
+});
+
+test("a pinned Base swap with no swap-library record is not funded", async () => {
+  const m = mockClient(); const p = provider(m.client, { base: { usdc: 2_000_000n, eth: NEED_WEI } }); await create(p);
+  const real = m.client.getStoredSwap; m.client.getStoredSwap = async () => null;
+  const r = await p.fundReverse("rb-1"); assert.equal(r.success, false); assert.match(r.message, /no swap-library record/); assert.equal(m.calls.fundSwap.length, 0);
+  m.client.getStoredSwap = real;
+});
+
+test("fund --wait: USDC there but no ETH on Base signs nothing and ends with SWAP_NEEDS_GAS; once ETH arrives it funds once", async () => {
+  const m = mockClient({ statuses: ["pending"] }); const p = provider(m.client, { base: { usdc: 2_000_000n, eth: 0n } }); await create(p);
+  await assert.rejects(sw.swapFund(ctxWith(p), "rb-1", { wait: true, timeoutSec: 0.05, pollMs: 5 }), (e) => e.code === "SWAP_NEEDS_GAS" && e.details.holdsEth === "0");
+  assert.equal(m.calls.fundSwap.length, 0); assert.equal(p.fundAttemptedAt("rb-1"), undefined);
+  // unreadable ETH: nothing signed either
+  p.evmBase.ethBalance = async () => { throw new Error("rpc down"); };
+  const t = await sw.swapFund(ctxWith(p), "rb-1", { wait: true, timeoutSec: 0.05, pollMs: 5 }); assert.equal(t.timeout, true); assert.equal(m.calls.fundSwap.length, 0);
+  p.evmBase.ethBalance = async () => p.st.eth; p.st.eth = NEED_WEI;
+  m.statuses = undefined; const r = await sw.swapFund(ctxWith(p), "rb-1", { wait: true, timeoutSec: 0.05, pollMs: 5 });
+  assert.equal(m.calls.fundSwap.length, 1); assert.ok(r);
 });

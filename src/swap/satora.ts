@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { Client, getUsdPrices } from "@satora/swap";
+import { Client, getUsdPrices, TOKEN_MESSENGER_V2 } from "@satora/swap";
 import type { SwapProvider, SwapInfo, ClaimResult, StableSwapCreated, StableSwapInfo, ReverseQuoteInput, ReverseCreateInput, ReverseSwapCreated, ReverseSwapInfo, FundResult, ReversePin, RailQuoteInput, RailCreateInput, RailSwapCreated, RailSwapInfo } from "./provider.js";
 import { validPin, pinMismatch } from "./reversePin.js";
 import { isReverseDir } from "./states.js";
@@ -80,6 +80,9 @@ function dirOf(s: any): SwapInfo["direction"] {
   return "other";
 }
 
+interface BridgeSends { pre?: string; burn?: string; unknown?: true }
+const validSends = (v: unknown) => !!v && typeof v === "object" && Object.entries(v as object).every(([k, x]) =>
+  (k === "pre" && typeof x === "string" && /^\d+$/.test(x)) || (k === "burn" && typeof x === "string" && /^0x[0-9a-fA-F]{64}$/.test(x)) || (k === "unknown" && x === true));
 /** A CCTP burn tx (0x + 64 hex) the swap library recorded on its swap record, if any. */
 const burnOf = (st: any): string | undefined => { const b = st?.cctpBurnTxid; return typeof b === "string" && /^0x[0-9a-fA-F]{64}$/.test(b) ? b : undefined; };
 /** The lock transaction the swap library recorded for a swap it funded, if any. */
@@ -90,6 +93,7 @@ export class SatoraProvider implements SwapProvider {
   /** dir: where the funding-attempt record lives (none: in memory only, tests). */
   private constructor(private c: Client, private baseUrl: string, private arkUrl: string, private dir?: string) {
     this.attempts = new RecordFile<number>(dir, "evm-funding.json", (v) => typeof v === "number" && Number.isFinite(v));
+    this.sends = new RecordFile<BridgeSends>(dir, "bridge-sends.json", validSends);
     this.pins = new RecordFile<ReversePin>(dir, "reverse-pins.json", validPin);
   }
   /** Arbitrum reads (tests replace it). */
@@ -115,6 +119,8 @@ export class SatoraProvider implements SwapProvider {
   async cctpBurn(id: string): Promise<string | undefined> {
     try { return burnOf(await this.storedSwap(id)); } catch { return undefined; }
   }
+  /** A burn Mark's own signer sent for this swap (also when the swap library did not record it): recovery on the settlement chain. */
+  sentBurn(id: string): string | undefined { return this.sends.read()[id]?.burn; }
 
   static async create(opts: { baseUrl: string; arkServerUrl: string; esploraUrl: string; bitcoinNetwork: "mainnet" | "signet"; mnemonic: string; key: Buffer; dir: string; referralCode?: string }) {
     const sdir = path.join(opts.dir, "swaps"); fs.mkdirSync(sdir, { recursive: true, mode: 0o700 });
@@ -276,6 +282,9 @@ export class SatoraProvider implements SwapProvider {
   private funding = new Map<string, Promise<FundResult>>();
   /** Funding attempts and create records: in memory plus files in the swaps dir, so a second process (or a restart) sees them. */
   private attempts: RecordFile<number>;
+  /** Swaps from USDC on Base: what Mark's own signer sent in a funding (the burn hash, or that a send failed with an unknown
+   *  outcome) and the deposit's USDC before it. Kept apart from the swap library's record, so a burn it failed to record is known. */
+  private sends: RecordFile<BridgeSends>;
   private pins: RecordFile<ReversePin>;
   private readAttempts() { return this.attempts.read(); }
   private readPins() { return this.pins.read(); }
@@ -324,6 +333,9 @@ export class SatoraProvider implements SwapProvider {
       if (at !== undefined && !burn) return { success: false, skipped: `a funding was already submitted at ${new Date(at).toISOString()}; Mark never signs it again` };
       // the resume after a burn locked it already (the swap library recorded the lock): never again, even if Satora lags
       if (burn && ft) return { success: false, skipped: `the swap was already funded (tx ${ft}); Mark never funds it again` };
+      // a burn (or a send with an unknown outcome) only Mark saw: the swap library would burn again, so Mark never funds it again
+      const mine = this.sends.read()[id];
+      if (!burn && (mine?.burn || mine?.unknown)) return { success: false, skipped: `a funding transaction of this swap was already sent${mine.burn ? ` (burn ${mine.burn})` : " with an unknown outcome"}; Mark never signs it again. After 30 minutes, mark swap recover moves the USDC` };
       let x: ReverseSwapInfo; try { x = await this.getReverse(id); } catch (e) { return { success: false, message: `could not read the swap: ${errText(e)}` }; }
       if (x.status !== "pending" || x.fundTx) return { success: false, skipped: `the swap is already past funding (${x.status}${x.fundTx ? `, funding tx ${x.fundTx}` : ""})` };
       if (!x.tokenContract || !x.depositAddress || !/^\d+$/.test(String(x.sourceUnits ?? ""))) return { success: false, message: "the swap has no deposit terms" };
@@ -336,7 +348,11 @@ export class SatoraProvider implements SwapProvider {
         let left = -1; try { left = decodeInvoice(pin.invoice).expiresAt - Date.now() / 1000; } catch { /* undecodable: refuse */ }
         if (left < FUND_MIN_INVOICE_SECS) return { success: false, stop: true, message: `the payout invoice ${left < 0 ? "has expired" : `expires in ${Math.floor(left)} s`}: Satora could not pay it after the deposit is locked, so Mark does not fund this swap` };
       }
-      if (pin.bridgeSourceChain !== undefined) return this.fundBridged(id, x, burn);
+      if (pin.bridgeSourceChain !== undefined) {
+        // the swap library resumes and records burns in its own record: without it, it could not tell a burn was already sent
+        if (!st) return { success: false, stop: true, message: "this Mark home has no swap-library record of this swap; not funding it" };
+        return this.fundBridged(id, x, burn);
+      }
       let have: bigint; try { have = await this.evm.tokenBalance(x.tokenContract, x.depositAddress); } catch (e) { return { success: false, message: `could not read the deposit address: ${errText(e)}` }; }
       if (have < BigInt(x.sourceUnits!)) return { success: false, skipped: `the deposit address holds ${have} of the ${x.sourceUnits} token units this swap needs` };
       this.markAttempt(id, Date.now());
@@ -374,7 +390,15 @@ export class SatoraProvider implements SwapProvider {
     // every transaction the swap library sends from the deposit key goes through this counter: a failure before the first send
     // proves nothing was signed or broadcast (the mempool or a balance cannot prove that: an unrecorded burn may be mined already)
     let sends = 0; const send = signer.sendTransaction;
-    const counted = { ...signer, sendTransaction: (tx: any) => { sends++; return send(tx); } };
+    if (!burn) { let pre: bigint | undefined; try { pre = await r.tokenBalance(t.tokenId, dep); } catch { pre = undefined; } this.sends.set(id, { ...(pre !== undefined ? { pre: pre.toString() } : {}) }); }
+    const counted = { ...signer, sendTransaction: async (tx: any) => {
+      sends++;
+      try {
+        const h: string = await send(tx);
+        if (sameHex(tx?.to, TOKEN_MESSENGER_V2) && /^0x[0-9a-fA-F]{64}$/.test(String(h))) this.sends.set(id, { ...this.sends.read()[id], burn: h });
+        return h;
+      } catch (e) { this.sends.set(id, { ...this.sends.read()[id], unknown: true }); throw e; }
+    } };
     try {
       const f: any = await stdoutToStderr(() => (this.c as any).fundSwap(id, counted));
       return { success: true, txHash: f?.txHash ?? undefined, burnTx: f?.cctp?.burnTxHash ?? burn };
@@ -383,7 +407,7 @@ export class SatoraProvider implements SwapProvider {
       if (b) return { success: false, message, uncertain: true, burnTx: b };
       // retried only when nothing was ever sent in this attempt (a resume sends nothing on Base either). Anything else stays
       // uncertain: Mark never signs it again, and recover works 30 minutes later.
-      if (sends === 0 && !burn) { this.markAttempt(id, undefined); return { success: false, message }; }
+      if (sends === 0 && !burn) { this.markAttempt(id, undefined); this.sends.set(id, undefined); return { success: false, message }; }
       return { success: false, message, uncertain: true };
     }
   }
@@ -429,7 +453,20 @@ export class SatoraProvider implements SwapProvider {
     resp = resp ?? {};
     const t = resp.bridge_source_chain ? stableOfReverse({ tokenContract: resp.source_token?.token_id, bridgeSourceChain: resp.bridge_source_chain, bridgeSourceToken: resp.bridge_source_token_address }) : undefined;
     if (resp.bridge_source_chain && !t?.bridge) return { success: false, message: `unknown bridge source ${resp.bridge_source_chain}; nothing was moved` };
-    if (t?.bridge) return burnOf(st) ? this.recoverBurned(id, to, t.bridge.settleNetwork) : this.sweepOn(id, to, t.tokenId, Number(t.chain), t.network);
+    if (t?.bridge) {
+      const mine = this.sends.read()[id];
+      if (burnOf(st)) return this.recoverBurned(id, to, t.bridge.settleNetwork);
+      // a burn Mark's signer sent but the swap library did not record: recover on the settlement chain from that burn
+      if (mine?.burn) return this.recoverBurned(id, to, t.bridge.settleNetwork, mine.burn);
+      // a send that failed with an unknown outcome: sweep on Base only while the USDC is all still there (no burn mined)
+      if (mine?.unknown) {
+        let now: bigint; try { now = await this.evmOn(Number(t.chain)).tokenBalance(t.tokenId, resp.client_evm_address ?? this.depositAddress()); }
+        catch (e) { return { success: false, message: `could not read the deposit address on ${t.network} (${errText(e)}); nothing was moved`, network: t.network }; }
+        if (mine.pre === undefined || now < BigInt(mine.pre)) return { success: false, network: t.network,
+          message: `a ${t.network} transaction of this swap's funding was sent with an unknown outcome and the deposit address no longer holds all its ${t.symbol}: a burn may have gone through. Nothing was moved; check the deposit address on ${t.network}'s explorer for a burn` };
+      }
+      return this.sweepOn(id, to, t.tokenId, Number(t.chain), t.network);
+    }
     return stdoutToStderr(async () => {
       try {
         const k: any = await (this.c as any).getSwapDepositorKey(id);
@@ -442,10 +479,10 @@ export class SatoraProvider implements SwapProvider {
   }
   /** After the CCTP burn of a swap from USDC on Base: Circle mints it to the deposit account on the settlement chain if not yet, then
    *  its USDC is swept to `to` there, both as sponsored UserOps (no ETH). */
-  private async recoverBurned(id: string, to: string, network: string) {
+  private async recoverBurned(id: string, to: string, network: string, burnTxHash?: string) {
     return stdoutToStderr(async () => {
       try {
-        const r: any = await (this.c as any).recoverCctpInboundSwap(id, to);
+        const r: any = await (this.c as any).recoverCctpInboundSwap(id, to, burnTxHash ? { burnTxHash } : undefined);
         const tx = r?.sweepTxHash ?? r?.sweepUserOpHash;
         if (!tx) return { success: false, message: "the recovery returned no transaction; check the explorer before retrying", network };
         return { success: true, txHash: tx, amountUnits: r?.recoveredAmount != null ? String(r.recoveredAmount) : undefined, network };
