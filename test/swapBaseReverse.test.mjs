@@ -319,6 +319,24 @@ test("crash right after a Base broadcast (review): the send is marked before it 
   assert.match(r0.note, /burn may have gone through/); assert.doesNotMatch(r0.note, /Nothing to recover/); assert.equal(q.sent.length, 0);
 });
 
+test("crash after the approve returned, before the burn was sent: a restart funds once (one burn), or recover sweeps on Base", async () => {
+  const m = mockClient({ statuses: ["pending"] }); const p = provider(m.client, { base: { usdc: 2_000_000n, eth: NEED_WEI } }); await create(p);
+  const dir = homeOf(m.client), file = path.join(dir, "bridge-sends.json"); let snap;
+  m.client.fundSwap = async (id, signer) => { m.calls.fundSwap.push({ id }); await signer.sendTransaction({ to: B.tokenId, data: "0x095ea7b3" }); snap = fs.readFileSync(file, "utf8"); throw new Error("process killed"); };
+  await p.fundReverse("rb-1");
+  const rec = JSON.parse(snap)["rb-1"]; assert.deepEqual(rec, { pre: "2000000", nonce: "1" }); // approve done: no unknown, nonce moved on
+  fs.writeFileSync(file, snap); fs.writeFileSync(path.join(dir, "evm-funding.json"), "{}");
+  // recover: the transaction count matches what was expected after the approve, so the USDC is provably still on Base
+  const q = provider(m.client, { base: { usdc: 2_000_000n, eth: NEED_WEI, nonce: 1 } }); q.markAttempt("rb-1", Date.now() - 31 * 60 * 1000);
+  const r = await sw.swapRecover(ctxWith(q), "rb-1", ME); assert.equal(r.recovered, true); assert.equal(r.network, "Base"); assert.equal(q.sent.length, 1);
+  // or a restart funds it: exactly one burn
+  fs.writeFileSync(file, snap); fs.writeFileSync(path.join(dir, "evm-funding.json"), "{}");
+  m.client.fundSwap = async (id, signer) => { m.calls.fundSwap.push({ id }); await signer.sendTransaction({ to: B.tokenId, data: "0x095ea7b3" }); await signer.sendTransaction({ to: TOKEN_MESSENGER_V2, data: "0x8e0250ee" }); m.stored[id].evmFundTxid = "0xlock"; return { txHash: "0xlock" }; };
+  const q2 = provider(m.client, { base: { usdc: 2_000_000n, eth: NEED_WEI, nonce: 1 } });
+  const f = await q2.fundReverse("rb-1"); assert.equal(f.success, true);
+  assert.equal(q2.sent.filter((t) => t.to === TOKEN_MESSENGER_V2).length, 1); assert.equal((await q2.fundReverse("rb-1")).success, false); assert.equal(q2.sent.filter((t) => t.to === TOKEN_MESSENGER_V2).length, 1);
+});
+
 test("a funding record with no send marked: the Base sweep still needs the deposit address's transaction count unchanged", async () => {
   for (const [nonce, ok] of [[0, true], [1, false]]) {
     const m = mockClient({ statuses: ["pending"] }); const p = provider(m.client, { base: { usdc: 2_000_000n, eth: NEED_WEI, nonce } }); await create(p);
