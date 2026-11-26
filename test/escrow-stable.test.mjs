@@ -310,3 +310,42 @@ test("refund-payout without a local payout record: refunds the submitted proposa
   const r = await uc.refundPayout(c, "e1", payoutArk(9, "ark")); assert.equal(r.swapId, "po-1"); assert.equal(m.calls.refund[0].id, "po-1");
   const { c: c2 } = await ctx({ dealOf: (c) => funded(c) }); assert.equal(await code(uc.refundPayout(c2, "e1", payoutArk(9, "ark"))), "NOT_FOUND");
 });
+
+// ---------- review fixes (Kimi round 3) ----------
+test("approve --payout-stable: a server that returns a different proposal (other swap / EVM address / dest) gets no signature", async () => {
+  for (const sub of [{ payout: { type: "stable", swapId: "po-evil", address: ME, token: "usdc" } }, { payout: { type: "stable", swapId: "po-1", address: "0x" + "ee".repeat(20), token: "usdc" } }, { dest: payoutArk(4, "ark") }, { kind: "refund" }]) {
+    const m = mockClient(); const st = {}; let c0;
+    const routes = payoutRoutes(st); const get = routes["GET /escrows/e1/proposals/p1"];
+    routes["GET /escrows/e1/proposals/p1"] = async () => { const [code_, body] = await get(); return [code_, { ...body, ...sub }]; };
+    const { c } = await ctx({ client: m.client, dealOf: (c) => funded(c), routes }); c0 = c; st.escrow = () => funded(c0);
+    await assert.rejects(uc.approve(c, "e1", { payoutStable: "usdc", payoutAddress: ME }), (e) => e.code === "UNSAFE_TX" && /not the stablecoin payout just proposed/.test(e.message), JSON.stringify(sub));
+    assert.equal(st.signed, undefined, "nothing signed");
+  }
+});
+test("fund --from: resuming a stable swap after another rail records the stable rail, so fund --ark / fund then refuse", async () => {
+  const m = mockClient(); const { c } = await ctx({ client: m.client });
+  await es.fundStable(c, "e1", { from: "usdc" });
+  c.index.set("e1", { fundRail: "lightning", fundSwap: "ln-1" }); // switched to Lightning; that swap then failed
+  c.swaps = async () => { const p = provider(m.client); const g = p.get?.bind(p); p.get = async (id) => id === "ln-1" ? { id, status: "expired" } : g(id); return p; };
+  const r = await es.fundStable(c, "e1", { from: "usdc" }); assert.equal(r.swapId, "rv-1");
+  assert.equal(c.index.get("e1").fundRail, "stable");
+  assert.equal(await code(uc.fundArk(c, "e1")), "FUNDING_IN_PROGRESS"); assert.equal(await code(uc.fund(c, "e1")), "FUNDING_IN_PROGRESS");
+});
+test("claim-payout / refund-payout: an unreadable submitted proposal is an error, never a guess from the local record", async () => {
+  const m = mockClient({ payStatus: "serverfunded" });
+  const { c } = await ctx({ client: m.client, dealOf: (c) => funded(c, { state: "released", proposals: [{ id: "p0", kind: "release", dest: VHTLC, signers: ["buyer", "seller"], sigs: ["buyer", "seller"], submittedTxid: "ab".repeat(32) }] }),
+    routes: { "GET /escrows/e1/proposals/p0": async () => [500, { error: "down", code: "INTERNAL" }] } });
+  c.index.set("e1", { payoutSwap: "po-9", payoutStable: "usdc", payoutAddress: ME });
+  assert.equal(await code(es.claimPayout(c, "e1")), "ESCROW_UNREACHABLE"); assert.equal(await code(uc.refundPayout(c, "e1", payoutArk(9, "ark"))), "ESCROW_UNREACHABLE");
+  assert.equal(m.calls.claim.length + m.calls.refund.length, 0);
+});
+test("MCP: wait on approve/refund without payoutStable is a usage error (like the CLI)", async () => {
+  const home = tmpHome();
+  const t = new StdioClientTransport({ command: process.execPath, args: [new URL("../dist/src/cli.js", import.meta.url).pathname, "mcp"], env: { ...process.env, MARK_HOME: home }, stderr: "ignore" });
+  const cl = new Client({ name: "t", version: "1" }); await cl.connect(t);
+  try {
+    for (const [name, args] of [["escrow_approve", { id: "e1", payoutLnaddr: "a@b.c", wait: true }], ["escrow_refund", { id: "e1", payoutArk: "ark1x", wait: true }]]) {
+      const r = await cl.callTool({ name, arguments: args }); assert.match(JSON.stringify(r), /only for a stablecoin payout/, name);
+    }
+  } finally { await cl.close(); }
+});

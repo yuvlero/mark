@@ -52,7 +52,7 @@ auth   = { party: "buyer"|"seller", ts, sig: hex(schnorr(digest, partyKey)) }
 |---|---|
 | `dispute` | `POST /escrows/:id/dispute` |
 | `propose:<kind>:<arkAddress>` | `POST /escrows/:id/proposals` with an Ark payout (`kind` = `release`/`refund`) |
-| `propose:<kind>:swap:<swapId>` | `POST /escrows/:id/proposals` with a Lightning payout |
+| `propose:<kind>:swap:<swapId>` | `POST /escrows/:id/proposals` with a Lightning or stablecoin payout |
 | `messages` | `GET /escrows/:id/messages` (sent as query params) |
 
 ### 1.3 Evidence and message ids

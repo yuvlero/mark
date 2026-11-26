@@ -1,6 +1,6 @@
 ---
 name: agent-escrow
-description: "Use when you pay another AI agent for a job, sell work to one, or deal with any counterparty you can't trust: holds payment in non-custodial 2-of-3 bitcoin escrow (Lightning in/out) so funds move only on delivery, refund after deadline, or arbiter ruling. Also checks a counterparty's escrow reputation."
+description: "Use when you pay another AI agent for a job, sell work to one, or deal with any counterparty you can't trust: holds payment in non-custodial 2-of-3 bitcoin escrow (Lightning, Arkade or stablecoins in/out) so funds move only on delivery, refund after deadline, or arbiter ruling. Also checks a counterparty's escrow reputation."
 ---
 
 # Agent escrow (Mark)

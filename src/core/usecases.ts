@@ -688,7 +688,14 @@ export async function approve(c: Ctx, id: string, o: ApproveOpts = {}) {
   // the stablecoin payout swap this home must claim is recorded only once the server accepted the proposal
   if (spec.stable) c.index.set(id, { payoutSwap: spec.swap!.id, payoutStable: (spec.payout as any).token, payoutAddress: (spec.payout as any).address, payoutProposal: r.proposal.id });
   else c.index.set(id, { payoutStable: undefined, payoutAddress: undefined, payoutProposal: undefined });
-  const signed = await signProposal(c, r.escrow, await c.api.proposal(id, r.proposal.id), role);
+  const prop = await c.api.proposal(id, r.proposal.id);
+  // sign only the proposal this home created and authorized: same kind, our swap's VHTLC as destination, same payout
+  if (spec.stable) {
+    const po: any = prop.payout ?? {}, want: any = spec.payout;
+    if (prop.kind !== kind || prop.dest !== spec.swap!.fundAddress || po.type !== "stable" || po.swapId !== want.swapId || String(po.address ?? "").toLowerCase() !== String(want.address).toLowerCase() || (po.token ?? want.token) !== want.token)
+      throw new MarkError("UNSAFE_TX", `the escrow server returned a proposal that is not the stablecoin payout just proposed (swap ${want.swapId} to ${want.address}); refusing to sign`, { proposalId: r.proposal.id });
+  }
+  const signed = await signProposal(c, r.escrow, prop, role);
   const out = { ...signed, payoutSwap: spec.swap ? { id: spec.swap.id, vhtlc: spec.swap.fundAddress, sourceSats: spec.swap.fundAmountSats } : undefined };
   if (!spec.stable) return out;
   const sent = ["released", "refunded"].includes((signed as any).escrow?.state);
@@ -713,7 +720,8 @@ export async function refundPayout(c: Ctx, id: string, to?: string) {
   const dest = await arkDest(c, raw, to ? "--to" : "config refundArkAddress", e);
   // the swap the payout tx actually funded is the one in the submitted proposal (a later proposal may have created another)
   let swapId = l.payoutSwap; const sub = e?.proposals.find((p) => p.submittedTxid);
-  if (sub) { try { const po = (await c.api.proposal(id, sub.id)).payout; if (po?.swapId) swapId = po.swapId; } catch { /* keep the recorded one */ } }
+  if (sub) { let po: any; try { po = (await c.api.proposal(id, sub.id)).payout; } catch (x: any) { throw new MarkError("ESCROW_UNREACHABLE", `could not read the submitted proposal ${sub.id} (${String(x?.message ?? x).slice(0, 120)}): not guessing which swap it paid. Try again shortly.`); }
+    if (po?.swapId) swapId = po.swapId; }
   if (!swapId) throw new MarkError("NOT_FOUND", "no payout swap recorded for this escrow (and no submitted proposal with a payout swap)");
   return { swapId, ...(await (await c.swaps()).refund(swapId, dest)) };
 }

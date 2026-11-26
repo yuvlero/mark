@@ -129,7 +129,10 @@ export async function fundStable(c: Ctx, id: string, o: FundStableOpts) {
     });
     if ("reuse" in r) { existing = await s.getReverse(r.reuse!); }
     else { created = r.x; gas = r.g; quote = formatReverseQuote(r.q, { from, to: "arkade", bps: SWAP_MARKUP_BPS, gas }); rate = r.q.exchange_rate; }
-  } else if (o.switchRail && l.fundRail !== "stable") c.index.set(id, { fundRail: "stable" });
+  } else if (l.fundRail !== "stable") {
+    // resuming this deal's stable swap (allowed by the rail checks above): record the rail, so fund / fund --ark refuse while it is live
+    await withFundLock(c, id, async () => { await otherRail(c.index.get(id)); c.index.set(id, { fundRail: "stable" }); });
+  }
   const swapId = created?.id ?? existing?.id ?? l.fundStableSwap!;
   // the platform fee is on what the escrow will hold: the swap's payout (deal amount + cushion), which can cross a fee tier
   const fees = escrowFees(e, created?.targetSats ?? e.amountSats);
@@ -234,7 +237,7 @@ export async function claimPayout(c: Ctx, id: string, o: { wait?: boolean; timeo
   let swapId = l.payoutStable ? l.payoutSwap : undefined, token = l.payoutStable, address = l.payoutAddress;
   const sub = e?.proposals.find((p) => p.submittedTxid);
   if (sub) {
-    let po: any; try { po = (await c.api.proposal(id, sub.id)).payout; } catch { po = undefined; }
+    let po: any; try { po = (await c.api.proposal(id, sub.id)).payout; } catch (x: any) { throw new MarkError("ESCROW_UNREACHABLE", `could not read the submitted proposal ${sub.id} of escrow ${id} (${String(x?.message ?? x).slice(0, 120)}): not guessing which swap it paid. Try again shortly.`); }
     if (po && po.type !== "stable") throw new MarkError("USAGE", `escrow ${id}'s submitted payout is ${po.type}, not a stablecoin payout: nothing to claim here`);
     if (po?.swapId) { swapId = po.swapId; token = po.token ?? token; address = po.address ?? address; }
   }
