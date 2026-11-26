@@ -429,3 +429,21 @@ test("priceStableDeposit: grosses the deposit up until its net covers the deal, 
   const stuck = { quoteReverse: async (q) => ({ source_amount: "5000", target_amount: "5", net_target_amount: "4", min_amount: 1, max_amount: 1_000_000 }) };
   await assert.rejects(es.priceStableDeposit(stuck, "usdc", 2000, 50), (e) => e.code === "QUOTE_UNAVAILABLE" && e.details?.dealSats === 2000);
 });
+
+test("checkOwnStableProposal: only the exact proposal just made passes; any other kind, destination, swap, address or token is UNSAFE_TX", () => {
+  const A = "0x" + "ab".repeat(20), want = { type: "stable", address: A, swapId: "sw1", token: "usdc" };
+  const prop = (o = {}, po = {}) => ({ id: "p1", kind: "release", dest: "vhtlc1", signers: [], sigs: [], arkTx: "", checkpoints: [], ...o, payout: { type: "stable", swapId: "sw1", address: A.toUpperCase().replace("0X", "0x"), token: "usdc", ...po } });
+  es.checkOwnStableProposal(prop(), "release", want, "vhtlc1");
+  es.checkOwnStableProposal(prop({}, { token: undefined }), "release", want, "vhtlc1"); // an older server that drops token
+  for (const [o, po] of [[{ kind: "refund" }, {}], [{ dest: "vhtlc2" }, {}], [{}, { type: "ark" }], [{}, { swapId: "sw2" }], [{}, { address: "0x" + "cd".repeat(20) }], [{}, { address: undefined }], [{}, { token: "usdt0" }]])
+    assert.throws(() => es.checkOwnStableProposal(prop(o, po), "release", want, "vhtlc1"), (e) => e.code === "UNSAFE_TX", JSON.stringify([o, po]));
+});
+test("quoteStableToCreate: refuses a quote without a payout amount or (bridged) without the bridge fee, before anything is created", async () => {
+  const { quoteStableToCreate } = await import("../dist/src/core/swap.js"); const { SWAP_TARGETS } = await import("../dist/src/swap/stable.js");
+  const p = { from: "arkade", to: "usdc-base", sats: 2000, bps: 50 };
+  const s = (q) => ({ quoteStable: async () => q });
+  assert.equal((await quoteStableToCreate(s({ net_target_amount: "1000000", bridge_fee: "20000" }), p, SWAP_TARGETS["usdc-base"])).net_target_amount, "1000000");
+  for (const q of [{ bridge_fee: "1" }, { net_target_amount: "0", bridge_fee: "1" }, { net_target_amount: "1.5", bridge_fee: "1" }, { net_target_amount: "1000000" }])
+    await assert.rejects(quoteStableToCreate(s(q), p, SWAP_TARGETS["usdc-base"]), (e) => e.code === "QUOTE_UNAVAILABLE" && /nothing was created/.test(e.message), JSON.stringify(q));
+  assert.ok(await quoteStableToCreate(s({ net_target_amount: "1000000" }), { ...p, to: "usdc" }, SWAP_TARGETS.usdc)); // not bridged: no fee needed
+});
