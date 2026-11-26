@@ -349,3 +349,19 @@ test("MCP: wait on approve/refund without payoutStable is a usage error (like th
     }
   } finally { await cl.close(); }
 });
+test("claim-payout / refund-payout: a submitted proposal without a payout swap id is an error, not a fallback", async () => {
+  for (const payout of [undefined, { type: "stable", address: ME }]) {
+    const m = mockClient();
+    const { c } = await ctx({ client: m.client, dealOf: (c) => funded(c, { state: "released", proposals: [{ id: "p0", kind: "release", dest: VHTLC, signers: ["buyer", "seller"], sigs: [], submittedTxid: "ab".repeat(32) }] }),
+      routes: { "GET /escrows/e1/proposals/p0": async () => [200, { id: "p0", kind: "release", dest: VHTLC, signers: ["buyer", "seller"], sigs: [], ...(payout ? { payout } : {}), arkTx: psbtPaying(VHTLC, 5000), checkpoints: [] }] } });
+    c.index.set("e1", { payoutSwap: "po-9", payoutStable: "usdc", payoutAddress: ME });
+    assert.equal(await code(es.claimPayout(c, "e1")), "ESCROW_BAD_RESPONSE"); assert.equal(await code(uc.refundPayout(c, "e1", payoutArk(9, "ark"))), "ESCROW_BAD_RESPONSE");
+    assert.equal(m.calls.claim.length + m.calls.refund.length, 0);
+  }
+});
+test("fund --from --wait: a deal that expired before the deposit is locked: the deposit is NOT locked into the swap", async () => {
+  const m = mockClient({ statuses: ["pending"] }); const made = () => m.calls.createSwap.length > 0;
+  const { c } = await ctx({ client: m.client, dealOf: (c) => deal(c, made() ? { state: "expired" } : {}), balances: [5085300n] });
+  const r = await es.fundStable(c, "e1", { from: "usdc", wait: true, timeoutSec: 5, pollMs: 1, onInstructions: () => {} });
+  assert.equal(m.calls.fund.length, 0, "nothing locked"); assert.match(r.note, /expired before the swap paid out/); assert.match(r.swap.note, /NOT locked/);
+});

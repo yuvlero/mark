@@ -239,7 +239,8 @@ export async function claimPayout(c: Ctx, id: string, o: { wait?: boolean; timeo
   if (sub) {
     let po: any; try { po = (await c.api.proposal(id, sub.id)).payout; } catch (x: any) { throw new MarkError("ESCROW_UNREACHABLE", `could not read the submitted proposal ${sub.id} of escrow ${id} (${String(x?.message ?? x).slice(0, 120)}): not guessing which swap it paid. Try again shortly.`); }
     if (po && po.type !== "stable") throw new MarkError("USAGE", `escrow ${id}'s submitted payout is ${po.type}, not a stablecoin payout: nothing to claim here`);
-    if (po?.swapId) { swapId = po.swapId; token = po.token ?? token; address = po.address ?? address; }
+    if (!po?.swapId) throw new MarkError("ESCROW_BAD_RESPONSE", `escrow ${id}'s submitted proposal ${sub.id} names no payout swap: not guessing which swap it paid`);
+    swapId = po.swapId; token = po.token ?? token; address = po.address ?? address;
   }
   if (!swapId) {
     if (l.payoutSwap) throw new MarkError("USAGE", `escrow ${id}'s payout swap pays Lightning: Satora pays it, nothing to claim. A failed one: ${mk()} escrow refund-payout ${id} --to <ark address>`);

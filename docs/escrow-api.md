@@ -358,7 +358,7 @@ Includes `arkTx` and `checkpoints` to sign.
 - Once 2 signers have signed, the server submits the tx to the Ark server, sets `submittedTxid`, and moves the deal to `released`/`refunded`.
 - The server verifies each signature cryptographically (BIP341 script-path sighash for your key on input 0 of `arkTx` and of every checkpoint), and each checkpoint must be the proposal's own checkpoint. Listing your key with an invalid signature is refused.
 - A stablecoin payout (`payout.type: "stable"`) is checked at Satora again right before any signature that would submit it (also a re-sign that retries a failed submit): if the swap is no longer `pending`, is under 60 minutes from its refund locktime or changed, that signature is refused (`BAD_SWAP`, `SWAP_EXPIRED`, `BAD_DEST`; `SWAP_LOOKUP_FAILED` when Satora can't be read) and nothing is submitted; the payee proposes again with a new swap.
-- Errors: `BAD_SIGNATURE` (tx or checkpoint mismatch, missing or invalid signature, checkpoint count), `BAD_SIGNERS`, `FEE_MISMATCH` (a ruling added the dispute fee: the payee must propose again), `SWAP_EXPIRED` / `BAD_SWAP` (stablecoin payout swap, see above).
+- Errors: `BAD_SIGNATURE` (tx or checkpoint mismatch, missing or invalid signature, checkpoint count), `BAD_SIGNERS`, `FEE_MISMATCH` (a ruling added the dispute fee: the payee must propose again), `SWAP_EXPIRED` / `BAD_SWAP` / `AMOUNT_MISMATCH` / `BAD_DEST` / `SWAP_LOOKUP_FAILED` (stablecoin payout swap, see above).
 
 ### POST /escrows/:id/dispute → 200 Escrow
 `{"auth": {"party", "ts", "sig"}, "reason": "≤500 chars"}`. Allowed in `funded`, `releasing` and `refunding`. It stops automatic arbiter signing; the operator rules.

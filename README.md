@@ -486,7 +486,7 @@ Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL` (https; http onl
 | `mark escrow quote <id> [--path release\|refund] [--dest <lnaddr\|bolt11> \| --payout-stable usdc\|usdt0\|usdc-base]` | Payout amounts; exact with `--dest`; `--payout-stable` previews a stablecoin payout (fees, what arrives) |
 | `mark escrow pending [<id>]` | Pending payout proposals and payout details. **No id:** across all my deals (local + server listing `needs=sign`), with `awaiting`, `needsMySignature` and the co-sign command |
 | `mark escrow approve <id> [--payout-invoice B \| --payout-lnaddr A \| --payout-ark X \| --payout-stable usdc\|usdt0\|usdc-base --payout-address 0x…] [--kind release\|refund] [--with counterparty\|arbiter] [--preimage hex] [--wait] [--timeout sec]` | Payee: propose and sign. Co-signer: sign (no payout flags) |
-| `mark escrow refund <id> --payout-… [--with arbiter\|counterparty]` | Buyer proposes a refund |
+| `mark escrow refund <id> --payout-… [--with arbiter\|counterparty] [--wait] [--timeout sec]` | Buyer proposes a refund (`--payout-stable … --payout-address 0x…` too; `--wait` only with it) |
 | `mark escrow refund-payout <id> [--to <ark address>]` | Recover a failed Lightning or stablecoin payout swap (after its timelock) |
 | `mark escrow claim-payout <id> [--wait] [--timeout sec]` | Stablecoin payout: claim the stablecoins to your `--payout-address` (gasless) once the payout tx is out; from the Mark home that proposed it; safe to repeat |
 | `mark escrow dispute <id> [--reason "..."]` | Open a dispute (the operator rules) |
@@ -528,7 +528,7 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 | `escrow_fund` (id, rail?, from?, wait?, allowCounterpartyRule?, switchRail?, resumeClaim?) | `escrow fund` (`rail: "ark"` = `--ark`, `from: "usdc"\|"usdt0"\|"usdc-base"` = `--from`, `switchRail` = `--switch-rail`, `resumeClaim` = `--resume-claim`) |
 | `escrow_quote` (id, path?, dest?, payoutStable?) | `escrow quote` |
 | `escrow_approve` (id, payoutInvoice? / payoutLnaddr? / payoutArk? / payoutStable? + payoutAddress?, kind?, with?, preimage?, wait?) | `escrow approve` |
-| `escrow_refund` (id, payout…, with?) | `escrow refund` |
+| `escrow_refund` (id, payout… incl. payoutStable? + payoutAddress?, with?, wait?) | `escrow refund` |
 | `escrow_refund_payout` (id, to?) | `escrow refund-payout` |
 | `escrow_claim_payout` (id, wait?) | `escrow claim-payout` |
 | `escrow_dispute` (id, reason?) | `escrow dispute` |

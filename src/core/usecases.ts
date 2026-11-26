@@ -721,7 +721,8 @@ export async function refundPayout(c: Ctx, id: string, to?: string) {
   // the swap the payout tx actually funded is the one in the submitted proposal (a later proposal may have created another)
   let swapId = l.payoutSwap; const sub = e?.proposals.find((p) => p.submittedTxid);
   if (sub) { let po: any; try { po = (await c.api.proposal(id, sub.id)).payout; } catch (x: any) { throw new MarkError("ESCROW_UNREACHABLE", `could not read the submitted proposal ${sub.id} (${String(x?.message ?? x).slice(0, 120)}): not guessing which swap it paid. Try again shortly.`); }
-    if (po?.swapId) swapId = po.swapId; }
+    if (po?.swapId) swapId = po.swapId;
+    else if (po?.type === "stable" || !po) throw new MarkError("ESCROW_BAD_RESPONSE", `the submitted proposal ${sub.id} names no payout swap: not guessing which swap it paid`); }
   if (!swapId) throw new MarkError("NOT_FOUND", "no payout swap recorded for this escrow (and no submitted proposal with a payout swap)");
   return { swapId, ...(await (await c.swaps()).refund(swapId, dest)) };
 }

@@ -305,6 +305,7 @@ export async function waitReverse(s: Rev, id: string, o: { timeoutSec?: number; 
     if (x.status === "pending" && !x.fundTx && !fund?.success) {
       const f = await fundState(s, x);
       if (!fund && await resumable(s, x)) {
+        const stop = await o.claimGuard?.(); if (stop) return { id, status: x.status, funded: false, notClaimed: stop, note: `${stop} The deposit was NOT locked into the swap.` };
         const r = await s.fundReverse(id); fund = r;
         if (!r.success && !r.skipped) return fundOut(x, r);
       } else if (f.have !== undefined && f.have >= f.need && f.attempted === undefined) {
@@ -312,6 +313,7 @@ export async function waitReverse(s: Rev, id: string, o: { timeoutSec?: number; 
         const g = f.t?.bridge ? await gasState(s, f.t, x.depositAddress) : undefined;
         lowGas = g && g.holds < g.need ? { t: f.t!, dep: x.depositAddress!, need: g.need, holds: g.holds } : undefined;
         if (g !== null && !lowGas) {
+          const stop = await o.claimGuard?.(); if (stop) return { id, status: x.status, funded: false, notClaimed: stop, note: `${stop} The deposit was NOT locked into the swap.` };
           const r = await s.fundReverse(id); fund = r;
           if (r.needEth) { lowGas = { t: f.t!, dep: x.depositAddress!, need: BigInt(r.needEth.needWei), holds: BigInt(r.needEth.holdsWei) }; fund = undefined; }
           else if (!r.success && !r.skipped && !r.uncertain) return fundOut(x, r);
