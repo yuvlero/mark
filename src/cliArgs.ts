@@ -1,7 +1,7 @@
 /** CLI usage checks (pure; tested without spawning). */
 import { str as s } from "./util.js";
 import { MarkError } from "./errors.js";
-import { SWAP_FEE_ALL_ROUTES_NOTE, SWAP_FEE_PAID_NOTE, targetList as stableList, SWAP_SOURCES, SWAP_TARGETS, SWAP_STABLES, STABLE_FLAGS, STABLE_OR, PAYOUT_NETWORKS_TEXT, swapTarget } from "./swap/stable.js";
+import { SWAP_FEE_ALL_ROUTES_NOTE, SWAP_FEE_PAID_NOTE, targetList as stableList, SWAP_SOURCES, SWAP_TARGETS, SWAP_STABLES, STABLE_FLAGS, STABLE_OR, PAYOUT_NETWORKS_TEXT, swapTarget, EVM_ADDRESS_RE } from "./swap/stable.js";
 /** "usdc|usdt0|usdc-base": every --to payout, for usage text. */
 const TARGET_FLAGS = Object.keys(SWAP_TARGETS).join("|");
 export function parseArgs(argv: string[]) {
@@ -150,7 +150,7 @@ export function checkEscrowArgs(sub: string | undefined, id: string | undefined,
   if (f["payout-address"] !== undefined) {
     if (sub !== "approve" && sub !== "refund") return usage("--payout-address is only for escrow approve and refund, with --payout-stable");
     if (f["payout-stable"] === undefined) return usage("--payout-address goes with --payout-stable usdc|usdt0|usdc-base");
-    if (!/^0x[0-9a-fA-F]{40}$/.test(String(f["payout-address"]).trim())) return usage("--payout-address must be an EVM address (0x followed by 40 hex characters)");
+    if (!EVM_ADDRESS_RE.test(String(f["payout-address"]).trim())) return usage("--payout-address must be an EVM address (0x followed by 40 hex characters)");
   }
   if (f.wait !== undefined && ["approve", "refund"].includes(sub) && f["payout-stable"] === undefined) return usage("--wait on approve/refund is only for a stablecoin payout (--payout-stable): it claims the stablecoins once the payout tx is out");
   if (f.timeout !== undefined && !/^\d+$/.test(String(f.timeout))) return usage("--timeout must be a whole number of seconds");

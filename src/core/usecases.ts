@@ -26,7 +26,7 @@ import { plainText, type Limits } from "../api/escrowApi.js";
 import type { Role } from "./localIndex.js";
 import { SWAP_UNPAID, SWAP_PAID, SWAP_CLAIMABLE, SWAP_DONE, SWAP_FAILED } from "../swap/states.js";
 import { sleep } from "../util.js";
-import { stablePayoutSpec, checkStableProposal, claimPayout } from "./escrowStable.js";
+import { stablePayoutSpec, checkStableProposal, checkOwnStableProposal, claimPayout } from "./escrowStable.js";
 
 /** Machine-readable status (shared logic: status.ts, identical to the server's). */
 export function statusOf(e: Escrow) {
@@ -432,9 +432,9 @@ export function checkFundTerms(c: Ctx, e: Escrow, id: string) {
   return { v, l };
 }
 /** Refusal when stablecoin funding (fund --from) was chosen for this deal in this Mark home: another rail could fund it twice. */
-function stableRailMsg(id: string, l: { fundStableSwap?: string; fundStableFrom?: string; fundStableAt?: string }) {
+function stableRailError(id: string, l: { fundStableSwap?: string; fundStableFrom?: string; fundStableAt?: string }) {
   const f = l.fundStableFrom ?? "<token>";
-  return `you chose stablecoin funding for this deal (${mk()} escrow fund ${id} --from ${f}, swap ${l.fundStableSwap ?? "?"}, ${l.fundStableAt ?? "earlier"}). Another rail as well could fund it twice. If you deposited the stablecoins, run: ${mk()} escrow fund ${id} --from ${f} --wait. Only if you did NOT deposit and will not, switch with --switch-rail (anything sent later to the deposit address comes back with ${mk()} swap recover ${l.fundStableSwap ?? "<swap id>"} --to <your 0x address>).`;
+  return new MarkError("FUNDING_IN_PROGRESS", `you chose stablecoin funding for this deal (${mk()} escrow fund ${id} --from ${f}, swap ${l.fundStableSwap ?? "?"}, ${l.fundStableAt ?? "earlier"}). Another rail as well could fund it twice. If you deposited the stablecoins, run: ${mk()} escrow fund ${id} --from ${f} --wait. Only if you did NOT deposit and will not, switch with --switch-rail (anything sent later to the deposit address comes back with ${mk()} swap recover ${l.fundStableSwap ?? "<swap id>"} --to <your 0x address>).`, { rail: "stable", swapId: l.fundStableSwap ?? null });
 }
 export interface FundOpts { /** confirm switching from the other funding rail (nothing was paid there) */ switchRail?: boolean; wait?: boolean; timeoutSec?: number; onInvoice?: (x: unknown) => void; allowCounterpartyRule?: boolean; /** retry / finish the Arkade claim of the existing funding swap; never creates a swap */ resumeClaim?: boolean; pollMs?: number }
 /** Fund via Lightning: Satora LN->Arkade swap targeting the escrow address; THIS Mark holds the claim key and claims into the escrow. */
@@ -446,7 +446,7 @@ export async function fund(c: Ctx, id: string, o: FundOpts = {}) {
   const { v, l } = checkFundTerms(c, e, id);
   if (o.resumeClaim && o.wait) throw new MarkError("USAGE", "resumeClaim does not wait: call it without wait");
   if (l.fundRail === "ark" && !o.switchRail) throw new MarkError("FUNDING_IN_PROGRESS", `you chose direct Ark funding for this deal (${mk()} escrow fund ${id} --ark, ${l.fundArkAt ?? "earlier"}). A Lightning invoice as well could fund it twice. If you already paid the escrow address, run: ${mk()} escrow fund ${id} --ark --wait. If you did NOT pay it and will not, switch to Lightning: ${mk()} escrow fund ${id} --switch-rail`, { rail: "ark", since: l.fundArkAt ?? null });
-  if (l.fundRail === "stable" && !o.switchRail) throw new MarkError("FUNDING_IN_PROGRESS", stableRailMsg(id, l), { rail: "stable", swapId: l.fundStableSwap ?? null });
+  if (l.fundRail === "stable" && !o.switchRail) throw stableRailError(id, l);
   if (o.resumeClaim && !l.fundSwap) throw new MarkError("NOT_FOUND", `no funding swap recorded for escrow ${id} in this Mark home; nothing to resume. Run ${mk()} escrow fund ${id} from the Mark home (MARK_HOME) that created the invoice.`);
   // the address must be the 2-of-3 contract of the deal's keys (derived locally) and the arbiter attested by the pinned identity
   const check = await verifyDeal(c, e);
@@ -466,7 +466,7 @@ export async function fund(c: Ctx, id: string, o: FundOpts = {}) {
       if (again) { swapId = again; newSwap = false; return; }
       // re-check the rail under the lock: a concurrent `fund --ark` may have just chosen direct Ark
       if (cur.fundRail === "ark" && !o.switchRail) throw new MarkError("FUNDING_IN_PROGRESS", `direct Ark funding was just chosen for this deal (${mk()} escrow fund ${id} --ark). Pay that way, or if you paid nothing there: ${mk()} escrow fund ${id} --switch-rail`);
-      if (cur.fundRail === "stable" && !o.switchRail) throw new MarkError("FUNDING_IN_PROGRESS", stableRailMsg(id, cur), { rail: "stable", swapId: cur.fundStableSwap ?? null });
+      if (cur.fundRail === "stable" && !o.switchRail) throw stableRailError(id, cur);
       const r = await s.createReceive(e.amountSats, e.address); swapId = r.id; invoice = r.invoice; swapStatus = r.status;
       // the invoice is public (BOLT11) and kept next to the swap id so a later `fund` can show it again while it is unpaid
       c.index.set(id, { fundSwap: swapId, role: l.role ?? myRole(c, e), fundRail: "lightning", ...(r.invoice ? { fundInvoice: r.invoice } : {}) });
@@ -561,7 +561,7 @@ export async function fundArk(c: Ctx, id: string, o: FundArkOpts = {}) {
   const check = await verifyDeal(c, e); // address = the 2-of-3 contract of the deal's keys, arbiter attested: never show an unchecked address
   const risk = l.fundRail === "ark" || (v.termsVersion === 2 && v.agreed) ? null : counterpartyRule(c, e, l.role ?? myRole(c, e));
   if (risk && !o.allowCounterpartyRule) throw new MarkError("UNSAFE_RULE", `refusing to fund: ${risk.warning} To fund anyway: ${mk()} escrow fund ${id} --ark --allow-counterparty-rule`, risk);
-  if (l.fundRail === "stable" && !o.switchRail) throw new MarkError("FUNDING_IN_PROGRESS", stableRailMsg(id, l), { rail: "stable", swapId: l.fundStableSwap ?? null });
+  if (l.fundRail === "stable" && !o.switchRail) throw stableRailError(id, l);
   if (l.fundSwap && l.fundRail !== "ark" && l.fundRail !== "stable" && !o.switchRail) {
     let st: string | undefined; try { st = (await (await c.swaps()).get(l.fundSwap)).status; } catch { st = undefined; }
     if (!st || !SWAP_FAILED.has(st)) throw new MarkError("FUNDING_IN_PROGRESS", `a Lightning funding invoice already exists for this deal (swap ${l.fundSwap}, status ${st ?? "unknown"}). Paying the escrow address by Ark as well could fund it twice. Continue with Lightning: ${mk()} escrow fund ${id}. Only if that invoice was NOT paid and will not be: ${mk()} escrow fund ${id} --ark --switch-rail`, { swapId: l.fundSwap, swapStatus: st ?? null });
@@ -575,7 +575,7 @@ export async function fundArk(c: Ctx, id: string, o: FundArkOpts = {}) {
   // choose the rail under the same lock as swap creation, so a concurrent `fund` can't issue an invoice at the same time
   if (l.fundRail !== "ark") await withFundLock(c, id, async () => {
     const cur = c.index.get(id);
-    if (cur.fundRail === "stable" && l.fundRail !== "stable" && !o.switchRail) throw new MarkError("FUNDING_IN_PROGRESS", stableRailMsg(id, cur), { rail: "stable", swapId: cur.fundStableSwap ?? null });
+    if (cur.fundRail === "stable" && l.fundRail !== "stable" && !o.switchRail) throw stableRailError(id, cur);
     if (cur.fundSwap && cur.fundSwap !== l.fundSwap && cur.fundRail !== "ark" && !o.switchRail) throw new MarkError("FUNDING_IN_PROGRESS", `a Lightning funding invoice was just created for this deal (swap ${cur.fundSwap}). Pay that invoice, or if you paid nothing there: ${mk()} escrow fund ${id} --ark --switch-rail`);
     c.index.set(id, { fundRail: "ark", fundArkAt: new Date().toISOString(), role: l.role ?? myRole(c, e) });
   });
@@ -690,11 +690,7 @@ export async function approve(c: Ctx, id: string, o: ApproveOpts = {}) {
   else c.index.set(id, { payoutStable: undefined, payoutAddress: undefined, payoutProposal: undefined });
   const prop = await c.api.proposal(id, r.proposal.id);
   // sign only the proposal this home created and authorized: same kind, our swap's VHTLC as destination, same payout
-  if (spec.stable) {
-    const po: any = prop.payout ?? {}, want: any = spec.payout;
-    if (prop.kind !== kind || prop.dest !== spec.swap!.fundAddress || po.type !== "stable" || po.swapId !== want.swapId || String(po.address ?? "").toLowerCase() !== String(want.address).toLowerCase() || (po.token ?? want.token) !== want.token)
-      throw new MarkError("UNSAFE_TX", `the escrow server returned a proposal that is not the stablecoin payout just proposed (swap ${want.swapId} to ${want.address}); refusing to sign`, { proposalId: r.proposal.id });
-  }
+  if (spec.stable) checkOwnStableProposal(prop, kind, spec.payout, spec.swap!.fundAddress);
   const signed = await signProposal(c, r.escrow, prop, role);
   const out = { ...signed, payoutSwap: spec.swap ? { id: spec.swap.id, vhtlc: spec.swap.fundAddress, sourceSats: spec.swap.fundAmountSats } : undefined };
   if (!spec.stable) return out;
@@ -713,17 +709,24 @@ export async function dispute(c: Ctx, id: string, reason?: string) {
 export const refund = (c: Ctx, id: string, o: PayoutOpts & { with?: "counterparty" | "arbiter"; wait?: boolean; timeoutSec?: number; pollMs?: number } = {}) => approve(c, id, { ...o, kind: "refund", with: o.with ?? "arbiter" });
 
 /** Refund a failed payout swap (Satora Arkade VHTLC: Lightning or stablecoin payout) to an Ark address, after its timelock. */
+/** The payout of the proposal whose tx was submitted (it names the swap that tx actually funded; a later, failed or unused proposal
+ *  may have created another), or undefined before any submission. Fails closed when the server can't be read. */
+export async function submittedPayout(c: Ctx, id: string, e: Escrow | null): Promise<{ pid: string; payout: any } | undefined> {
+  const sub = e?.proposals.find((p) => p.submittedTxid); if (!sub) return undefined;
+  try { return { pid: sub.id, payout: (await c.api.proposal(id, sub.id)).payout }; }
+  catch (x: any) { throw new MarkError("ESCROW_UNREACHABLE", `could not read the submitted proposal ${sub.id} of escrow ${id} (${String(x?.message ?? x).slice(0, 120)}): not guessing which swap it paid. Try again shortly.`); }
+}
 export async function refundPayout(c: Ctx, id: string, to?: string) {
   const l = c.index.get(requireId(id));
   const raw = to ?? c.cfg.refundArkAddress; if (!raw) throw new MarkError("BAD_DEST", `--to <ark address> (or config refundArkAddress) required: an address from an Arkade wallet on ${c.cfg.arkServerUrl}`);
   let e: Escrow | null = null; try { e = await c.api.get(id); } catch { e = null; }
   const dest = await arkDest(c, raw, to ? "--to" : "config refundArkAddress", e);
   // the swap the payout tx actually funded is the one in the submitted proposal (a later proposal may have created another)
-  let swapId = l.payoutSwap; const sub = e?.proposals.find((p) => p.submittedTxid);
-  if (sub) { let po: any; try { po = (await c.api.proposal(id, sub.id)).payout; } catch (x: any) { throw new MarkError("ESCROW_UNREACHABLE", `could not read the submitted proposal ${sub.id} (${String(x?.message ?? x).slice(0, 120)}): not guessing which swap it paid. Try again shortly.`); }
+  let swapId = l.payoutSwap; const sp = await submittedPayout(c, id, e);
+  if (sp) { const po = sp.payout;
     if (po?.swapId) swapId = po.swapId;
-    else if (po?.type === "ark") throw new MarkError("NOT_FOUND", `the submitted proposal ${sub.id} paid an Ark address directly: there is no payout swap to refund`);
-    else throw new MarkError("ESCROW_BAD_RESPONSE", `the submitted proposal ${sub.id} names no payout swap: not guessing which swap it paid`); }
+    else if (po?.type === "ark") throw new MarkError("NOT_FOUND", `the submitted proposal ${sp.pid} paid an Ark address directly: there is no payout swap to refund`);
+    else throw new MarkError("ESCROW_BAD_RESPONSE", `the submitted proposal ${sp.pid} names no payout swap: not guessing which swap it paid`); }
   if (!swapId) throw new MarkError("NOT_FOUND", "no payout swap recorded for this escrow (and no submitted proposal with a payout swap)");
   return { swapId, ...(await (await c.swaps()).refund(swapId, dest)) };
 }

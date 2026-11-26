@@ -146,9 +146,11 @@ export function swapSats(v: unknown): number {
 }
 
 /** EIP-55: a mixed-case address must carry a valid checksum (catches typos); all-lowercase / all-uppercase are accepted. */
+/** 0x + 40 hex: an EVM address (checksum checked separately by checkEvmAddress) */
+export const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 export function checkEvmAddress(a: string | undefined, flag = "--address", network = ARB.network): string {
   const x = (a ?? "").trim();
-  if (!/^0x[0-9a-fA-F]{40}$/.test(x)) throw new MarkError("BAD_DEST", `${flag} must be an EVM address on ${network} (0x followed by 40 hex characters)`);
+  if (!EVM_ADDRESS_RE.test(x)) throw new MarkError("BAD_DEST", `${flag} must be an EVM address on ${network} (0x followed by 40 hex characters)`);
   const hex = x.slice(2);
   if (hex !== hex.toLowerCase() && hex !== hex.toUpperCase()) {
     const h = Buffer.from(keccak_256(new TextEncoder().encode(hex.toLowerCase()))).toString("hex");
@@ -224,6 +226,11 @@ export function quoteFeeView(f: SplitFees) {
 
 /** The quote as Mark shows it: what you pay, what you get, and every fee line, our markup named openly, plus the total rate. */
 /** The bridge fee of a bridged quote in token units ("55034"), or undefined when Satora's quote has none (or a bad one). */
+/** A bridged quote must carry Circle's fee (it is taken from the deposit or the payout): refused otherwise, before a quote is shown
+ *  or anything is created. */
+export function needBridgeFee(t: StableToken, q: { bridge_fee?: unknown }, beforeCreate = true) {
+  if (t.bridge && bridgeFeeUnits(q) === undefined) throw new MarkError("QUOTE_UNAVAILABLE", `Satora's quote has no ${t.bridge.via} bridge fee for ${tokenLabel(t)}${beforeCreate ? "; nothing was created" : ""}. Retry later.`);
+}
 export function bridgeFeeUnits(q: { bridge_fee?: unknown }): string | undefined {
   const b = q.bridge_fee; const x = typeof b === "number" ? (Number.isSafeInteger(b) && b >= 0 ? String(b) : "") : typeof b === "string" ? b : "";
   return /^\d+$/.test(x) ? x : undefined;

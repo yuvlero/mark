@@ -405,3 +405,27 @@ test("fund --from --wait: a deal that expired before the deposit is locked: the 
   const r = await es.fundStable(c, "e1", { from: "usdc", wait: true, timeoutSec: 5, pollMs: 1, onInstructions: () => {} });
   assert.equal(m.calls.fund.length, 0, "nothing locked"); assert.match(r.note, /expired before the swap paid out/); assert.match(r.swap.note, /NOT locked/);
 });
+
+test("priceStableDeposit: grosses the deposit up until its net covers the deal, then adds the cushion (1.5% bridged, 0.5% otherwise)", async () => {
+  // fake Satora: 1,000 token units per sat gross, 1.2% swap fee taken from the payout; by-target quotes are GROSS (the live quirk)
+  const calls = [];
+  const s = { quoteReverse: async (q) => { calls.push(q);
+    const units = q.sourceUnits !== undefined ? BigInt(q.sourceUnits) : BigInt(q.targetSats) * 1000n;
+    const gross = Number(units / 1000n), net = Math.floor(gross * 0.988);
+    return { source_amount: String(units), target_amount: String(gross), net_target_amount: String(net), min_amount: 100, max_amount: 1_000_000, bridge_fee: "20000" }; } };
+  const r = await es.priceStableDeposit(s, "usdc", 2000, 50);
+  assert.equal(calls[0].targetSats, 2000); assert.ok(calls.length >= 2 && calls.length <= 4);
+  assert.ok(Number(r.qs.net_target_amount) >= 2000, "the last quote's net covers the deal");
+  const src = BigInt(r.qs.source_amount);
+  assert.equal(r.sourceUnits, (src * BigInt(10000 + es.FUND_STABLE_CUSHION_BPS) + 9999n) / 10000n);
+  const b = await es.priceStableDeposit(s, "usdc-base", 2000, 50);
+  assert.equal(b.sourceUnits, (BigInt(b.qs.source_amount) * BigInt(10000 + es.FUND_STABLE_BRIDGED_CUSHION_BPS) + 9999n) / 10000n);
+  assert.ok(b.sourceUnits > r.sourceUnits, "bridged cushion is larger");
+  // a bridged quote without Circle's fee, or a deal outside Satora's range: refused, nothing created
+  const noFee = { quoteReverse: async (q) => ({ ...(await s.quoteReverse(q)), bridge_fee: undefined }) };
+  await assert.rejects(es.priceStableDeposit(noFee, "usdc-base", 2000, 50), (e) => e.code === "QUOTE_UNAVAILABLE" && /bridge fee/.test(e.message));
+  await assert.rejects(es.priceStableDeposit(s, "usdc", 50, 50), (e) => e.code === "SWAP_AMOUNT");
+  // a quote that never reaches the deal stops after three rounds
+  const stuck = { quoteReverse: async (q) => ({ source_amount: "5000", target_amount: "5", net_target_amount: "4", min_amount: 1, max_amount: 1_000_000 }) };
+  await assert.rejects(es.priceStableDeposit(stuck, "usdc", 2000, 50), (e) => e.code === "QUOTE_UNAVAILABLE" && e.details?.dealSats === 2000);
+});

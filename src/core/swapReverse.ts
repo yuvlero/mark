@@ -13,7 +13,7 @@ import { SWAP_CLAIMABLE, SWAP_DONE, SWAP_FAILED, SWAP_PAID, isReverseDir, revers
 import { pinMismatch } from "../swap/reversePin.js";
 import { sleep } from "../util.js";
 import { ARBISCAN_TX, SWAP_MARKUP_BPS, sameHex, stableOfReverse, txLink, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkMarkupBps,
-  formatReverseQuote, pct, tokenUnits, units, ethText, bridgeFeeUnits, tokenLabel, BRIDGE_IN_TX_NAMES, SWEEP_TX, type GasEstimate, type StableToken, type SwapRail, type SwapStable } from "../swap/stable.js";
+  formatReverseQuote, pct, tokenUnits, units, ethText, bridgeFeeUnits, needBridgeFee, tokenLabel, BRIDGE_IN_TX_NAMES, SWEEP_TX, type GasEstimate, type StableToken, type SwapRail, type SwapStable } from "../swap/stable.js";
 import { gasNeedWei, type EvmReader } from "../swap/evm.js";
 
 export interface ReverseInput { from: SwapStable; to: SwapRail; amount?: string | number; invoice?: string; address?: string }
@@ -99,10 +99,6 @@ async function quoteOf(s: Rev, p: Parsed) {
 export function inRange(q: any) { const gross = Number(q.target_amount); return !(Number.isSafeInteger(q.min_amount) && Number.isSafeInteger(q.max_amount)) || (gross >= q.min_amount && gross <= q.max_amount); }
 
 /** Quote only (nothing is created). */
-/** A bridged quote must carry Circle's fee (it is taken from the deposit): refused otherwise, for a quote and before a create. */
-export function needBridgeFee(t: StableToken, q: any) {
-  if (t.bridge && bridgeFeeUnits(q) === undefined) throw new MarkError("QUOTE_UNAVAILABLE", `Satora's quote has no ${t.bridge.via} fee for ${tokenLabel(t)}; nothing was created. Retry later.`);
-}
 export async function reverseQuote(c: Ctx, i: ReverseInput) {
   const p = parseReverse(c, i, "quote"); const s = await reverse(c); const [q, gas] = await Promise.all([quoteOf(s, p), gasOf(s, p.token)]);
   needBridgeFee(p.token, q);
@@ -296,6 +292,8 @@ function nextNote(x: ReverseSwapInfo) {
 export async function waitReverse(s: Rev, id: string, o: { timeoutSec?: number; pollMs?: number; noFund?: boolean; claimGuard?: () => Promise<string | undefined>; retryHint?: string }) {
   const end = Date.now() + (o.timeoutSec ?? 1800) * 1000; const poll = o.pollMs ?? 5000; let last = "unknown"; let fund: any; let claimed = false;
   let lowGas: { t: StableToken; dep: string; need: bigint; holds: bigint } | undefined;
+  /** asked right before the deposit is locked: the guard's reason stops the wait with the deposit untouched */
+  const notLocked = async (x: ReverseSwapInfo) => { const stop = await o.claimGuard?.(); return stop ? { id, status: x.status, funded: false, notClaimed: stop, note: `${stop} The deposit was NOT locked into the swap.` } : undefined; };
   while (Date.now() < end) {
     let x: ReverseSwapInfo; try { x = await s.getReverse(id); } catch { await sleep(poll); continue; }
     x = pinned(s, x, "act"); last = x.status;
@@ -305,7 +303,7 @@ export async function waitReverse(s: Rev, id: string, o: { timeoutSec?: number; 
     if (x.status === "pending" && !x.fundTx && !fund?.success) {
       const f = await fundState(s, x);
       if (!fund && await resumable(s, x)) {
-        const stop = await o.claimGuard?.(); if (stop) return { id, status: x.status, funded: false, notClaimed: stop, note: `${stop} The deposit was NOT locked into the swap.` };
+        const stop = await notLocked(x); if (stop) return stop;
         const r = await s.fundReverse(id); fund = r;
         if (!r.success && !r.skipped) return fundOut(x, r);
       } else if (f.have !== undefined && f.have >= f.need && f.attempted === undefined) {
@@ -313,7 +311,7 @@ export async function waitReverse(s: Rev, id: string, o: { timeoutSec?: number; 
         const g = f.t?.bridge ? await gasState(s, f.t, x.depositAddress) : undefined;
         lowGas = g && g.holds < g.need ? { t: f.t!, dep: x.depositAddress!, need: g.need, holds: g.holds } : undefined;
         if (g !== null && !lowGas) {
-          const stop = await o.claimGuard?.(); if (stop) return { id, status: x.status, funded: false, notClaimed: stop, note: `${stop} The deposit was NOT locked into the swap.` };
+          const stop = await notLocked(x); if (stop) return stop;
           const r = await s.fundReverse(id); fund = r;
           if (r.needEth) { lowGas = { t: f.t!, dep: x.depositAddress!, need: BigInt(r.needEth.needWei), holds: BigInt(r.needEth.holdsWei) }; fund = undefined; }
           else if (!r.success && !r.skipped && !r.uncertain) return fundOut(x, r);

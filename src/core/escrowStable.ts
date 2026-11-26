@@ -17,11 +17,11 @@ import { computeFees } from "./fees.js";
 import { checkArkadeAddress } from "./arkAddress.js";
 import { sleep } from "../util.js";
 import { SWAP_FAILED, SWAP_CLAIMABLE, SWAP_DONE } from "../swap/states.js";
-import { SWAP_MARKUP_BPS, SWAP_STABLES, SWAP_TARGETS, STABLE_FLAGS, SWAP_FEE_TOTAL_NOTE, targetList, checkEvmAddress, checkMarkupBps, formatReverseQuote, formatSwapQuote, bridgeFeeUnits, tokenLabel, units, sameHex,
+import { SWAP_MARKUP_BPS, SWAP_STABLES, SWAP_TARGETS, STABLE_FLAGS, SWAP_FEE_TOTAL_NOTE, targetList, checkEvmAddress, checkMarkupBps, formatReverseQuote, formatSwapQuote, needBridgeFee, tokenLabel, units, sameHex,
   type SwapStable, type StableToken } from "../swap/stable.js";
-import { reverse, readerOf, createPinnedReverse, depositInfo, gasOf, inRange, needBridgeFee, waitReverse, reverseStatus, type Parsed } from "./swapReverse.js";
-import { stable, checkCreated, swapClaim } from "./swap.js";
-import { requireId, requireKind, checkFundTerms, withFundLock, myRole, counterpartyRule, expiredNote, expiresAtMs, FUNDED_STATES, dealFee, arkadeServer, type Kind } from "./usecases.js";
+import { reverse, readerOf, createPinnedReverse, depositInfo, gasOf, inRange, waitReverse, reverseStatus, type Parsed, type Rev } from "./swapReverse.js";
+import { stable, checkCreated, swapClaim, quoteStableToCreate } from "./swap.js";
+import { requireId, requireKind, submittedPayout, checkFundTerms, withFundLock, myRole, counterpartyRule, expiredNote, expiresAtMs, FUNDED_STATES, dealFee, arkadeServer, type Kind } from "./usecases.js";
 
 /** Least time before the deal expires (deadline + grace) to start a stablecoin funding: the depositor still has to send the
  *  stablecoins, Mark to lock them and Satora to pay the escrow. USDC on Base also waits for Circle's CCTP mint (minutes). */
@@ -56,6 +56,31 @@ function escrowFees(e: Escrow, sats: number) {
   if (!e.fees) return { platformFeeSats: 0, possibleDisputeFeeSats: 0, note: "no platform fee (legacy deal)" };
   const n = computeFees(e.fees, sats, sats, false), d = computeFees(e.fees, sats, sats, true);
   return { platformFeeSats: n.platformFeeSats + n.dustBumpSats, possibleDisputeFeeSats: d.disputeFeeSats, note: "taken from the payout, never from the deposit; a dispute fee applies only to a ruled dispute" };
+}
+
+/** The stablecoin deposit (token units) whose swap pays at least `dealSats` into the escrow, plus the cushion. Satora's quote by
+ *  target treats targetAmount as the GROSS sats (live, 26 Nov 2026: target 2000 -> a deposit that pays 1976 net once the swap fees
+ *  are taken), and the swap is created from the deposit: so the deposit is priced by source, re-quoted and grossed up until its
+ *  net payout covers the deal (at most 3 rounds), then the cushion is added (a price tick between this quote and the create must
+ *  still pay the deal). Returns the last quote (the one the swap is created from) and the deposit. Nothing is created. */
+export async function priceStableDeposit(s: Rev, from: SwapStable, dealSats: number, bps: number): Promise<{ qs: any; sourceUnits: bigint }> {
+  const t = SWAP_TARGETS[from];
+  const q = await s.quoteReverse({ from, to: "arkade", bps, targetSats: dealSats });
+  if (!/^\d+$/.test(String(q?.source_amount ?? "")) || BigInt(q.source_amount) <= 0n || !(Number(q?.net_target_amount) > 0)) throw new MarkError("QUOTE_UNAVAILABLE", "Satora's quote has no amounts; nothing was created. Retry later.");
+  needBridgeFee(t, q);
+  if (!inRange(q)) throw new MarkError("SWAP_AMOUNT", `Satora accepts ${q.min_amount}..${q.max_amount} sats for ${tokenLabel(t)} -> Arkade; this deal is ${dealSats} sats. Use Lightning or Ark.`, { minSats: q.min_amount, maxSats: q.max_amount });
+  let src = BigInt(q.source_amount), qs: any;
+  for (let i = 0; ; i++) {
+    qs = await s.quoteReverse({ from, to: "arkade", bps, sourceUnits: src });
+    const net = Number(qs?.net_target_amount);
+    if (!Number.isSafeInteger(net) || net <= 0) throw new MarkError("QUOTE_UNAVAILABLE", "Satora's quote has no payout amount; nothing was created. Retry later.");
+    if (net >= dealSats) break;
+    if (i >= 2) throw new MarkError("QUOTE_UNAVAILABLE", `Satora's quote for a ${tokenLabel(t)} deposit does not reach the deal's ${dealSats} sats (${net} net); nothing was created. Retry later.`, { netSats: net, dealSats });
+    src = (src * BigInt(dealSats) + BigInt(net) - 1n) / BigInt(net) + 1n;
+  }
+  needBridgeFee(t, qs);
+  if (!inRange(qs)) throw new MarkError("SWAP_AMOUNT", `Satora accepts ${qs.min_amount}..${qs.max_amount} sats for ${tokenLabel(t)} -> Arkade; this deal needs a ${tokenLabel(t)} deposit outside that range. Use Lightning or Ark.`, { minSats: qs.min_amount, maxSats: qs.max_amount });
+  return { qs, sourceUnits: (src * BigInt(10000 + (t.bridge ? FUND_STABLE_BRIDGED_CUSHION_BPS : FUND_STABLE_CUSHION_BPS)) + 9999n) / 10000n };
 }
 
 // ---------- fund --from usdc|usdt0|usdc-base ----------
@@ -113,26 +138,7 @@ export async function fundStable(c: Ctx, id: string, o: FundStableOpts) {
         return { reuse: cur.fundStableSwap };
       }
       const bps = checkMarkupBps(SWAP_MARKUP_BPS);
-      const [q, g] = await Promise.all([s.quoteReverse({ from, to: "arkade", bps, targetSats: e.amountSats }), gasOf(s, t)]);
-      if (!/^\d+$/.test(String(q?.source_amount ?? "")) || BigInt(q.source_amount) <= 0n || !(Number(q?.net_target_amount) > 0)) throw new MarkError("QUOTE_UNAVAILABLE", "Satora's quote has no amounts; nothing was created. Retry later.");
-      needBridgeFee(t, q);
-      if (!inRange(q)) throw new MarkError("SWAP_AMOUNT", `Satora accepts ${q.min_amount}..${q.max_amount} sats for ${tokenLabel(t)} -> Arkade; this deal is ${e.amountSats} sats. Use Lightning or Ark.`, { minSats: q.min_amount, maxSats: q.max_amount });
-      // Satora's quote by target treats targetAmount as the GROSS sats (live, 26 Nov 2026: target 2000 -> a deposit that pays
-      // 1976 net once the swap fees are taken). The swap is created from the deposit, so price the deposit by source: re-quote
-      // the deposit and gross it up until its net payout covers the deal (at most 3 rounds), then add the cushion.
-      let src = BigInt(q.source_amount), qs: any;
-      for (let i = 0; ; i++) {
-        qs = await s.quoteReverse({ from, to: "arkade", bps, sourceUnits: src });
-        const net = Number(qs?.net_target_amount);
-        if (!Number.isSafeInteger(net) || net <= 0) throw new MarkError("QUOTE_UNAVAILABLE", "Satora's quote has no payout amount; nothing was created. Retry later.");
-        if (net >= e.amountSats) break;
-        if (i >= 2) throw new MarkError("QUOTE_UNAVAILABLE", `Satora's quote for a ${tokenLabel(t)} deposit does not reach the deal's ${e.amountSats} sats (${net} net); nothing was created. Retry later.`, { netSats: net, dealSats: e.amountSats });
-        src = (src * BigInt(e.amountSats) + BigInt(net) - 1n) / BigInt(net) + 1n;
-      }
-      needBridgeFee(t, qs);
-      if (!inRange(qs)) throw new MarkError("SWAP_AMOUNT", `Satora accepts ${qs.min_amount}..${qs.max_amount} sats for ${tokenLabel(t)} -> Arkade; this deal needs a ${tokenLabel(t)} deposit outside that range. Use Lightning or Ark.`, { minSats: qs.min_amount, maxSats: qs.max_amount });
-      // the cushion: a price tick between this quote and the create must still pay at least the deal amount
-      const sourceUnits = (src * BigInt(10000 + (t.bridge ? FUND_STABLE_BRIDGED_CUSHION_BPS : FUND_STABLE_CUSHION_BPS)) + 9999n) / 10000n;
+      const [{ qs, sourceUnits }, g] = await Promise.all([priceStableDeposit(s, from, e.amountSats, bps), gasOf(s, t)]);
       const p: Parsed = { from, to: "arkade", bps, arkAddress: e.address, sourceUnits, token: t } as Parsed;
       const x = await createPinnedReverse(c, s, p, qs, (x) => {
         const bad = (why: string) => { throw new MarkError("SWAP_FAILED", `Satora's swap does not fund this deal (${why}). Do NOT deposit anything; nothing is lost while it is unfunded (it just expires).`, { id: x?.id }); };
@@ -213,9 +219,7 @@ export async function stablePayoutSpec(c: Ctx, e: Escrow, _kind: Kind, o: Stable
   const address = checkEvmAddress(o.payoutAddress, "--payout-address", t.network);
   const amount = dealFee(e).payeeSats; const bps = checkMarkupBps(SWAP_MARKUP_BPS);
   const s = await stable(c);
-  const q = await s.quoteStable({ from: "arkade", to, sats: amount, bps });
-  if (!/^\d+$/.test(String(q.net_target_amount ?? "")) || BigInt(q.net_target_amount) <= 0n) throw new MarkError("QUOTE_UNAVAILABLE", "Satora's quote has no payout amount; nothing was created. Retry later.");
-  if (t.bridge && bridgeFeeUnits(q) === undefined) throw new MarkError("QUOTE_UNAVAILABLE", `Satora's quote has no ${t.bridge.via} bridge fee for ${tokenLabel(t)}; nothing was created. Retry later.`);
+  const q = await quoteStableToCreate(s, { from: "arkade", to, sats: amount, bps }, t);
   if (amount < q.min_amount || amount > q.max_amount) throw new MarkError("SWAP_AMOUNT", `Satora accepts ${q.min_amount}..${q.max_amount} sats for Arkade -> ${tokenLabel(t)}; the payee leg is ${amount} sats. Use --payout-lnaddr, --payout-invoice or --payout-ark.`, { minSats: q.min_amount, maxSats: q.max_amount, payeeLegSats: amount });
   const created = await s.createStable({ from: "arkade", to, sats: amount, bps, address });
   checkCreated(c, { from: "arkade", to, sats: amount }, address, created, q.net_target_amount);
@@ -233,6 +237,13 @@ export async function stablePayoutSpec(c: Ctx, e: Escrow, _kind: Kind, o: Stable
       roundTrip: PAYOUT_ROUND_TRIP_NOTE } };
 }
 
+/** Before signing its own stablecoin payout proposal, the payee checks the server returned exactly that proposal: same kind, this
+ *  swap's VHTLC as destination, same swap, EVM address and token. */
+export function checkOwnStableProposal(prop: ProposalFull, kind: Kind, want: Payout, vhtlc: string) {
+  const po: any = prop.payout ?? {}, w: any = want;
+  if (prop.kind !== kind || prop.dest !== vhtlc || po.type !== "stable" || po.swapId !== w.swapId || !sameHex(po.address, w.address) || (po.token ?? w.token) !== w.token)
+    throw new MarkError("UNSAFE_TX", `the escrow server returned a proposal that is not the stablecoin payout just proposed (swap ${w.swapId} to ${w.address}); refusing to sign`, { proposalId: prop.id });
+}
 /** A co-signer (and the payee) checks a stablecoin payout at Satora before signing: an unfunded Arkade -> stablecoin swap asking for
  *  exactly the payee leg, paying the stated EVM address, whose VHTLC is the tx destination. Fails closed when Satora can't be read. */
 export async function checkStableProposal(c: Ctx, e: Escrow, p: ProposalFull) {
@@ -255,11 +266,11 @@ export async function claimPayout(c: Ctx, id: string, o: { wait?: boolean; timeo
   // the swap to claim is the one in the proposal that was actually submitted (a later, failed or unused proposal may have
   // created another swap); before submission, this home's latest accepted stablecoin proposal
   let swapId = l.payoutStable ? l.payoutSwap : undefined, token = l.payoutStable, address = l.payoutAddress;
-  const sub = e?.proposals.find((p) => p.submittedTxid);
-  if (sub) {
-    let po: any; try { po = (await c.api.proposal(id, sub.id)).payout; } catch (x: any) { throw new MarkError("ESCROW_UNREACHABLE", `could not read the submitted proposal ${sub.id} of escrow ${id} (${String(x?.message ?? x).slice(0, 120)}): not guessing which swap it paid. Try again shortly.`); }
+  const sp = await submittedPayout(c, id, e);
+  if (sp) {
+    const po = sp.payout;
     if (po && po.type !== "stable") throw new MarkError("USAGE", `escrow ${id}'s submitted payout is ${po.type}, not a stablecoin payout: nothing to claim here`);
-    if (!po?.swapId) throw new MarkError("ESCROW_BAD_RESPONSE", `escrow ${id}'s submitted proposal ${sub.id} names no payout swap: not guessing which swap it paid`);
+    if (!po?.swapId) throw new MarkError("ESCROW_BAD_RESPONSE", `escrow ${id}'s submitted proposal ${sp.pid} names no payout swap: not guessing which swap it paid`);
     swapId = po.swapId; token = po.token ?? token; address = po.address ?? address;
   }
   if (!swapId) {
@@ -286,11 +297,11 @@ export async function quoteStablePayout(c: Ctx, id: string, path: Kind, payoutSt
   const sats = Number(eq.ark?.payoutSats); if (!Number.isSafeInteger(sats) || sats <= 0) throw new MarkError("QUOTE_UNAVAILABLE", "the escrow server's quote has no payee leg");
   const bps = checkMarkupBps(SWAP_MARKUP_BPS); const s = await stable(c);
   const q = await s.quoteStable({ from: "arkade", to, sats, bps });
-  if (t.bridge && bridgeFeeUnits(q) === undefined) throw new MarkError("QUOTE_UNAVAILABLE", `Satora's quote has no ${t.bridge.via} bridge fee for ${tokenLabel(t)}. Retry later.`);
+  needBridgeFee(t, q, false);
   const quote = formatSwapQuote(q, { from: "arkade", to, sats, bps });
-  const inRange_ = sats >= q.min_amount && sats <= q.max_amount;
-  return { escrowId: id, path: kind, payoutStable: to, token: tokenLabel(t), escrowSats: eq.escrowSats, payeeLegSats: sats, escrowFeeSats: Math.max(0, eq.escrowSats - sats), payeeLegUsd: usdOf(sats, q.exchange_rate),
-    receive: quote.receive, quote, totalFees: { escrowFeeSats: Math.max(0, eq.escrowSats - sats), swapFeeSats: quote.fees.totalFeeSats, ...(t.bridge ? { bridgeFee: `${(quote.fees as any).bridgeFee ?? "?"} ${t.symbol}` } : {}) },
+  const inRange_ = sats >= q.min_amount && sats <= q.max_amount, escrowFeeSats = Math.max(0, eq.escrowSats - sats);
+  return { escrowId: id, path: kind, payoutStable: to, token: tokenLabel(t), escrowSats: eq.escrowSats, payeeLegSats: sats, escrowFeeSats, payeeLegUsd: usdOf(sats, q.exchange_rate),
+    receive: quote.receive, quote, totalFees: { escrowFeeSats, swapFeeSats: quote.fees.totalFeeSats, ...(t.bridge ? { bridgeFee: `${(quote.fees as any).bridgeFee ?? "?"} ${t.symbol}` } : {}) },
     note: `${quote.markupNote} The escrow fee is taken from the escrow first (payee leg ${sats} sats); the swap converts exactly that. ${PAYOUT_ROUND_TRIP_NOTE}`,
     ...(inRange_ ? {} : { outOfRange: `Satora accepts ${q.min_amount}..${q.max_amount} sats for this route: use Lightning or Ark for this payout` }),
     next: `${mk()} escrow ${kind === "release" ? "approve" : "refund"} ${id} --payout-stable ${to} --payout-address <your 0x address on ${t.network}>` };

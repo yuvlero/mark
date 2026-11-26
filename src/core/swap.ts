@@ -12,7 +12,7 @@ import { SWAP_UNPAID, SWAP_PAID, SWAP_WAITING, SWAP_CLAIMABLE, SWAP_DONE, isReve
 import { sleep } from "../util.js";
 import { reverse, loadReverse, waitReverse, reverseQuote, reverseRun, reverseStatus, reverseClaim, reverseRefund, reverseFund, reverseRecover } from "./swapReverse.js";
 import { loadRail, railQuote, railRun, railStatus, railClaim, railRefund } from "./swapRail.js";
-import { ARBISCAN_TX, STABLE_FLAGS, sameHex, txLink, SWAP_MARKUP_BPS, SWAP_REFERRAL_ID, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkMarkupBps, formatSwapQuote, BRIDGE_IN_TX_NAMES, pct, swapFeeRates, swapFeeSummaryNote, swapSats, swapSource, swapTarget, units, swapRoute, allSwapRoutes, targetOfSwap, tokenLabel, bridgeFeeUnits, type StableToken, type SwapSource, type SwapTarget } from "../swap/stable.js";
+import { ARBISCAN_TX, STABLE_FLAGS, sameHex, txLink, SWAP_MARKUP_BPS, SWAP_REFERRAL_ID, SWAP_MAX_SLIPPAGE_BPS, SWAP_SOURCES, SWAP_TARGETS, checkEvmAddress, checkMarkupBps, formatSwapQuote, BRIDGE_IN_TX_NAMES, pct, swapFeeRates, swapFeeSummaryNote, swapSats, swapSource, swapTarget, units, swapRoute, allSwapRoutes, targetOfSwap, tokenLabel, bridgeFeeUnits, needBridgeFee, type StableToken, type SwapSource, type SwapTarget } from "../swap/stable.js";
 
 /** sats: BTC -> stablecoin. amount (token units like 1.5) / invoice: stablecoin -> BTC (address is the payout target there). */
 export interface SwapQuoteInput { from?: string; to?: string; sats?: number | string; amount?: string | number; invoice?: string; address?: string }
@@ -108,10 +108,7 @@ export async function swapRun(c: Ctx, i: SwapRunInput) {
   mainnetOnly(c); const r = route(i); if (r.dir === "to_btc") return reverseRun(c, { ...revIn(r, i), confirm: i.confirm, wait: i.wait, timeoutSec: i.timeoutSec, pollMs: i.pollMs, onProgress: i.onProgress });
   if (r.dir === "rail") return railRun(c, { from: r.from, to: r.to, sats: i.sats, invoice: i.invoice, address: i.address, confirm: i.confirm, wait: i.wait, timeoutSec: i.timeoutSec, pollMs: i.pollMs, onProgress: i.onProgress });
   const p = parse(i); const t = SWAP_TARGETS[p.to]; const address = checkEvmAddress(i.address, "--address", t.network); const s = await stable(c);
-  const q = await s.quoteStable(p);
-  if (!/^\d+$/.test(String(q.net_target_amount ?? "")) || BigInt(q.net_target_amount) <= 0n) throw new MarkError("QUOTE_UNAVAILABLE", "Satora's quote has no payout amount; nothing was created. Retry later.");
-  // a bridged payout must show its bridge fee before anything is created (full fee disclosure)
-  if (t.bridge && bridgeFeeUnits(q) === undefined) throw new MarkError("QUOTE_UNAVAILABLE", `Satora's quote has no ${t.bridge.via} bridge fee for ${tokenLabel(t)}; nothing was created. Retry later.`);
+  const q = await quoteStableToCreate(s, p, t);
   const quote = formatSwapQuote(q, p);
   if (p.sats < q.min_amount || p.sats > q.max_amount) throw new MarkError("SWAP_AMOUNT", `Satora accepts ${q.min_amount}..${q.max_amount} sats for ${p.from} -> ${tokenLabel(t)}`, { quote });
   if (!i.confirm) return { swap: "preview", quote, payoutAddress: address,
@@ -131,6 +128,14 @@ export async function swapRun(c: Ctx, i: SwapRunInput) {
 /** Before showing anything payable: the swap must pay out to the confirmed address, ask for exactly the requested sats, and carry a
  *  payable invoice (this network, that amount) or an Ark address for this network. Else SWAP_FAILED: do not pay (an unpaid swap
  *  simply expires). */
+/** A BTC -> stablecoin quote a swap will be created from: it must name the payout and, when bridged, its bridge fee (full fee
+ *  disclosure before anything is created). */
+export async function quoteStableToCreate(s: Awaited<ReturnType<typeof stable>>, p: { from: SwapSource; to: SwapTarget; sats: number; bps: number }, t: StableToken) {
+  const q = await s.quoteStable(p);
+  if (!/^\d+$/.test(String(q.net_target_amount ?? "")) || BigInt(q.net_target_amount) <= 0n) throw new MarkError("QUOTE_UNAVAILABLE", "Satora's quote has no payout amount; nothing was created. Retry later.");
+  needBridgeFee(t, q);
+  return q;
+}
 export function checkCreated(c: Ctx, p: { from: SwapSource; to: SwapTarget; sats: number }, address: string, x: StableSwapCreated, quotedUnits: string) {
   const bad = (why: string) => { throw new MarkError("SWAP_FAILED", `Satora's swap does not match what you confirmed (${why}). Do NOT pay it; nothing is lost while it is unpaid.`, { id: x?.id }); };
   const src = SWAP_SOURCES[p.from], tgt = SWAP_TARGETS[p.to];
