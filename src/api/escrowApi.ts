@@ -43,7 +43,7 @@ export interface Auth { party: "buyer" | "seller"; ts: number; sig: string }
 export type Payout = { type: "invoice"; invoice: string; swapId: string } | { type: "lnaddr"; address: string; swapId: string } | { type: "ark"; address: string } | { type: "stable"; address: string; swapId: string; token?: string };
 
 export interface ProposalSummary { id: string; kind: "release" | "refund"; dest: string; signers: Party[]; sigs: Party[]; submittedTxid?: string }
-export interface ProposalFull extends ProposalSummary { arkTx: string; checkpoints: string[]; payout?: { type: string; invoice?: string; address?: string; swapId?: string; sats?: number } }
+export interface ProposalFull extends ProposalSummary { arkTx: string; checkpoints: string[]; payout?: { type: string; invoice?: string; address?: string; swapId?: string; sats?: number; token?: string } }
 export interface Escrow {
   id: string; state: string; amountSats: number; deadline: string; address: string;
   buyerPubkey: string; sellerPubkey: string; arbiterPubkey: string;

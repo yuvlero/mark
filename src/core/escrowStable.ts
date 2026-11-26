@@ -17,7 +17,7 @@ import { computeFees } from "./fees.js";
 import { checkArkadeAddress } from "./arkAddress.js";
 import { sleep } from "../util.js";
 import { SWAP_FAILED, SWAP_CLAIMABLE, SWAP_DONE } from "../swap/states.js";
-import { SWAP_MARKUP_BPS, SWAP_STABLES, SWAP_TARGETS, STABLE_FLAGS, checkEvmAddress, checkMarkupBps, formatReverseQuote, formatSwapQuote, bridgeFeeUnits, tokenLabel, units, sameHex,
+import { SWAP_MARKUP_BPS, SWAP_STABLES, SWAP_TARGETS, STABLE_FLAGS, SWAP_FEE_TOTAL_NOTE, targetList, checkEvmAddress, checkMarkupBps, formatReverseQuote, formatSwapQuote, bridgeFeeUnits, tokenLabel, units, sameHex,
   type SwapStable, type StableToken } from "../swap/stable.js";
 import { reverse, readerOf, createPinnedReverse, depositInfo, gasOf, inRange, needBridgeFee, waitReverse, reverseStatus, type Parsed } from "./swapReverse.js";
 import { stable, checkCreated, swapClaim } from "./swap.js";
@@ -29,13 +29,16 @@ export const FUND_STABLE_MIN_SEC = 1800, FUND_STABLE_BRIDGED_MIN_SEC = 3600;
 /** Extra deposit on top of Satora's quote for the deal's sats, so a price tick between the quote and the create still pays at
  *  least the deal amount (the few extra sats stay in the escrow). */
 export const FUND_STABLE_CUSHION_BPS = 50;
-export const ROUND_TRIP_NOTE = "Paying out in stablecoins too means two swaps (about 1% each, plus network fees) around a bitcoin escrow: the BTC/USD price can move between funding and payout, so the payout in USD can differ from what was deposited.";
+const ROUND_TRIP = `two swaps around a bitcoin escrow (each ${SWAP_FEE_TOTAL_NOTE}): the BTC/USD price can move between funding and payout, so the USD amount paid out can differ from the USD deposited.`;
+/** Shown when funding with stablecoins (the payout may be in stablecoins too) and when paying out in stablecoins. */
+export const ROUND_TRIP_NOTE = `If the payout is in stablecoins too, that is ${ROUND_TRIP}`;
+export const PAYOUT_ROUND_TRIP_NOTE = `If the escrow was funded with stablecoins as well, that is ${ROUND_TRIP}`;
 const ESCROW_IS_BTC = "The escrow itself holds bitcoin (sats on Arkade); the stablecoins are swapped at the edges by Satora.";
 
 /** --from / --payout-stable: usdc | usdt0 (usdt) | usdc-base. */
 export function stableToken(v: unknown, flag: string): SwapStable {
   const k = String(v ?? "").trim().toLowerCase().replace(/^usdt$/, "usdt0");
-  if (!(SWAP_STABLES as readonly string[]).includes(k)) throw new MarkError("USAGE", `${flag} must be ${STABLE_FLAGS} (usdc and usdt0 on Arbitrum One, usdc-base = USDC on Base)`);
+  if (!(SWAP_STABLES as readonly string[]).includes(k)) throw new MarkError("USAGE", `${flag} must be ${STABLE_FLAGS} (${targetList(SWAP_STABLES)})`);
   return k as SwapStable;
 }
 function mainnet(c: Ctx, what: string) {
@@ -68,7 +71,6 @@ export async function fundStable(c: Ctx, id: string, o: FundStableOpts) {
   if (e.state === "expired") return { escrowId: id, rail: "stable", state: e.state, expiredAt: e.expiredAt ?? null, note: expiredNote(e) + recoverHint, ...(l0.fundStableSwap ? { swapId: l0.fundStableSwap } : {}) };
   if (e.state !== "created") return { escrowId: id, rail: "stable", state: e.state, note: "already funded", ...(l0.fundStableSwap ? { swapId: l0.fundStableSwap } : {}) };
   const { v, l } = checkFundTerms(c, e, id);
-  if (l.fundStableSwap && l.fundStableFrom && l.fundStableFrom !== from) throw new MarkError("FUNDING_IN_PROGRESS", `this deal's stablecoin funding swap ${l.fundStableSwap} is from ${l.fundStableFrom}: continue with ${mk()} escrow fund ${id} --from ${l.fundStableFrom}`, { swapId: l.fundStableSwap, from: l.fundStableFrom });
   const s = await reverse(c);
   const otherRail = async (cur: typeof l) => {
     if (o.switchRail) return;
@@ -92,6 +94,8 @@ export async function fundStable(c: Ctx, id: string, o: FundStableOpts) {
     catch (x: any) { if (!o.wait) return { ...base, swapId: l.fundStableSwap, swapStatus: "unknown", note: `could not read the funding swap from Satora (${String(x?.message ?? x).slice(0, 120)}); no deposit instructions are shown. Try again: ${mk()} escrow fund ${id} --from ${from}` }; }
   }
   const fresh = !existing ? !l.fundStableSwap : existing.status === "expired" && !existing.fundTx;
+  // another token while this deal's swap can still take (or holds) a deposit: refused (an expired unfunded one is replaced)
+  if (l.fundStableSwap && l.fundStableFrom && l.fundStableFrom !== from && !fresh) throw new MarkError("FUNDING_IN_PROGRESS", `this deal's stablecoin funding swap ${l.fundStableSwap} is from ${l.fundStableFrom}: continue with ${mk()} escrow fund ${id} --from ${l.fundStableFrom}`, { swapId: l.fundStableSwap, from: l.fundStableFrom });
   let created: ReverseSwapCreated | undefined; let quote: ReturnType<typeof formatReverseQuote> | undefined; let gas: Awaited<ReturnType<typeof gasOf>> = null; let rate: string | undefined;
   if (fresh) {
     const left = Math.floor((expiresAtMs(e) - Date.now()) / 1000); const min = t.bridge ? FUND_STABLE_BRIDGED_MIN_SEC : FUND_STABLE_MIN_SEC;
@@ -123,7 +127,8 @@ export async function fundStable(c: Ctx, id: string, o: FundStableOpts) {
     else { created = r.x; gas = r.g; quote = formatReverseQuote(r.q, { from, to: "arkade", bps: SWAP_MARKUP_BPS, gas }); rate = r.q.exchange_rate; }
   } else if (o.switchRail && l.fundRail !== "stable") c.index.set(id, { fundRail: "stable" });
   const swapId = created?.id ?? existing?.id ?? l.fundStableSwap!;
-  const fees = escrowFees(e, e.amountSats);
+  // the platform fee is on what the escrow will hold: the swap's payout (deal amount + cushion), which can cross a fee tier
+  const fees = escrowFees(e, created?.targetSats ?? e.amountSats);
   if (created) {
     const deposit = await depositInfo(s, created, gas);
     const extra = created.targetSats! - e.amountSats;
@@ -137,9 +142,10 @@ export async function fundStable(c: Ctx, id: string, o: FundStableOpts) {
         ...(t.bridge ? [`From ${tokenLabel(t)}: keep a little ETH on ${t.network} at ${deposit.address} for gas (${(deposit as any).gas?.needEth ?? "about 0.0001"} ETH); Mark checks it before signing.`] : []),
         ROUND_TRIP_NOTE, ESCROW_IS_BTC,
       ],
-      next: o.wait ? "Waiting for the deposit; then Mark locks it, claims the sats into the escrow and waits until the deal is funded." : `After the deposit, run: ${mk()} escrow fund ${id} --from ${from} --wait  (locks it, claims the sats into the escrow). If it fails: ${mk()} swap refund ${swapId}, then ${mk()} swap recover ${swapId} --to <your 0x address>` };
-    if (!o.wait) return first;
-    o.onInstructions?.(first);
+      next: o.wait && o.onInstructions ? "Waiting for the deposit; then Mark locks it, claims the sats into the escrow and waits until the deal is funded." : `After the deposit, run: ${mk()} escrow fund ${id} --from ${from} --wait  (locks it, claims the sats into the escrow). If it fails: ${mk()} swap refund ${swapId}, then ${mk()} swap recover ${swapId} --to <your 0x address>` };
+    // without a way to show the deposit instructions first (MCP), never wait blind: return them; the next call with wait locks and claims
+    if (!o.wait || !o.onInstructions) return first;
+    o.onInstructions(first);
   } else if (!o.wait) {
     const st = await reverseStatus(s, existing!);
     const claimable = SWAP_CLAIMABLE.has(existing!.status) && existing!.targetChain === "Arkade";
@@ -155,16 +161,19 @@ export async function fundStable(c: Ctx, id: string, o: FundStableOpts) {
     if (now_.state !== "created") return `the deal is ${now_.state}: NOT claimed into the escrow. Check ${mk()} escrow status ${id}.`;
     return undefined;
   };
-  const w: any = await waitReverse(s, swapId, { timeoutSec: o.timeoutSec ?? 1800, pollMs: o.pollMs, claimGuard: guard });
+  const w: any = await waitReverse(s, swapId, { timeoutSec: o.timeoutSec ?? 1800, pollMs: o.pollMs, claimGuard: guard, retryHint: `${mk()} escrow fund ${id} --from ${from} --wait` });
   let deal = await c.api.get(id).catch(() => null);
   if (w?.swap === "done" && deal?.state === "created") for (let i = 0; i < 5 && deal?.state === "created"; i++) { await sleep(o.pollMs ?? 2000); deal = await c.api.get(id).catch(() => deal); }
   const funded = !!deal && FUNDED_STATES.has(deal.state);
+  // funded BY THIS SWAP only when its sats were claimed into the escrow (swap done, the guard did not stop it); a deal funded
+  // by another payment while the swap timed out or failed is never reported as this swap's funding
+  const bySwap = funded && w?.swap === "done" && !w?.notClaimed;
   let ledger: unknown;
   // funded by something else (the guard stopped the claim): never report this swap as the funding
-  if (funded && !w?.notClaimed) { try { ledger = await c.api.reportArkFunding(id); } catch { ledger = undefined; } }
-  return { ...base, swapId, swap: w, state: deal?.state ?? "unknown", funded, ...(funded ? { funding: deal!.funding ?? null, escrow: deal } : {}), ...(ledger !== undefined ? { ledger } : {}),
+  if (bySwap) { try { ledger = await c.api.reportArkFunding(id); } catch { ledger = undefined; } }
+  return { ...base, swapId, swap: w, state: deal?.state ?? "unknown", funded, fundedBySwap: bySwap, ...(funded ? { funding: deal!.funding ?? null, escrow: deal } : {}), ...(ledger !== undefined ? { ledger } : {}),
     ...(w?.notClaimed ? { claimedIntoEscrow: false } : {}),
-    note: w?.notClaimed ? w.note : funded ? "Funded: the escrow holds the sats." : w?.timeout ? `${w.note} Then: ${mk()} escrow fund ${id} --from ${from} --wait` : w?.note ?? `Check ${mk()} escrow status ${id}` };
+    note: w?.notClaimed ? w.note : bySwap ? "Funded: the escrow holds the sats." : funded ? `The deal is funded, but not (yet) by this swap (swap ${w?.status ?? "unknown"}): do NOT claim it into the escrow. ${w?.note ?? ""} Get the stablecoins back after the swap's timelock: ${mk()} swap refund ${swapId}, then ${mk()} swap recover ${swapId} --to <your 0x address>.` : w?.timeout ? `${w.note} Then: ${mk()} escrow fund ${id} --from ${from} --wait` : w?.note ?? `Check ${mk()} escrow status ${id}` };
 }
 
 // ---------- payout in stablecoins (approve / refund --payout-stable) ----------
@@ -188,14 +197,13 @@ export async function stablePayoutSpec(c: Ctx, e: Escrow, _kind: Kind, o: Stable
   if (!ark.pubkey) throw new MarkError("BAD_DEST", "can't check the payout swap's Ark address right now (this deal's Arkade server key is unknown). Try again when the escrow server answers.");
   try { checkArkadeAddress(created.arkAddress, { network: c.network, serverPubkey: ark.pubkey, arkServerUrl: ark.url, what: "payout swap address" }); }
   catch (x: any) { throw new MarkError("SWAP_FAILED", `Satora's payout swap is not on this escrow's Arkade server (${x?.message ?? x}); nothing was proposed. Swap ${created.id} is unfunded and can be ignored.`, { id: created.id }); }
-  c.index.set(e.id, { payoutSwap: created.id, payoutStable: to, payoutAddress: address });
   const quote = formatSwapQuote(q, { from: "arkade", to, sats: amount, bps });
   const expectUnits = t.bridge && BigInt(q.net_target_amount) < BigInt(created.receiveUnits!) ? q.net_target_amount : created.receiveUnits;
   return { payout: { type: "stable", address, swapId: created.id, token: to }, authDest: `swap:${created.id}`, swap: { id: created.id, fundAddress: created.arkAddress!, fundAmountSats: created.payAmountSats },
     stable: { swapId: created.id, token: tokenLabel(t), payoutAddress: address, payoutNetwork: t.network, payeeLegSats: amount, payeeLegUsd: usdOf(amount, q.exchange_rate), expectedReceive: units(expectUnits, t.decimals),
       fees: { escrow: { platformFeeSats: dealFee(e).feeOutputSats, reason: dealFee(e).reason }, swap: quote.fees, note: quote.markupNote }, rate: quote.rate,
       receiveNote: "expectedReceive is Satora's estimate: the BTC is swapped into the stablecoin on a DEX at claim, so the amount that arrives can be a little different.",
-      roundTrip: ROUND_TRIP_NOTE } };
+      roundTrip: PAYOUT_ROUND_TRIP_NOTE } };
 }
 
 /** A co-signer (and the payee) checks a stablecoin payout at Satora before signing: an unfunded Arkade -> stablecoin swap asking for
@@ -216,14 +224,25 @@ export async function checkStableProposal(c: Ctx, e: Escrow, p: ProposalFull) {
 /** Claim the stablecoins of this deal's payout swap (gasless, to the address fixed at create). wait: until Satora funds its side. */
 export async function claimPayout(c: Ctx, id: string, o: { wait?: boolean; timeoutSec?: number; pollMs?: number } = {}) {
   const l = c.index.get(requireId(id));
-  if (!l.payoutSwap) throw new MarkError("NOT_FOUND", `no payout swap recorded for escrow ${id} in this Mark home (run it from the Mark home that proposed the payout)`);
-  if (!l.payoutStable) throw new MarkError("USAGE", `escrow ${id}'s payout swap pays Lightning: Satora pays it, nothing to claim. A failed one: ${mk()} escrow refund-payout ${id} --to <ark address>`);
-  mainnet(c, "mark escrow claim-payout");
   let e: Escrow | null = null; try { e = await c.api.get(id); } catch { e = null; }
+  // the swap to claim is the one in the proposal that was actually submitted (a later, failed or unused proposal may have
+  // created another swap); before submission, this home's latest accepted stablecoin proposal
+  let swapId = l.payoutStable ? l.payoutSwap : undefined, token = l.payoutStable, address = l.payoutAddress;
+  const sub = e?.proposals.find((p) => p.submittedTxid);
+  if (sub) {
+    let po: any; try { po = (await c.api.proposal(id, sub.id)).payout; } catch { po = undefined; }
+    if (po && po.type !== "stable") throw new MarkError("USAGE", `escrow ${id}'s submitted payout is ${po.type}, not a stablecoin payout: nothing to claim here`);
+    if (po?.swapId) { swapId = po.swapId; token = po.token ?? token; address = po.address ?? address; }
+  }
+  if (!swapId) {
+    if (l.payoutSwap) throw new MarkError("USAGE", `escrow ${id}'s payout swap pays Lightning: Satora pays it, nothing to claim. A failed one: ${mk()} escrow refund-payout ${id} --to <ark address>`);
+    throw new MarkError("NOT_FOUND", `no stablecoin payout swap recorded for escrow ${id} in this Mark home (run it from the Mark home that proposed the payout)`);
+  }
+  mainnet(c, "mark escrow claim-payout");
   const sent = !!e && (e.state === "released" || e.state === "refunded");
-  const base = { escrowId: id, payoutSwap: l.payoutSwap, payoutStable: l.payoutStable, payoutAddress: l.payoutAddress ?? null, state: e?.state ?? "unknown" };
+  const base = { escrowId: id, payoutSwap: swapId, payoutStable: token ?? null, payoutAddress: address ?? null, state: e?.state ?? "unknown" };
   if (!sent && !o.wait) return { ...base, claimed: false, note: `the payout tx is not submitted yet (deal ${e?.state ?? "unreadable"}): the other signer has to sign first. Then: ${mk()} escrow claim-payout ${id} --wait` };
-  const r: any = await swapClaim(c, l.payoutSwap, { wait: o.wait, timeoutSec: o.timeoutSec ?? 1800, pollMs: o.pollMs });
+  const r: any = await swapClaim(c, swapId, { wait: o.wait, timeoutSec: o.timeoutSec ?? 1800, pollMs: o.pollMs });
   const ended = r?.ended || (r?.status && SWAP_FAILED.has(r.status));
   return { ...base, ...r, ...(ended ? { recover: `the payout swap ended without a payout: after its timelock, get the sats back with ${mk()} escrow refund-payout ${id} --to <ark address from an Arkade wallet on this escrow's Arkade server>` } : {}) };
 }
@@ -244,7 +263,7 @@ export async function quoteStablePayout(c: Ctx, id: string, path: Kind, payoutSt
   const inRange_ = sats >= q.min_amount && sats <= q.max_amount;
   return { escrowId: id, path: kind, payoutStable: to, token: tokenLabel(t), escrowSats: eq.escrowSats, payeeLegSats: sats, escrowFeeSats: Math.max(0, eq.escrowSats - sats), payeeLegUsd: usdOf(sats, q.exchange_rate),
     receive: quote.receive, quote, totalFees: { escrowFeeSats: Math.max(0, eq.escrowSats - sats), swapFeeSats: quote.fees.totalFeeSats, ...(t.bridge ? { bridgeFee: `${(quote.fees as any).bridgeFee ?? "?"} ${t.symbol}` } : {}) },
-    note: `${quote.markupNote} The escrow fee is taken from the escrow first (payee leg ${sats} sats); the swap converts exactly that. ${ROUND_TRIP_NOTE}`,
+    note: `${quote.markupNote} The escrow fee is taken from the escrow first (payee leg ${sats} sats); the swap converts exactly that. ${PAYOUT_ROUND_TRIP_NOTE}`,
     ...(inRange_ ? {} : { outOfRange: `Satora accepts ${q.min_amount}..${q.max_amount} sats for this route: use Lightning or Ark for this payout` }),
     next: `${mk()} escrow ${kind === "release" ? "approve" : "refund"} ${id} --payout-stable ${to} --payout-address <your 0x address on ${t.network}>` };
 }

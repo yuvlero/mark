@@ -289,7 +289,7 @@ mark escrow fund <id> --from usdc --wait   # after the deposit: locks it, claims
 - Fees, all shown before you deposit: the escrow's platform fee (taken from the payout, never the deposit), about 1% swap fee (Satora ~0.5% + Agent Escrow 0.5%) plus network fees, and Circle's fee for `usdc-base`. The deposit includes a 0.5% cushion so a price tick cannot underpay the deal; Mark refuses a swap that would pay less than the deal amount (`SWAP_FAILED`, "Do NOT deposit"), or that is not on this deal's Arkade server.
 - Same checks as the other rails (terms hash, arbiter attestation, escrow address, rule) and **one rail per deal**: after `--from`, `fund` and `fund --ark` refuse (`FUNDING_IN_PROGRESS`) unless you pass `--switch-rail` (only if you deposited nothing).
 - `DEADLINE_TOO_CLOSE` below 30 minutes before the deal expires (60 minutes for `usdc-base`).
-- `--wait` claims into the escrow only while the deal still waits for funding: if it expired or another payment funded it, nothing is claimed and the stablecoins come back with `mark swap refund <swap id>` / `mark swap recover <swap id> --to <your 0x address>`.
+- `--wait` claims into the escrow only while the deal still waits for funding (`mark swap claim` refuses such a swap for that reason): if it expired or another payment funded it, nothing is claimed and the stablecoins come back with `mark swap refund <swap id>` / `mark swap recover <swap id> --to <your 0x address>`.
 - `mark escrow quote <id> --payout-stable usdc` previews what a stablecoin payout would pay. Stablecoins on both edges mean two swaps around a bitcoin escrow: the BTC/USD price can move in between.
 
 ### 4.5 Seller delivers

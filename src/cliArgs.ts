@@ -110,7 +110,6 @@ export function checkSwapArgs(sub: string | undefined, id: string | undefined, f
   return null;
 }
 const NEEDS_ID = new Set(["show", "accept", "evidence", "fund", "status", "quote", "approve", "dispute", "refund", "refund-payout", "claim-payout", "messages", "message"]);
-const ESCROW_STABLE = [...SWAP_STABLES, "usdt"];
 /** Usage checks before any network/keystore access: unknown subcommand, missing id, missing/ambiguous flags. */
 export function checkEscrowArgs(sub: string | undefined, id: string | undefined, f: Record<string, string | boolean>) {
   const usage = (msg: string) => new MarkError("USAGE", `${msg}. usage: ${ESCROW_USAGE[sub!] ?? Object.values(ESCROW_USAGE).join(" | ")}`, { usage: sub && ESCROW_USAGE[sub] ? ESCROW_USAGE[sub] : ESCROW_USAGE });
@@ -137,13 +136,13 @@ export function checkEscrowArgs(sub: string | undefined, id: string | undefined,
   const lc = (k: string) => String(f[k]).toLowerCase();
   if (f.from !== undefined) {
     if (sub !== "fund") return usage("--from is only for escrow fund (fund with stablecoins)");
-    if (!ESCROW_STABLE.includes(lc("from"))) return usage(`--from must be ${STABLE_FLAGS}`);
+    if (!SWAP_STABLE.includes(lc("from"))) return usage(`--from must be ${STABLE_FLAGS}`);
     if (f.ark !== undefined) return usage("--from (stablecoins) and --ark are two different funding rails: pick one");
     if (f["resume-claim"] !== undefined) return usage("--resume-claim is for a Lightning funding swap; with --from run --wait to claim");
   }
   if (f["payout-stable"] !== undefined) {
     if (!["approve", "refund", "quote"].includes(sub)) return usage("--payout-stable is only for escrow approve, refund and quote");
-    if (!ESCROW_STABLE.includes(lc("payout-stable"))) return usage(`--payout-stable must be ${STABLE_FLAGS}`);
+    if (!SWAP_STABLE.includes(lc("payout-stable"))) return usage(`--payout-stable must be ${STABLE_FLAGS}`);
     const other = ["payout-invoice", "payout-lnaddr", "payout-ark", "dest"].find((k) => f[k] !== undefined);
     if (other) return usage(`--payout-stable and --${other} are two different payouts: pick one`);
     if (sub !== "quote" && !s(f["payout-address"])) return usage("--payout-stable needs --payout-address <your 0x address>");

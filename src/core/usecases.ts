@@ -685,6 +685,9 @@ export async function approve(c: Ctx, id: string, o: ApproveOpts = {}) {
   const signers: Party[] = o.with === "arbiter" ? [role, "arbiter"] : ["buyer", "seller"];
   const auth = { party: role, ...signAuth(c.secret, id, `propose:${kind}:${spec.authDest}`) };
   const r = await c.api.propose(id, { kind, payout: spec.payout, signers, preimage: o.preimage, auth });
+  // the stablecoin payout swap this home must claim is recorded only once the server accepted the proposal
+  if (spec.stable) c.index.set(id, { payoutSwap: spec.swap!.id, payoutStable: (spec.payout as any).token, payoutAddress: (spec.payout as any).address, payoutProposal: r.proposal.id });
+  else c.index.set(id, { payoutStable: undefined, payoutAddress: undefined, payoutProposal: undefined });
   const signed = await signProposal(c, r.escrow, await c.api.proposal(id, r.proposal.id), role);
   const out = { ...signed, payoutSwap: spec.swap ? { id: spec.swap.id, vhtlc: spec.swap.fundAddress, sourceSats: spec.swap.fundAmountSats } : undefined };
   if (!spec.stable) return out;
@@ -708,7 +711,10 @@ export async function refundPayout(c: Ctx, id: string, to?: string) {
   const raw = to ?? c.cfg.refundArkAddress; if (!raw) throw new MarkError("BAD_DEST", `--to <ark address> (or config refundArkAddress) required: an address from an Arkade wallet on ${c.cfg.arkServerUrl}`);
   let e: Escrow | null = null; try { e = await c.api.get(id); } catch { e = null; }
   const dest = await arkDest(c, raw, to ? "--to" : "config refundArkAddress", e);
-  return (await c.swaps()).refund(l.payoutSwap, dest);
+  // the swap the payout tx actually funded is the one in the submitted proposal (a later proposal may have created another)
+  let swapId = l.payoutSwap; const sub = e?.proposals.find((p) => p.submittedTxid);
+  if (sub) { try { const po = (await c.api.proposal(id, sub.id)).payout; if (po?.swapId) swapId = po.swapId; } catch { /* keep the recorded one */ } }
+  return { swapId, ...(await (await c.swaps()).refund(swapId, dest)) };
 }
 
 // ---------- invite check (signed listing of my deals) ----------

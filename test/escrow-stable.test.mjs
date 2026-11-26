@@ -38,7 +38,7 @@ function mockClient(o = {}) {
           evm_chain_id: Number(p.target.chain), btc_vhtlc_address: VHTLC, ...(o.payTamper ?? {}) };
         stored[r.id] = { swapId: r.id, response: { ...r, direction: "arkade_to_evm", arkade_server_pk: "02" + MOCK_SERVER_PK } }; return { response: r };
       }
-      const r = { id: "rv-1", status: "pending", gasless: true, client_evm_address: DEP, source_amount: p.sourceAmount,
+      const r = { id: `rv-${calls.createSwap.filter((x) => x.source.chain !== "Arkade").length}`, status: "pending", gasless: true, client_evm_address: DEP, source_amount: p.sourceAmount,
         source_token: { chain: p.source.chain, token_id: p.source.tokenId, symbol: "USDC", decimals: 6 }, evm_chain_id: 42161,
         target_token: { chain: p.target.chain, token_id: "btc", symbol: "BTC", decimals: 8 }, target_amount: o.targetSats ?? "5020",
         target_arkade_address: p.targetAddress, arkade_server_pk: o.serverPk ?? "02" + MOCK_SERVER_PK };
@@ -49,7 +49,7 @@ function mockClient(o = {}) {
       if (id === "po-1") return { ...stored[id].response, status: o.payStatus ?? "pending", ...(o.payRead ?? {}) };
       if (stored[id]?.fresh) { stored[id].fresh = false; return stored[id].response; }
       const s = statuses.length > 1 ? statuses.shift() : statuses[0]; const base = stored[id]?.response ?? {};
-      const r = { ...base, id, status: s, ...(s !== "pending" ? { evm_fund_txid: "0xfund" } : {}) }; if (stored[id]) stored[id].response = r; return r;
+      const r = { ...base, id, status: s, ...(s !== "pending" && !o.noFundTx ? { evm_fund_txid: "0xfund" } : {}) }; if (stored[id]) stored[id].response = r; return r;
     },
     getStoredSwap: async (id) => stored[id] ?? null,
     swapStorage: { getAll: async () => Object.values(stored) },
@@ -242,4 +242,53 @@ test("MCP: escrow_fund from, escrow_approve/refund payoutStable+payoutAddress, e
     assert.match(tools.escrow_refund_payout.description, /stablecoin/);
     const r = await cl.callTool({ name: "escrow_fund", arguments: { id: "e1", from: "usdc", rail: "ark" } }); assert.match(JSON.stringify(r), /USAGE|own funding rail/);
   } finally { await cl.close(); }
+});
+
+// ---------- review fixes (Kimi, 2026-11-26) ----------
+test("fund --from: the disclosed platform fee is on what the escrow will hold (cushion can cross the free tier)", async () => {
+  const fees = { v: 2, freeBelowSats: 3300, flatSats: 0, flatUntilSats: 33000, feeBps: 100, disputeFeeBps: 500, disputeMinSats: 330, dustSats: 330, address: payoutArk(8, "ark") };
+  const m = mockClient({ targetSats: "33165" }); const { c } = await ctx({ client: m.client, dealOf: (c) => deal(c, { amountSats: 33000, fees }) });
+  const r = await es.fundStable(c, "e1", { from: "usdc" });
+  assert.equal(r.swapPaysSats, 33165); assert.equal(r.fees.escrow.platformFeeSats, 332, "1% of 33,165 (not 0 for exactly 33,000)");
+});
+test("fund --from wait without a way to show instructions (MCP): returns the deposit instructions instead of waiting blind", async () => {
+  const m = mockClient(); const { c } = await ctx({ client: m.client });
+  const t = Date.now(); const r = await es.fundStable(c, "e1", { from: "usdc", wait: true, timeoutSec: 30, pollMs: 5 });
+  assert.ok(Date.now() - t < 5000); assert.equal(r.newSwap, true); assert.equal(r.deposit.address, DEP); assert.match(r.next, /--from usdc --wait/); assert.doesNotMatch(r.next, /^Waiting/);
+});
+test("fund --from --wait: a deal funded by another payment while the swap is still pending is not reported as this swap's funding", async () => {
+  const m = mockClient({ statuses: ["pending"] }); const made = () => m.calls.createSwap.length > 0; let posted = 0;
+  const { c } = await ctx({ client: m.client, dealOf: (c) => deal(c, made() ? { state: "funded", funding: { outpoint: "cd:0", amount: 5000 } } : {}),
+    routes: { "POST /escrows/e1/funding-ark": async () => { posted++; return [200, { recorded: true }]; } } });
+  const r = await es.fundStable(c, "e1", { from: "usdc", wait: true, timeoutSec: 0.05, pollMs: 5, onInstructions: () => {} });
+  assert.equal(r.funded, true); assert.equal(r.fundedBySwap, false); assert.equal(posted, 0, "no funding report"); assert.equal(r.ledger, undefined);
+  assert.match(r.note, /not \(yet\) by this swap/); assert.match(r.note, /swap recover rv-1/); assert.equal(m.calls.claimArkade.length, 0);
+});
+test("fund --from --wait: a failed claim points to escrow fund --wait (guarded), and the generic swap claim / fund --wait refuse an escrow funding swap", async () => {
+  const sw = await import("../dist/src/core/swap.js");
+  const m = mockClient({ statuses: ["serverfunded"] }); m.client.claimArkade = async () => ({ success: false, message: "boom" });
+  const { c } = await ctx({ client: m.client });
+  const r = await es.fundStable(c, "e1", { from: "usdc", wait: true, timeoutSec: 5, pollMs: 1, onInstructions: () => {} });
+  assert.equal(r.swap.claimFailed, true); assert.match(r.swap.note, /escrow fund e1 --from usdc --wait/); assert.doesNotMatch(r.swap.note, /swap claim rv-1/);
+  await assert.rejects(sw.swapClaim(c, "rv-1"), (e) => e.code === "USAGE" && /funds escrow e1/.test(e.message));
+  await assert.rejects(sw.swapFund(c, "rv-1", { wait: true }), (e) => e.code === "USAGE" && /escrow fund e1 --from usdc --wait/.test(e.message));
+});
+test("fund --from: an expired unfunded swap in another token does not block a new token", async () => {
+  const m = mockClient({ statuses: ["expired"], noFundTx: true }); const { c } = await ctx({ client: m.client });
+  await es.fundStable(c, "e1", { from: "usdc" }); assert.equal(m.calls.createSwap.length, 1);
+  const r = await es.fundStable(c, "e1", { from: "usdt0" }); assert.equal(r.newSwap, true); assert.equal(r.swapId, "rv-2"); assert.equal(c.index.get("e1").fundStableFrom, "usdt0");
+});
+test("approve --payout-stable: a refused propose leaves the recorded payout swap alone; claim-payout / refund-payout use the SUBMITTED proposal's swap", async () => {
+  const m = mockClient({ payStatus: "serverfunded" }); let c0;
+  const { c } = await ctx({ client: m.client, dealOf: (c) => funded(c), routes: { "POST /escrows/e1/proposals": async () => [409, { error: "nope", code: "AMOUNT_MISMATCH" }] } }); c0 = c;
+  c.index.set("e1", { payoutSwap: "po-1", payoutStable: "usdc", payoutAddress: ME, payoutProposal: "p0" });
+  assert.equal(await code(uc.approve(c, "e1", { payoutStable: "usdt0", payoutAddress: ME })), "AMOUNT_MISMATCH");
+  assert.equal(c.index.get("e1").payoutSwap, "po-1", "the unused new swap is not recorded"); assert.equal(c.index.get("e1").payoutStable, "usdc");
+  // index points at a later swap; the submitted proposal p0 carries po-1: that is the one claimed / refunded
+  const m2 = mockClient({ payStatus: "serverfunded" }); await m2.client.createSwap({ source: { chain: "Arkade", tokenId: "btc" }, target: { chain: "42161", tokenId: "x" }, sourceAmount: 5000, targetAddress: ME });
+  const { c: c2 } = await ctx({ client: m2.client, dealOf: (c) => funded(c, { state: "released", proposals: [{ id: "p0", kind: "release", dest: VHTLC, signers: ["buyer", "seller"], sigs: ["buyer", "seller"], submittedTxid: "ab".repeat(32) }] }),
+    routes: { "GET /escrows/e1/proposals/p0": async () => [200, { id: "p0", kind: "release", dest: VHTLC, signers: ["buyer", "seller"], sigs: [], payout: { type: "stable", swapId: "po-1", address: ME, token: "usdc" }, arkTx: psbtPaying(VHTLC, 5000), checkpoints: [] }] } });
+  c2.index.set("e1", { payoutSwap: "po-9", payoutStable: "usdt0", payoutAddress: ME });
+  const r = await es.claimPayout(c2, "e1", { pollMs: 1 }); assert.equal(r.payoutSwap, "po-1"); assert.equal(m2.calls.claim[0], "po-1"); assert.equal(r.payoutStable, "usdc");
+  const back = await uc.refundPayout(c2, "e1", payoutArk(9, "ark")); assert.equal(back.swapId, "po-1"); assert.equal(m2.calls.refund[0].id, "po-1");
 });

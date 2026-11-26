@@ -268,6 +268,14 @@ export async function swapStatus(c: Ctx, id: string) {
 }
 
 /** Claim a funded swap to the address fixed at create (gasless). Safe to repeat. wait: first wait for the payment / funding. */
+/** A swap that funds an escrow deal (mark escrow fund --from) is claimed only through escrow fund --from --wait, which first
+ *  checks that the deal still waits for funding: the generic claim would pay the escrow address even after it expired or was
+ *  funded by another payment. */
+function refuseEscrowFunding(c: Ctx, id: string) {
+  const ix: any = (c as any).index; if (!ix?.ids) return;
+  for (const d of ix.ids()) { const l = ix.get(d);
+    if (l?.fundStableSwap === id) throw new MarkError("USAGE", `swap ${id} funds escrow ${d}: claim it with ${mk()} escrow fund ${d} --from ${l.fundStableFrom ?? "<token>"} --wait (it checks first that the deal still waits for funding). To get the stablecoins back instead: ${mk()} swap refund ${id}, then ${mk()} swap recover ${id} --to <your 0x address>.`, { escrowId: d }); }
+}
 export async function swapClaim(c: Ctx, id: string, o: { wait?: boolean; timeoutSec?: number; pollMs?: number } = {}) {
   if (!id) throw new MarkError("USAGE", "mark swap claim <id>");
   const s = await stable(c);
@@ -276,6 +284,7 @@ export async function swapClaim(c: Ctx, id: string, o: { wait?: boolean; timeout
   for (let i = 0; i < 3 && !x; i++) { if (i) await sleep(Math.min(o.pollMs ?? 2000, 2000)); try { x = await s.getStable(id); } catch (e) { err = e; } }
   if (!x) throw err;
   if (isReverseDir(x.direction)) {
+    refuseEscrowFunding(c, id);
     if (o.wait) return waitReverse(await reverse(c), id, { timeoutSec: o.timeoutSec ?? 900, pollMs: o.pollMs, noFund: true });
     const [r, y] = await loadReverse(c, id); return reverseClaim(r, y);
   }
@@ -308,6 +317,6 @@ export async function swapRefund(c: Ctx, id: string, to?: string) {
 
 
 /** Swap from a stablecoin: lock the deposit into the swap (once; gasless on Arbitrum One, ETH-paid approve + burn on Base). wait: wait for the deposit first, then the payout. */
-export async function swapFund(c: Ctx, id: string, o: { wait?: boolean; timeoutSec?: number; pollMs?: number } = {}) { mainnetOnly(c); return reverseFund(c, id, o); }
+export async function swapFund(c: Ctx, id: string, o: { wait?: boolean; timeoutSec?: number; pollMs?: number } = {}) { mainnetOnly(c); if (o.wait) refuseEscrowFunding(c, id); return reverseFund(c, id, o); }
 /** Swap from a stablecoin: send the stablecoins at the deposit address to your own address (unfunded, failed or refunded swap). */
 export async function swapRecover(c: Ctx, id: string, to?: string) { mainnetOnly(c); return reverseRecover(c, id, to); }

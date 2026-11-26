@@ -293,7 +293,7 @@ function nextNote(x: ReverseSwapInfo) {
 /** Watch the deposit, fund once, then wait for the payout (claiming an Ark payout when Satora has funded it). */
 /** noFund (claim --wait): never funds; a swap still waiting for its funding is handed back with how to fund it. */
 /** claimGuard (escrow funding): asked right before an Ark payout is claimed; a reason stops the wait unclaimed (e.g. the deal expired). */
-export async function waitReverse(s: Rev, id: string, o: { timeoutSec?: number; pollMs?: number; noFund?: boolean; claimGuard?: () => Promise<string | undefined> }) {
+export async function waitReverse(s: Rev, id: string, o: { timeoutSec?: number; pollMs?: number; noFund?: boolean; claimGuard?: () => Promise<string | undefined>; retryHint?: string }) {
   const end = Date.now() + (o.timeoutSec ?? 1800) * 1000; const poll = o.pollMs ?? 5000; let last = "unknown"; let fund: any; let claimed = false;
   let lowGas: { t: StableToken; dep: string; need: bigint; holds: bigint } | undefined;
   while (Date.now() < end) {
@@ -322,7 +322,7 @@ export async function waitReverse(s: Rev, id: string, o: { timeoutSec?: number; 
       const stop = await o.claimGuard?.();
       if (stop) return { id, status: x.status, claimed: false, notClaimed: stop, note: `${stop} ${DO_NOT_RESEND}` };
       const r = await s.claim(id, x.arkAddress!); claimed = r.success;
-      if (!r.success) return { id, status: x.status, claimFailed: true, claim: r, note: `Satora funded the Ark payout but the claim failed: retry with ${mk()} swap claim ${id} (same Mark home). ${DO_NOT_RESEND}` };
+      if (!r.success) return { id, status: x.status, claimFailed: true, claim: r, note: `Satora funded the Ark payout but the claim failed: retry with ${o.retryHint ?? `${mk()} swap claim ${id}`} (same Mark home). ${DO_NOT_RESEND}` };
     } else if (SWAP_FAILED.has(x.status)) return { id, status: x.status, ended: true, note: nextNote(x) };
     await sleep(poll);
   }
