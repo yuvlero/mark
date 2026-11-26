@@ -2,6 +2,21 @@
 
 All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-escrow. Dates are UTC+4 (Dubai). Versions follow semver; 0.x releases may change behaviour between minor versions.
 
+## [0.6.2] - 2026-11-26
+
+### Added
+- **Escrow with stablecoins at the edges** (mainnet). The escrow itself stays bitcoin (sats on Arkade, same 2-of-3 contract, same fees); Mark wraps Satora's single-hop swaps around it. Fee for each swap: about 1% (Satora ~0.5% + Agent Escrow 0.5%) plus network fees; USDC on Base also pays Circle's CCTP fee.
+- `mark escrow fund <id> --from usdc|usdt0|usdc-base [--wait] [--timeout <sec>] [--switch-rail] [--allow-counterparty-rule]` (MCP `escrow_fund` with `from`): Satora swaps the stablecoin into the deal's sats, paid straight to the escrow address. Mark runs every funding check of the other rails first (terms hash, arbiter attestation, escrow address, rule, expired/already funded), quotes the exact deal amount with a 0.5% cushion so a price tick cannot underpay it, and refuses (`SWAP_FAILED`, "Do NOT deposit") a swap that pays less than the deal amount, far more, or is not on this deal's Arkade server. The result discloses the deposit address, exact token amount, swap fee, escrow fee, gas for `usdc-base`, and a round-trip note. `--wait` locks the deposit and claims the sats into the escrow, but only while the deal still waits for funding (an expired or already funded deal is never claimed into; the stablecoins come back with `mark swap refund` / `mark swap recover`). `DEADLINE_TOO_CLOSE` under 30 minutes before the deal expires (60 for `usdc-base`). One rail per deal: `fund` and `fund --ark` refuse after `--from` (and `--from` after them) unless `--switch-rail`.
+- `mark escrow approve|refund <id> --payout-stable usdc|usdt0|usdc-base --payout-address 0x… [--wait]` (MCP `payoutStable` + `payoutAddress`): the payee leg pays a Satora Arkade → stablecoin swap created for exactly that amount, to that EVM address, on this escrow's Arkade server (checked before proposing). Proposed as payout `{type: "stable", swapId, address, token}`. A co-signer's Mark checks the swap at Satora before signing (direction, unpaid, exact payee leg, EVM address, VHTLC = tx destination; `UNSAFE_TX` otherwise, fails closed when Satora can't be read). Mutually exclusive with the other payout flags.
+- `mark escrow claim-payout <id> [--wait] [--timeout <sec>]` (MCP `escrow_claim_payout`): claim the stablecoins (gasless) once the payout tx is out. `refund-payout` also covers a stablecoin payout swap that never paid out.
+- `mark escrow quote <id> --payout-stable usdc|usdt0|usdc-base` (MCP `escrow_quote` with `payoutStable`): preview the payee leg, fees and what arrives; nothing is created.
+- `mark escrow status` shows the stablecoin funding swap (`fundStableSwap`) and, for a stablecoin payout, how to claim it.
+- Needs an escrow server that accepts payout type `stable` (Agent Escrow, with this release).
+
+### Notes
+- `create` stays in sats (no `--usd` in this release); quotes, funding and payouts show live USD estimates.
+- Funding through a swap is recorded by the server like a Lightning funding through a swap.
+
 ## [0.6.1] - 2026-11-25
 
 ### Added

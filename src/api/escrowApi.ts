@@ -40,7 +40,7 @@ export function safeUpgrade(u: unknown): { command: string; global: string; mcp:
 
 export type Party = "buyer" | "seller" | "arbiter";
 export interface Auth { party: "buyer" | "seller"; ts: number; sig: string }
-export type Payout = { type: "invoice"; invoice: string; swapId: string } | { type: "lnaddr"; address: string; swapId: string } | { type: "ark"; address: string };
+export type Payout = { type: "invoice"; invoice: string; swapId: string } | { type: "lnaddr"; address: string; swapId: string } | { type: "ark"; address: string } | { type: "stable"; address: string; swapId: string; token?: string };
 
 export interface ProposalSummary { id: string; kind: "release" | "refund"; dest: string; signers: Party[]; sigs: Party[]; submittedTxid?: string }
 export interface ProposalFull extends ProposalSummary { arkTx: string; checkpoints: string[]; payout?: { type: string; invoice?: string; address?: string; swapId?: string; sats?: number } }

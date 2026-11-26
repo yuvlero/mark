@@ -8,6 +8,7 @@ import { openCtx as openCtx_, type Ctx, type CtxOptions } from "./core/context.j
 import { updateNotice } from "./core/clientVersion.js";
 import type { NetworkName } from "./config.js";
 import * as uc from "./core/usecases.js";
+import * as es from "./core/escrowStable.js";
 import { checkEscrowArgs, checkDemoArgs, checkSwapArgs, parseArgs, helpFor } from "./cliArgs.js";
 import * as sw from "./core/swap.js";
 import { mk, firstDealNext } from "./invocation.js";
@@ -23,7 +24,8 @@ export { parseArgs };
 let ctx: Ctx | undefined;
 const openCtx = async (n: NetworkName, o: CtxOptions) => (ctx = await openCtx_(n, o));
 const out = (o: unknown) => process.stdout.write(toJson(o) + "\n");
-const payout = (f: Record<string, unknown>) => ({ payoutInvoice: s(f["payout-invoice"]), payoutLnaddr: s(f["payout-lnaddr"]), payoutArk: s(f["payout-ark"]) });
+const payout = (f: Record<string, unknown>) => ({ payoutInvoice: s(f["payout-invoice"]), payoutLnaddr: s(f["payout-lnaddr"]), payoutArk: s(f["payout-ark"]), payoutStable: s(f["payout-stable"]), payoutAddress: s(f["payout-address"]),
+  wait: f.wait === true, ...(f.timeout !== undefined ? { timeoutSec: Number(f.timeout) } : {}) });
 /** Terms from --terms-file <json> then per-field flags (flags win). */
 function termsFrom(f: Record<string, string | boolean>): uc.TermsInput {
   let base: any = {};
@@ -32,7 +34,7 @@ function termsFrom(f: Record<string, string | boolean>): uc.TermsInput {
   for (const [flag, k] of [["title", "title"], ["description", "description"], ["deliverable", "deliverable"], ["acceptance", "acceptance"], ["deliverable-sha256", "deliverableSha256"]]) if (s(f[flag]) !== undefined) t[k] = s(f[flag]);
   return t;
 }
-const USAGE = "mark <init|pubkey|demo|reputation <pubkey>|backup|mcp|swap [quote|routes|create|status|claim|fund|refund|recover]|escrow create|show|accept|evidence|fund|limits|quote|status|pending|approve|dispute|refund|refund-payout|messages|message|inbox|invites> [--network bitcoin|mutinynet] [--escrow-url URL] [--arbiter-pubkey HEX]";
+const USAGE = "mark <init|pubkey|demo|reputation <pubkey>|backup|mcp|swap [quote|routes|create|status|claim|fund|refund|recover]|escrow create|show|accept|evidence|fund|limits|quote|status|pending|approve|dispute|refund|refund-payout|claim-payout|messages|message|inbox|invites> [--network bitcoin|mutinynet] [--escrow-url URL] [--arbiter-pubkey HEX]";
 /** `mark` with no args: usage (unchanged keys) plus a short "what you can do now". */
 function quickstart(network: ReturnType<typeof normalizeNetwork>) {
   let firstRun = true; try { firstRun = !fs.existsSync(walletFile(dataDir(network))); } catch { /* keep true */ }
@@ -94,11 +96,12 @@ async function main(): Promise<"keep" | void> {
         case "show": return void out(await uc.show(c, id));
         case "accept": return void out(await uc.accept(c, id, { allowCounterpartyRule: allowRule(f) }));
         case "evidence": return void out(await uc.addEvidence(c, id, { text: s(f.text) ?? s(f.note), sha256: s(f.sha256), url: s(f.url), file: s(f.file) }));
-        case "fund": if (f.ark === true) return void out(await uc.fundArk(c, id, { wait: !!f.wait, timeoutSec: Number(f.timeout || 900), onInstructions: out, switchRail: f["switch-rail"] === true, allowCounterpartyRule: allowRule(f) }));
+        case "fund": if (s(f.from)) return void out(await es.fundStable(c, id, { from: s(f.from)!, wait: !!f.wait, timeoutSec: f.timeout !== undefined ? Number(f.timeout) : undefined, onInstructions: out, switchRail: f["switch-rail"] === true, allowCounterpartyRule: allowRule(f) }));
+          if (f.ark === true) return void out(await uc.fundArk(c, id, { wait: !!f.wait, timeoutSec: Number(f.timeout || 900), onInstructions: out, switchRail: f["switch-rail"] === true, allowCounterpartyRule: allowRule(f) }));
           return void out(await uc.fund(c, id, { switchRail: f["switch-rail"] === true, wait: !!f.wait, resumeClaim: f["resume-claim"] === true, timeoutSec: Number(f.timeout || 900), onInvoice: out, allowCounterpartyRule: allowRule(f) }));
         case "status": return void out(await uc.status(c, id));
         case "limits": return void out(await uc.limits(c, optNum(f.sats)));
-        case "quote": return void out(await uc.quote(c, id, uc.requireKind(s(f.path), "release"), s(f.dest)));
+        case "quote": return void out(s(f["payout-stable"]) ? await es.quoteStablePayout(c, id, uc.requireKind(s(f.path), "release"), s(f["payout-stable"])!) : await uc.quote(c, id, uc.requireKind(s(f.path), "release"), s(f.dest)));
         case "pending": return void out(id ? await uc.pending(c, id) : await uc.pendingAll(c));
         case "approve": return void out(await uc.approve(c, id, { kind: s(f.kind) as any, with: s(f.with) as any, preimage: s(f.preimage), ...payout(f) }));
         case "dispute": return void out(await uc.dispute(c, id, s(f.reason)));
@@ -108,6 +111,7 @@ async function main(): Promise<"keep" | void> {
         case "inbox": return void out(await uc.inbox(c));
         case "invites": return void out(await uc.invites(c, { all: !!f.all, needs: s(f.needs), state: s(f.state) }));
         case "refund-payout": return void out(await uc.refundPayout(c, id, s(f.to)));
+        case "claim-payout": return void out(await es.claimPayout(c, id, { wait: f.wait === true, timeoutSec: f.timeout !== undefined ? Number(f.timeout) : undefined }));
       }
       throw new MarkError("USAGE", USAGE);
     }

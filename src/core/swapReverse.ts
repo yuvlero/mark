@@ -20,7 +20,7 @@ export interface ReverseInput { from: SwapStable; to: SwapRail; amount?: string 
 /** What mark swap from a stablecoin needs from the swap provider. */
 const REV_KEYS = ["quoteReverse", "createReverse", "getReverse", "depositAddress", "openReverse", "fundReverse", "fundAttemptedAt", "refundReverse",
   "recoverReverse", "evm", "claim", "exclusive", "pinReverse", "reversePin", "invoiceUsedBy", "fundAttemptsSince"] as const;
-type Rev = Required<Pick<SwapProvider, typeof REV_KEYS[number]>> & SwapProvider;
+export type Rev = Required<Pick<SwapProvider, typeof REV_KEYS[number]>> & SwapProvider;
 
 export async function reverse(c: Ctx): Promise<Rev> {
   const s = await c.swaps();
@@ -29,13 +29,13 @@ export async function reverse(c: Ctx): Promise<Rev> {
 }
 
 /** The reader for the chain the stablecoin is deposited on (Base for USDC on Base, else Arbitrum One). */
-function readerOf(s: Rev, t: StableToken): EvmReader {
+export function readerOf(s: Rev, t: StableToken): EvmReader {
   if (!t.bridge) return s.evm;
   if (!s.evmOn) throw new MarkError("BAD_CONFIG", `swap provider ${s.name} cannot read ${t.network}`);
   return s.evmOn(Number(t.chain));
 }
 /** ETH the deposit address needs on the bridge chain for the approve + burn (with headroom), and a USD hint; null when unreadable. */
-async function gasOf(s: Rev, t: StableToken): Promise<GasEstimate | null> {
+export async function gasOf(s: Rev, t: StableToken): Promise<GasEstimate | null> {
   if (!t.bridge) return null;
   try { const [wei, usd] = await Promise.all([gasNeedWei(readerOf(s, t)), s.ethUsd?.().catch(() => undefined)]); return { network: t.network, txs: BRIDGE_IN_TX_NAMES, wei, usdPerEth: usd }; }
   catch { return null; }
@@ -85,7 +85,7 @@ export function parseReverse(c: Ctx, i: ReverseInput, mode: "quote" | "create" =
   const arkAddress = checkArkadeAddress(i.address, { network: c.network, arkServerUrl: c.cfg.arkServerUrl, what: "--address" });
   return { from: i.from, to: i.to, bps, arkAddress, sourceUnits, token: t };
 }
-type Parsed = ReturnType<typeof parseReverse>;
+export type Parsed = ReturnType<typeof parseReverse>;
 const target = (p: Parsed) => p.invoice ? { invoice: p.invoice } : { arkAddress: p.arkAddress };
 /** The create command for this input; a target the quote left out is a placeholder. */
 const flags = (p: Parsed) => `--from ${p.from} --to ${p.to} ${p.invoice ? `--invoice ${p.invoice}` : p.to === "lightning" ? "--invoice <bolt11 for the sats you want>" : `--address ${p.arkAddress ?? "<ark address>"} --amount ${units(p.sourceUnits!, p.token.decimals)}`}`;
@@ -96,11 +96,11 @@ async function quoteOf(s: Rev, p: Parsed) {
     throw new MarkError("QUOTE_UNAVAILABLE", "Satora's quote has no amounts; nothing was created. Retry later.");
   return q;
 }
-function inRange(q: any) { const gross = Number(q.target_amount); return !(Number.isSafeInteger(q.min_amount) && Number.isSafeInteger(q.max_amount)) || (gross >= q.min_amount && gross <= q.max_amount); }
+export function inRange(q: any) { const gross = Number(q.target_amount); return !(Number.isSafeInteger(q.min_amount) && Number.isSafeInteger(q.max_amount)) || (gross >= q.min_amount && gross <= q.max_amount); }
 
 /** Quote only (nothing is created). */
 /** A bridged quote must carry Circle's fee (it is taken from the deposit): refused otherwise, for a quote and before a create. */
-function needBridgeFee(t: StableToken, q: any) {
+export function needBridgeFee(t: StableToken, q: any) {
   if (t.bridge && bridgeFeeUnits(q) === undefined) throw new MarkError("QUOTE_UNAVAILABLE", `Satora's quote has no ${t.bridge.via} fee for ${tokenLabel(t)}; nothing was created. Retry later.`);
 }
 export async function reverseQuote(c: Ctx, i: ReverseInput) {
@@ -127,7 +127,21 @@ export async function reverseRun(c: Ctx, i: ReverseRunInput) {
     next: `Nothing was created. To create it: ${mk()} swap ${flags(p)} --yes --wait` };
   // one open deposit at a time: every swap from a stablecoin in this Mark home shares the same deposit address. The check and the
   // create run under the Mark home's deposit lock (other processes too), so two creates cannot both see "none open".
-  const created = await s.exclusive(async () => {
+  const created = await createPinnedReverse(c, s, p, q);
+  const deposit = await depositInfo(s, created, gas);
+  const how = p.token.bridge ? `Mark signs ${BRIDGE_IN_TX_NAMES} on ${p.token.network}, gas paid in ETH on ${p.token.network} by the deposit address` : "gasless";
+  const first = { swap: "created", id: created.id, status: created.status, from: p.from, to: p.to, payout: { ...target(p), sats: created.targetSats }, quote, deposit,
+    next: i.wait && i.onProgress ? `Waiting for the deposit; then Mark funds the swap (${how}) and waits for the payout.` : `After the deposit, run: ${mk()} swap fund ${created.id} --wait  (Mark locks the deposit; ${p.token.bridge ? how : "no ETH needed"})` };
+  if (!i.wait || !i.onProgress) return first; // waiting only helps once the depositor has seen the address
+  i.onProgress(first);
+  return { ...(await waitReverse(s, created.id, { timeoutSec: i.timeoutSec, pollMs: i.pollMs })), from: p.from, to: p.to };
+}
+
+/** Create the swap and pin what was confirmed, under the Mark home's deposit lock (one open deposit at a time; every swap from a
+ *  stablecoin in this Mark home shares the same deposit address). extraCheck: more terms the caller requires of Satora's answer
+ *  (escrow funding: enough sats for the deal), checked before the pin, so a refused swap is never shown and just expires. */
+export async function createPinnedReverse(c: Ctx, s: Rev, p: Parsed, q: any, extraCheck?: (x: ReverseSwapCreated) => void) {
+  return s.exclusive(async () => {
     // only swaps whose deposit address was shown count (a swap refused at create was never shown and just expires)
     const open = (await s.openReverse()).filter((o) => s.reversePin(o.id));
     if (open.length) throw new MarkError("SWAP_OPEN_DEPOSIT", `swap ${open[0].id} from this Mark home is still waiting for its deposit at the same address. Finish it (${mk()} swap fund ${open[0].id}) or let it expire before creating another.`, { open: open.map((x) => x.id) });
@@ -136,17 +150,11 @@ export async function reverseRun(c: Ctx, i: ReverseRunInput) {
     const x = await s.createReverse({ from: p.from, to: p.to, bps: p.bps, ...(p.invoice ? { invoice: p.invoice } : { sourceUnits: p.sourceUnits }), ...(p.arkAddress ? { arkAddress: p.arkAddress } : {}) });
     // checked and recorded before the lock is released: the next create (any process) sees this swap as open and its invoice as used
     checkReverseCreated(c, p, x, q, s.depositAddress());
+    extraCheck?.(x);
     s.pinReverse(x.id, { ...(p.invoice ? { invoice: p.invoice } : { arkAddress: p.arkAddress }), depositAddress: s.depositAddress(), tokenContract: x.tokenContract!, sourceUnits: x.sourceUnits!, targetSats: x.targetSats!, evmChainId: x.evmChainId!,
       ...(p.token.bridge ? { bridgeSourceChain: x.bridgeSourceChain!, bridgeSourceToken: x.bridgeSourceToken! } : {}) });
     return x;
   });
-  const deposit = await depositInfo(s, created, gas);
-  const how = p.token.bridge ? `Mark signs ${BRIDGE_IN_TX_NAMES} on ${p.token.network}, gas paid in ETH on ${p.token.network} by the deposit address` : "gasless";
-  const first = { swap: "created", id: created.id, status: created.status, from: p.from, to: p.to, payout: { ...target(p), sats: created.targetSats }, quote, deposit,
-    next: i.wait && i.onProgress ? `Waiting for the deposit; then Mark funds the swap (${how}) and waits for the payout.` : `After the deposit, run: ${mk()} swap fund ${created.id} --wait  (Mark locks the deposit; ${p.token.bridge ? how : "no ETH needed"})` };
-  if (!i.wait || !i.onProgress) return first; // waiting only helps once the depositor has seen the address
-  i.onProgress(first);
-  return { ...(await waitReverse(s, created.id, { timeoutSec: i.timeoutSec, pollMs: i.pollMs })), from: p.from, to: p.to };
 }
 
 /** Before showing a deposit address: the swap must be a new gasless swap locked on Arbitrum One (a Base deposit is bridged there), from the chosen token, depositing to this
@@ -186,7 +194,7 @@ function checkReverseCreated(c: Ctx, p: Parsed, x: ReverseSwapCreated, q: any, m
 }
 
 /** Where to deposit, how much is still missing (the deposit address may already hold some of the token), and how to send it. */
-async function depositInfo(s: Rev, x: ReverseSwapCreated, gas0?: GasEstimate | null) {
+export async function depositInfo(s: Rev, x: ReverseSwapCreated, gas0?: GasEstimate | null) {
   const t = stableOfReverse(x)!; const r = readerOf(s, t);
   const need = BigInt(x.sourceUnits!); let have: bigint | undefined; try { have = await r.tokenBalance(t.tokenId, x.depositAddress!); } catch { have = undefined; }
   const g = gas0 !== undefined ? gas0 : await gasOf(s, t); let eth: bigint | undefined; if (t.bridge) { try { eth = await r.ethBalance(x.depositAddress!); } catch { eth = undefined; } }
@@ -284,7 +292,8 @@ function nextNote(x: ReverseSwapInfo) {
 
 /** Watch the deposit, fund once, then wait for the payout (claiming an Ark payout when Satora has funded it). */
 /** noFund (claim --wait): never funds; a swap still waiting for its funding is handed back with how to fund it. */
-export async function waitReverse(s: Rev, id: string, o: { timeoutSec?: number; pollMs?: number; noFund?: boolean }) {
+/** claimGuard (escrow funding): asked right before an Ark payout is claimed; a reason stops the wait unclaimed (e.g. the deal expired). */
+export async function waitReverse(s: Rev, id: string, o: { timeoutSec?: number; pollMs?: number; noFund?: boolean; claimGuard?: () => Promise<string | undefined> }) {
   const end = Date.now() + (o.timeoutSec ?? 1800) * 1000; const poll = o.pollMs ?? 5000; let last = "unknown"; let fund: any; let claimed = false;
   let lowGas: { t: StableToken; dep: string; need: bigint; holds: bigint } | undefined;
   while (Date.now() < end) {
@@ -310,6 +319,8 @@ export async function waitReverse(s: Rev, id: string, o: { timeoutSec?: number; 
         }
       }
     } else if (SWAP_CLAIMABLE.has(x.status) && x.targetChain === "Arkade" && !claimed) {
+      const stop = await o.claimGuard?.();
+      if (stop) return { id, status: x.status, claimed: false, notClaimed: stop, note: `${stop} ${DO_NOT_RESEND}` };
       const r = await s.claim(id, x.arkAddress!); claimed = r.success;
       if (!r.success) return { id, status: x.status, claimFailed: true, claim: r, note: `Satora funded the Ark payout but the claim failed: retry with ${mk()} swap claim ${id} (same Mark home). ${DO_NOT_RESEND}` };
     } else if (SWAP_FAILED.has(x.status)) return { id, status: x.status, ended: true, note: nextNote(x) };

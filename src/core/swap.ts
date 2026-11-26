@@ -24,10 +24,10 @@ export interface SwapRunInput extends SwapQuoteInput { address?: string; confirm
 const EXPECTED_NOTE = "expectedReceive is Satora's estimate: the BTC is swapped into the stablecoin on a DEX at claim, so the amount that arrives can be a little different. After the payout, `received` is read from the payout transaction.";
 const PAID_NOTE = "Your payment was seen: wait for Satora to fund its side, then claim. Do NOT pay again.";
 
-function mainnetOnly(c: Ctx) {
+export function mainnetOnly(c: Ctx) {
   if (!NETWORKS[c.network].isMainnet) throw new MarkError("SWAP_UNSUPPORTED_NETWORK", "mark swap runs on bitcoin mainnet only: Satora has no working swap path on mutinynet (no stablecoin route and no Lightning ↔ Arkade route). Use --network bitcoin: `mark swap quote` and a preview without --yes are free and create nothing.");
 }
-async function stable(c: Ctx): Promise<Required<Pick<SwapProvider, "quoteStable" | "createStable" | "getStable" | "claimStable">> & SwapProvider> {
+export async function stable(c: Ctx): Promise<Required<Pick<SwapProvider, "quoteStable" | "createStable" | "getStable" | "claimStable">> & SwapProvider> {
   const s = await c.swaps();
   if (!s.quoteStable || !s.createStable || !s.getStable || !s.claimStable) throw new MarkError("BAD_CONFIG", `swap provider ${s.name} does not support mark swap`);
   return s as any;
@@ -131,7 +131,7 @@ export async function swapRun(c: Ctx, i: SwapRunInput) {
 /** Before showing anything payable: the swap must pay out to the confirmed address, ask for exactly the requested sats, and carry a
  *  payable invoice (this network, that amount) or an Ark address for this network. Else SWAP_FAILED: do not pay (an unpaid swap
  *  simply expires). */
-function checkCreated(c: Ctx, p: { from: SwapSource; to: SwapTarget; sats: number }, address: string, x: StableSwapCreated, quotedUnits: string) {
+export function checkCreated(c: Ctx, p: { from: SwapSource; to: SwapTarget; sats: number }, address: string, x: StableSwapCreated, quotedUnits: string) {
   const bad = (why: string) => { throw new MarkError("SWAP_FAILED", `Satora's swap does not match what you confirmed (${why}). Do NOT pay it; nothing is lost while it is unpaid.`, { id: x?.id }); };
   const src = SWAP_SOURCES[p.from], tgt = SWAP_TARGETS[p.to];
   // a bridged payout (USDC on Base) settles in the Arbitrum token on Arbitrum One, and must name exactly that bridge and destination token

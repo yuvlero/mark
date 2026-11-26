@@ -3,7 +3,9 @@ import fs from "node:fs";
 import path from "node:path";
 export type Role = "buyer" | "seller";
 export interface IndexEntry { role?: Role; /** this wallet created the deal (so it chose the rule) */ created?: boolean;
-  /** the termsHash this wallet signed (create or accept); fund refuses if the server's deal hash differs */ signedTermsHash?: string; fundSwap?: string; /** funding rail chosen in this home: "ark" = direct Ark payment (fund --ark), "lightning" = funding swap */ fundRail?: "ark" | "lightning"; fundArkAt?: string; payoutSwap?: string; /** last seen message cursor */ msgSeen?: number;
+  /** the termsHash this wallet signed (create or accept); fund refuses if the server's deal hash differs */ signedTermsHash?: string; fundSwap?: string; /** funding rail chosen in this home: "ark" = direct Ark payment (fund --ark), "lightning" = funding swap */ fundRail?: "ark" | "lightning" | "stable"; fundArkAt?: string;
+  /** "stable" rail (fund --from usdc|usdt0|usdc-base): the Satora swap from a stablecoin that pays the escrow address, its token, when chosen */ fundStableSwap?: string; fundStableFrom?: string; fundStableAt?: string;
+  payoutSwap?: string; /** a stablecoin payout (--payout-stable): the token and the payee's EVM address of payoutSwap */ payoutStable?: string; payoutAddress?: string; /** last seen message cursor */ msgSeen?: number;
   /** created by `mark demo` (house-seller demo); fundInvoice = its Lightning funding invoice (public BOLT11, shown again on resume) */ demo?: boolean; fundInvoice?: string; demoTurnaround?: string }
 export class LocalIndex {
   private f: string;

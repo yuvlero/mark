@@ -279,6 +279,19 @@ mark escrow fund <id> --ark --wait   # after you paid: waits until the server se
 - **One rail per deal.** After `fund --ark`, a plain `fund` refuses (`FUNDING_IN_PROGRESS`) so you do not pay twice; and `fund --ark` refuses while a Lightning invoice for the deal may still be paid. Switch only if nothing was paid on the other rail: add `--switch-rail`.
 - With `--wait`, once the deal is funded Mark tells the server it was a direct Ark payment, so the deal's funding ledger records rail `ark` with fee 0 (older servers: `ledger.recorded: false`, nothing else changes).
 
+### 4.4c Buyer funds with stablecoins (`--from usdc|usdt0|usdc-base`, mainnet)
+The escrow itself always holds bitcoin (sats on Arkade). With `--from`, Mark wraps a Satora swap around it: you deposit a stablecoin, Satora swaps it into the deal's sats and pays them to the escrow address.
+```bash
+mark escrow fund <id> --from usdc          # deposit address, exact token amount, every fee; nothing is sent by Mark
+mark escrow fund <id> --from usdc --wait   # after the deposit: locks it, claims the sats into the escrow, waits until funded
+```
+- `usdc` and `usdt0` are on Arbitrum One (gasless deposit); `usdc-base` is USDC on Base (bridged over Circle CCTP; keep a little ETH on Base at the deposit address for gas, Mark checks it first).
+- Fees, all shown before you deposit: the escrow's platform fee (taken from the payout, never the deposit), about 1% swap fee (Satora ~0.5% + Agent Escrow 0.5%) plus network fees, and Circle's fee for `usdc-base`. The deposit includes a 0.5% cushion so a price tick cannot underpay the deal; Mark refuses a swap that would pay less than the deal amount (`SWAP_FAILED`, "Do NOT deposit"), or that is not on this deal's Arkade server.
+- Same checks as the other rails (terms hash, arbiter attestation, escrow address, rule) and **one rail per deal**: after `--from`, `fund` and `fund --ark` refuse (`FUNDING_IN_PROGRESS`) unless you pass `--switch-rail` (only if you deposited nothing).
+- `DEADLINE_TOO_CLOSE` below 30 minutes before the deal expires (60 minutes for `usdc-base`).
+- `--wait` claims into the escrow only while the deal still waits for funding: if it expired or another payment funded it, nothing is claimed and the stablecoins come back with `mark swap refund <swap id>` / `mark swap recover <swap id> --to <your 0x address>`.
+- `mark escrow quote <id> --payout-stable usdc` previews what a stablecoin payout would pay. Stablecoins on both edges mean two swaps around a bitcoin escrow: the BTC/USD price can move in between.
+
 ### 4.5 Seller delivers
 **Do NOT deliver before `state` is `funded`** (`awaiting: delivery`). `created` means agreed but unfunded; `expired` means it was never funded and never will be.
 
@@ -310,6 +323,8 @@ mark escrow approve <id> --payout-invoice lnbc49800n1…
 - Without `--dest` the quote is an **estimate** (`quoteType: "estimate"`, routing fees vary by destination), and `recommendedInvoiceSats` already subtracts a safety margin.
 - **Option C: Ark address:** `--payout-ark ark1…`. You receive `payeeLegSats` (escrow minus platform fee), with no swap fee. **Only an address from an Arkade wallet on this escrow's Arkade server** (mainnet `https://arkade.computer`; see `mark escrow limits` → `arkade`). Mark checks the address prefix (`ark1` mainnet, `tark1` mutinynet) and the Arkade server key inside the address before anything is signed, and refuses others with `BAD_DEST` naming the server. A Bark / Second Ark address will NOT work: use Option A or B instead.
 
+**Option D: stablecoins (mainnet):** `--payout-stable usdc|usdt0|usdc-base --payout-address 0x…`. Mark creates a Satora swap (Arkade → stablecoin) for exactly your payee leg and proposes it; the escrow server checks the swap (amount, your EVM address, this escrow's Arkade server, a timelock at least an hour out) when you propose and again right before the payout tx goes out, and the co-signer's Mark checks it at Satora before signing. Once the payout tx is out, claim the stablecoins (gasless) from the same Mark home: `mark escrow claim-payout <id> --wait` (or add `--wait` to the approve when you sign last). Preview first with `mark escrow quote <id> --payout-stable usdc`. About 1% swap fee (Satora ~0.5% + Agent Escrow 0.5%) plus network fees; `usdc-base` also pays Circle's ~0.05 USDC bridge fee. If the swap never pays out, `mark escrow refund-payout <id> --to <ark address>` after its timelock.
+
 The seller's approve **proposes and signs**. Then the buyer co-signs:
 ```bash
 mark escrow pending          # B: every payout waiting on me (or: mark escrow pending <id>)
@@ -323,7 +338,8 @@ The seller's Lightning wallet receives the payment and the state becomes `releas
 - **Seller agrees:** the buyer runs `mark escrow refund <id> --payout-lnaddr buyer@… --with counterparty`, then the seller runs `mark escrow approve <id>`.
 - **After the deadline, seller silent:** `mark escrow refund <id> --payout-lnaddr buyer@…`. The arbiter co-signs automatically once the deadline has passed (`--arbiter auto`).
 - Quote a refund with `mark escrow quote <id> --path refund --dest …`.
-- A failed Lightning payout swap is recovered with `mark escrow refund-payout <id> [--to <ark address>]`.
+- Refunds can be paid in stablecoins too: `mark escrow refund <id> --payout-stable usdc --payout-address 0x…`, then `mark escrow claim-payout <id> --wait`.
+- A failed Lightning or stablecoin payout swap is recovered with `mark escrow refund-payout <id> [--to <ark address>]`.
 
 ## 5. Fees and limits
 
@@ -464,13 +480,15 @@ Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL` (https; http onl
 | `mark escrow limits [--sats N]` | Limits, fee schedule, fee preview |
 | `mark escrow fund <id> [--wait] [--timeout sec] [--allow-counterparty-rule]` | Lightning invoice to fund (shown again while unpaid); `--wait` claims into the escrow. Refuses (`UNSAFE_RULE`) a deal whose auto-release rule the seller chose (its own hash lock, or any webhook rule) unless `--allow-counterparty-rule` |
 | `mark escrow fund <id> --ark [--wait] [--timeout sec] [--switch-rail]` | Direct Ark payment, no swap fee: prints `escrowAddress`, the exact `amountSats` and the Arkade server (`payTo.arkServer`). Pay it in ONE payment from an Arkade wallet on that server (not Bark / Second). `--wait` polls until funded and records rail `ark`. `--switch-rail`: only if nothing was paid on the other rail (also on plain `fund`) |
+| `mark escrow fund <id> --from usdc\|usdt0\|usdc-base [--wait] [--timeout sec] [--switch-rail] [--allow-counterparty-rule]` | Fund with stablecoins (mainnet): deposit address, exact token amount and every fee; `--wait` locks the deposit and claims the sats into the escrow (only while the deal waits for funding). `usdc-base` needs a little ETH on Base. `DEADLINE_TOO_CLOSE` under 30 min (60 for `usdc-base`) |
 | `mark escrow fund <id> --resume-claim` | Paid, but the claim into the escrow failed or did not finish (`claimFailed`, or a timeout at `serverfunded` / `clientredeeming`): finish or retry it. Never creates an invoice |
 | `mark escrow status <id>` | Full deal state, proposals, events, local swap status, `awaiting`, `action_required_for`, `arbiterPolicy` |
-| `mark escrow quote <id> [--path release\|refund] [--dest <lnaddr\|bolt11>]` | Payout amounts; exact with `--dest` |
+| `mark escrow quote <id> [--path release\|refund] [--dest <lnaddr\|bolt11> \| --payout-stable usdc\|usdt0\|usdc-base]` | Payout amounts; exact with `--dest`; `--payout-stable` previews a stablecoin payout (fees, what arrives) |
 | `mark escrow pending [<id>]` | Pending payout proposals and payout details. **No id:** across all my deals (local + server listing `needs=sign`), with `awaiting`, `needsMySignature` and the co-sign command |
-| `mark escrow approve <id> [--payout-invoice B \| --payout-lnaddr A \| --payout-ark X] [--kind release\|refund] [--with counterparty\|arbiter] [--preimage hex]` | Payee: propose and sign. Co-signer: sign (no payout flags) |
+| `mark escrow approve <id> [--payout-invoice B \| --payout-lnaddr A \| --payout-ark X \| --payout-stable usdc\|usdt0\|usdc-base --payout-address 0x…] [--kind release\|refund] [--with counterparty\|arbiter] [--preimage hex] [--wait] [--timeout sec]` | Payee: propose and sign. Co-signer: sign (no payout flags) |
 | `mark escrow refund <id> --payout-… [--with arbiter\|counterparty]` | Buyer proposes a refund |
-| `mark escrow refund-payout <id> [--to <ark address>]` | Recover a failed Lightning payout swap |
+| `mark escrow refund-payout <id> [--to <ark address>]` | Recover a failed Lightning or stablecoin payout swap (after its timelock) |
+| `mark escrow claim-payout <id> [--wait] [--timeout sec]` | Stablecoin payout: claim the stablecoins to your `--payout-address` (gasless) once the payout tx is out; from the Mark home that proposed it; safe to repeat |
 | `mark escrow dispute <id> [--reason "..."]` | Open a dispute (the operator rules) |
 | `mark escrow evidence <id> [--file <path>] [--text "..."] [--sha256 hex] [--url https://…]` | Signed evidence note (`--note` is an alias). `--file` hashes locally and matches `deliverableSha256` |
 | `mark escrow messages <id> [--since N]` | Read the thread |
@@ -507,11 +525,12 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 | `escrow_reputation` (pubkey) | `reputation <pubkey>` |
 | `escrow_pending` (id? — omit for all my deals) | `escrow pending [<id>]` |
 | `escrow_limits` (sats?) | `escrow limits` |
-| `escrow_fund` (id, rail?, wait?, allowCounterpartyRule?, switchRail?, resumeClaim?) | `escrow fund` (`rail: "ark"` = `--ark`, `switchRail` = `--switch-rail`, `resumeClaim` = `--resume-claim`) |
-| `escrow_quote` (id, path?, dest?) | `escrow quote` |
-| `escrow_approve` (id, payoutInvoice? / payoutLnaddr? / payoutArk?, kind?, with?, preimage?) | `escrow approve` |
+| `escrow_fund` (id, rail?, from?, wait?, allowCounterpartyRule?, switchRail?, resumeClaim?) | `escrow fund` (`rail: "ark"` = `--ark`, `from: "usdc"\|"usdt0"\|"usdc-base"` = `--from`, `switchRail` = `--switch-rail`, `resumeClaim` = `--resume-claim`) |
+| `escrow_quote` (id, path?, dest?, payoutStable?) | `escrow quote` |
+| `escrow_approve` (id, payoutInvoice? / payoutLnaddr? / payoutArk? / payoutStable? + payoutAddress?, kind?, with?, preimage?, wait?) | `escrow approve` |
 | `escrow_refund` (id, payout…, with?) | `escrow refund` |
 | `escrow_refund_payout` (id, to?) | `escrow refund-payout` |
+| `escrow_claim_payout` (id, wait?) | `escrow claim-payout` |
 | `escrow_dispute` (id, reason?) | `escrow dispute` |
 | `escrow_evidence` (id, text?, note?, sha256?, file?, url?) | `escrow evidence` |
 | `escrow_messages` (id, since?), `escrow_message` (id, text, kind?, replyTo?), `escrow_inbox` | messages |

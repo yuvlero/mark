@@ -18,11 +18,12 @@ export const ESCROW_USAGE: Record<string, string> = {
   create: "mark escrow create --role buyer|seller --counterparty <xonly pubkey> --sats N --deadline <seconds|ISO> --title <short> --description <text> [--deliverable <text>] [--acceptance <criteria>] [--deliverable-sha256 <hex>] [--terms-file <json>] [--hash <sha256hex>] [--arbiter auto|manual] [--webhook url]",
   show: "mark escrow show <id>", accept: "mark escrow accept <id> [--allow-counterparty-rule]",
   evidence: "mark escrow evidence <id> [--text \"...\" (alias --note)] [--sha256 <hex> | --file <path> (hashed locally, not uploaded)] [--url <https://...>]",
-  fund: "mark escrow fund <id> [--wait] [--timeout <sec>] [--allow-counterparty-rule] [--switch-rail]   (Lightning invoice via a Satora swap) | mark escrow fund <id> --ark [--wait] [--timeout <sec>] [--switch-rail]   (direct Ark payment, no swap fee: prints the escrow address, the exact sats and the Arkade server; pay it in ONE payment from an Arkade wallet on that server. Bark / Second Ark wallets cannot pay it: use Lightning) | mark escrow fund <id> --resume-claim   (finish or retry the claim of an already paid funding swap into the escrow; never creates an invoice)", status: "mark escrow status <id>", limits: "mark escrow limits [--sats N]   (also shows arkade: the Arkade server URL and key this escrow runs on)",
-  quote: "mark escrow quote <id> [--path release|refund] [--dest <bolt11|lightning address>]", pending: "mark escrow pending [<id>]   (no id: all my deals)",
-  approve: "mark escrow approve <id> [--payout-invoice <bolt11> | --payout-lnaddr <user@domain> | --payout-ark <ark address from an Arkade wallet on this escrow's Arkade server; NOT Bark/Second>] [--kind release|refund] [--with counterparty|arbiter] [--preimage <hex>]",
-  dispute: "mark escrow dispute <id> [--reason \"...\"]", refund: "mark escrow refund <id> --payout-invoice <bolt11> | --payout-lnaddr <user@domain> | --payout-ark <Arkade address on this escrow's Arkade server; NOT Bark/Second> [--with arbiter|counterparty]",
-  "refund-payout": "mark escrow refund-payout <id> [--to <ark address from an Arkade wallet on this escrow's Arkade server>]",
+  fund: "mark escrow fund <id> [--wait] [--timeout <sec>] [--allow-counterparty-rule] [--switch-rail]   (Lightning invoice via a Satora swap) | mark escrow fund <id> --from usdc|usdt0|usdc-base [--wait] [--timeout <sec>] [--allow-counterparty-rule] [--switch-rail]   (fund with stablecoins: Satora swaps them into the deal's sats, paid to the escrow address; Mark shows the deposit address, exact amount and every fee; usdc and usdt0 on Arbitrum One are gasless, usdc-base (USDC on Base) also needs a little ETH on Base at the deposit address; --wait locks the deposit and claims the sats into the escrow) | mark escrow fund <id> --ark [--wait] [--timeout <sec>] [--switch-rail]   (direct Ark payment, no swap fee: prints the escrow address, the exact sats and the Arkade server; pay it in ONE payment from an Arkade wallet on that server. Bark / Second Ark wallets cannot pay it: use Lightning) | mark escrow fund <id> --resume-claim   (finish or retry the claim of an already paid funding swap into the escrow; never creates an invoice)", status: "mark escrow status <id>", limits: "mark escrow limits [--sats N]   (also shows arkade: the Arkade server URL and key this escrow runs on)",
+  quote: "mark escrow quote <id> [--path release|refund] [--dest <bolt11|lightning address> | --payout-stable usdc|usdt0|usdc-base]   (--payout-stable: preview a stablecoin payout: payee leg, swap and bridge fees, what arrives; nothing is created)", pending: "mark escrow pending [<id>]   (no id: all my deals)",
+  approve: "mark escrow approve <id> [--payout-invoice <bolt11> | --payout-lnaddr <user@domain> | --payout-ark <ark address from an Arkade wallet on this escrow's Arkade server; NOT Bark/Second> | --payout-stable usdc|usdt0|usdc-base --payout-address <your 0x address>] [--kind release|refund] [--with counterparty|arbiter] [--preimage <hex>] [--wait] [--timeout <sec>]   (--payout-stable: paid out in stablecoins through a Satora swap (usdc, usdt0 on Arbitrum One; usdc-base = USDC on Base); claim them with mark escrow claim-payout <id> once the payout tx is out, or add --wait)",
+  dispute: "mark escrow dispute <id> [--reason \"...\"]", refund: "mark escrow refund <id> --payout-invoice <bolt11> | --payout-lnaddr <user@domain> | --payout-ark <Arkade address on this escrow's Arkade server; NOT Bark/Second> | --payout-stable usdc|usdt0|usdc-base --payout-address <your 0x address> [--with arbiter|counterparty] [--wait] [--timeout <sec>]",
+  "refund-payout": "mark escrow refund-payout <id> [--to <ark address from an Arkade wallet on this escrow's Arkade server>]   (a Lightning or stablecoin payout swap that did not pay out, after its timelock)",
+  "claim-payout": "mark escrow claim-payout <id> [--wait] [--timeout <sec>]   (stablecoin payout: claim the stablecoins to your --payout-address, gasless; --wait waits for the payout tx and Satora's side; safe to repeat)",
   messages: "mark escrow messages <id> [--since <cursor>]",
   message: "mark escrow message <id> --text \"...\" [--kind question|dispute|evidence|info] [--reply-to <messageId>]",
   inbox: "mark escrow inbox",
@@ -108,7 +109,8 @@ export function checkSwapArgs(sub: string | undefined, id: string | undefined, f
   if (key === "recover" && !s(f.to)) return usage("--to <your 0x address> is required");
   return null;
 }
-const NEEDS_ID = new Set(["show", "accept", "evidence", "fund", "status", "quote", "approve", "dispute", "refund", "refund-payout", "messages", "message"]);
+const NEEDS_ID = new Set(["show", "accept", "evidence", "fund", "status", "quote", "approve", "dispute", "refund", "refund-payout", "claim-payout", "messages", "message"]);
+const ESCROW_STABLE = [...SWAP_STABLES, "usdt"];
 /** Usage checks before any network/keystore access: unknown subcommand, missing id, missing/ambiguous flags. */
 export function checkEscrowArgs(sub: string | undefined, id: string | undefined, f: Record<string, string | boolean>) {
   const usage = (msg: string) => new MarkError("USAGE", `${msg}. usage: ${ESCROW_USAGE[sub!] ?? Object.values(ESCROW_USAGE).join(" | ")}`, { usage: sub && ESCROW_USAGE[sub] ? ESCROW_USAGE[sub] : ESCROW_USAGE });
@@ -131,6 +133,29 @@ export function checkEscrowArgs(sub: string | undefined, id: string | undefined,
   }
   if (sub === "fund" && f.ark === true && f["resume-claim"] !== undefined) return usage("--resume-claim is for a Lightning funding swap, not --ark");
   if (sub === "quote" && f.path !== undefined && f.path !== "release" && f.path !== "refund") return usage("--path must be release or refund");
+  // stablecoins at the escrow's edges (fund --from, approve/refund --payout-stable, quote --payout-stable, claim-payout)
+  const lc = (k: string) => String(f[k]).toLowerCase();
+  if (f.from !== undefined) {
+    if (sub !== "fund") return usage("--from is only for escrow fund (fund with stablecoins)");
+    if (!ESCROW_STABLE.includes(lc("from"))) return usage(`--from must be ${STABLE_FLAGS}`);
+    if (f.ark !== undefined) return usage("--from (stablecoins) and --ark are two different funding rails: pick one");
+    if (f["resume-claim"] !== undefined) return usage("--resume-claim is for a Lightning funding swap; with --from run --wait to claim");
+  }
+  if (f["payout-stable"] !== undefined) {
+    if (!["approve", "refund", "quote"].includes(sub)) return usage("--payout-stable is only for escrow approve, refund and quote");
+    if (!ESCROW_STABLE.includes(lc("payout-stable"))) return usage(`--payout-stable must be ${STABLE_FLAGS}`);
+    const other = ["payout-invoice", "payout-lnaddr", "payout-ark", "dest"].find((k) => f[k] !== undefined);
+    if (other) return usage(`--payout-stable and --${other} are two different payouts: pick one`);
+    if (sub !== "quote" && !s(f["payout-address"])) return usage("--payout-stable needs --payout-address <your 0x address>");
+  }
+  if (f["payout-address"] !== undefined) {
+    if (sub !== "approve" && sub !== "refund") return usage("--payout-address is only for escrow approve and refund, with --payout-stable");
+    if (f["payout-stable"] === undefined) return usage("--payout-address goes with --payout-stable usdc|usdt0|usdc-base");
+    if (!/^0x[0-9a-fA-F]{40}$/.test(String(f["payout-address"]).trim())) return usage("--payout-address must be an EVM address (0x followed by 40 hex characters)");
+  }
+  if (f.wait !== undefined && ["approve", "refund"].includes(sub) && f["payout-stable"] === undefined) return usage("--wait on approve/refund is only for a stablecoin payout (--payout-stable): it claims the stablecoins once the payout tx is out");
+  if (f.timeout !== undefined && !/^\d+$/.test(String(f.timeout))) return usage("--timeout must be a whole number of seconds");
+  if (sub === "claim-payout") for (const k of Object.keys(f)) if (!["wait", "timeout", "json", "network", "escrow-url", "arbiter-pubkey"].includes(k)) return usage(`--${k} is not an option of escrow claim-payout`);
   return null;
 }
 

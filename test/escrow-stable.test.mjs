@@ -1,0 +1,245 @@
+// 0.6.2: escrow with stablecoins at the edges (fund --from, approve/refund --payout-stable, claim-payout, quote --payout-stable).
+// The escrow API and the Satora SDK are mocked: no network, no money, nothing is ever sent.
+import test from "node:test"; import assert from "node:assert/strict";
+import fs from "node:fs"; import os from "node:os"; import path from "node:path";
+import * as uc from "../dist/src/core/usecases.js";
+import * as es from "../dist/src/core/escrowStable.js";
+import { openCtx } from "../dist/src/core/context.js";
+import { checkEscrowArgs, parseArgs, ESCROW_USAGE } from "../dist/src/cliArgs.js";
+import { SatoraProvider } from "../dist/src/swap/satora.js";
+import { tmpHome, mockFetch, psbtPaying, payoutArk, MOCK_SERVER_PK } from "./mockApi.mjs";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+
+const OTHER = "11".repeat(32), URL_ = "https://escrow.test";
+const DEP = "0x" + "ab".repeat(20); // this Mark home's gasless deposit address (mock)
+const ME = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"; // a valid EIP-55 payout address
+const VHTLC = payoutArk(3, "ark"); // the payout swap's VHTLC, on the deal's (mock) Arkade server
+const code = (p) => p.then(() => "OK", (e) => e.code);
+/** Satora quote for 5,000 sats from USDC (rate $100k, ~1% fees). */
+const FQ = { exchange_rate: "100000", network_fee: 4, gasless_network_fee: 0, protocol_fee: 50, protocol_fee_rate: 0.01, min_amount: 356, max_amount: 20000000,
+  source_amount: "5060000", target_amount: "5050", net_source_amount: "5060000", net_target_amount: "5000" };
+/** Satora quote for an Arkade -> USDC payout of 5,000 sats. */
+const PQ = { exchange_rate: "100000", network_fee: 7, gasless_network_fee: 0, protocol_fee: 50, protocol_fee_rate: 0.01, min_amount: 356, max_amount: 20000000,
+  source_amount: "5000", target_amount: "5000000", net_source_amount: "5000", net_target_amount: "4943000" };
+
+function mockClient(o = {}) {
+  const calls = { getQuote: [], createSwap: [], getSwap: [], fund: [], claimArkade: [], claim: [], refund: [] };
+  const stored = {}; let statuses = [...(o.statuses ?? ["pending"])];
+  const client = {
+    getEvmAddress: () => DEP,
+    gaslessFundingPlan: () => ({ mode: "sponsored" }),
+    getQuote: async (p) => { calls.getQuote.push(p); return p.sourceChain === "Arkade" ? (o.payQuote ?? PQ) : (o.quote ?? FQ); },
+    createSwap: async (p) => {
+      calls.createSwap.push(p);
+      if (p.source.chain === "Arkade") {
+        const r = { id: "po-1", status: "pending", source_amount: String(p.sourceAmount), target_amount: "4943000", target_evm_address: p.targetAddress,
+          source_token: { chain: "Arkade", token_id: "btc", symbol: "BTC", decimals: 8 }, target_token: { chain: p.target.chain, token_id: p.target.tokenId, symbol: "USDC", decimals: 6 },
+          evm_chain_id: Number(p.target.chain), btc_vhtlc_address: VHTLC, ...(o.payTamper ?? {}) };
+        stored[r.id] = { swapId: r.id, response: { ...r, direction: "arkade_to_evm", arkade_server_pk: "02" + MOCK_SERVER_PK } }; return { response: r };
+      }
+      const r = { id: "rv-1", status: "pending", gasless: true, client_evm_address: DEP, source_amount: p.sourceAmount,
+        source_token: { chain: p.source.chain, token_id: p.source.tokenId, symbol: "USDC", decimals: 6 }, evm_chain_id: 42161,
+        target_token: { chain: p.target.chain, token_id: "btc", symbol: "BTC", decimals: 8 }, target_amount: o.targetSats ?? "5020",
+        target_arkade_address: p.targetAddress, arkade_server_pk: o.serverPk ?? "02" + MOCK_SERVER_PK };
+      stored[r.id] = { swapId: r.id, fresh: true, response: { ...r, direction: "evm_to_arkade" } }; return { response: r };
+    },
+    getSwap: async (id) => {
+      calls.getSwap.push(id);
+      if (id === "po-1") return { ...stored[id].response, status: o.payStatus ?? "pending", ...(o.payRead ?? {}) };
+      if (stored[id]?.fresh) { stored[id].fresh = false; return stored[id].response; }
+      const s = statuses.length > 1 ? statuses.shift() : statuses[0]; const base = stored[id]?.response ?? {};
+      const r = { ...base, id, status: s, ...(s !== "pending" ? { evm_fund_txid: "0xfund" } : {}) }; if (stored[id]) stored[id].response = r; return r;
+    },
+    getStoredSwap: async (id) => stored[id] ?? null,
+    swapStorage: { getAll: async () => Object.values(stored) },
+    fundSwapGasless: async (id) => { calls.fund.push(id); return { txHash: "0xfund" }; },
+    claimArkade: async (id, opts) => { calls.claimArkade.push({ id, ...opts }); return { success: true, txId: "arkclaim1" }; },
+    claim: async (id) => { calls.claim.push(id); return { success: true, txHash: "0xpayout", message: "ok" }; },
+    refundSwap: async (id, opts) => { calls.refund.push({ id, ...opts }); return { success: true, txId: "arkrefund1" }; },
+    getSwapDepositorKey: async () => { throw new Error("not in these tests"); },
+  };
+  return { client, calls, stored };
+}
+function provider(client, o = {}) {
+  const p = new SatoraProvider(client, "https://swap.test", "https://arkade.computer", fs.mkdtempSync(path.join(os.tmpdir(), "mark-es-")));
+  let bals = [...(o.balances ?? [0n])];
+  p.evm = { tokenBalance: async () => (bals.length > 1 ? bals.shift() : bals[0]), ethBalance: async () => 0n, gasPrice: async () => 20_000_000n, transferredTo: async () => 4943000n };
+  p.signerFor = async () => ({ address: DEP, fake: true });
+  return p;
+}
+const deal = (c, o = {}) => ({ id: "e1", network: "bitcoin", state: "created", amountSats: 5000, deadline: new Date(Date.now() + 86400e3).toISOString(), buyerPubkey: c.pubkey, sellerPubkey: OTHER, proposals: [], terms: null, ...o });
+async function ctx({ dealOf = (c) => deal(c), routes = {}, client = mockClient().client, network = "bitcoin", balances } = {}) {
+  tmpHome(); await uc.init(network); let c0;
+  const f = mockFetch({ "GET /escrows/e1": async () => [200, dealOf(c0)], ...routes });
+  const c = await openCtx(network, { escrowUrl: URL_, fetchImpl: f, swapFactory: async () => provider(client, { balances }) }); c0 = c; return { c, f };
+}
+
+// ---------- fund --from ----------
+test("fund --from usdc: swap into the escrow address for at least the deal, with cushion, fee disclosure; one rail per deal", async () => {
+  const m = mockClient(); const { c, f } = await ctx({ client: m.client });
+  const r = await es.fundStable(c, "e1", { from: "usdc" });
+  assert.equal(r.rail, "stable"); assert.equal(r.newSwap, true); assert.equal(r.swapId, "rv-1"); assert.match(r.escrowAddress, /^ark1/);
+  assert.equal(m.calls.getQuote[0].targetAmount, 5000, "quoted for the exact deal amount");
+  const cr = m.calls.createSwap[0]; assert.equal(cr.targetAddress, r.escrowAddress, "Satora pays the escrow address");
+  assert.equal(BigInt(cr.sourceAmount), (5060000n * 10050n + 9999n) / 10000n, "0.5% cushion on the deposit"); assert.equal(cr.extraFees, 50);
+  assert.equal(r.swapPaysSats, 5020); assert.equal(r.extraSats, 20); assert.equal(r.deposit.address, DEP); assert.equal(r.amountUsd, "~$5.00");
+  const d = r.disclosure.join(" "); assert.match(d, /5020 sats paid to the escrow address/); assert.match(d, /Swap fee/); assert.match(d, /Escrow platform fee/); assert.match(d, /two swaps/); assert.match(d, /holds bitcoin/);
+  assert.match(r.next, /escrow fund e1 --from usdc --wait/); assert.match(r.next, /swap recover rv-1/);
+  const l = c.index.get("e1"); assert.equal(l.fundStableSwap, "rv-1"); assert.equal(l.fundStableFrom, "usdc"); assert.equal(l.fundRail, "stable");
+  assert.equal(f.calls.filter((x) => x.key.startsWith("POST")).length, 0, "nothing posted");
+  // again: same swap, no second create
+  const again = await es.fundStable(c, "e1", { from: "usdc" }); assert.equal(again.newSwap, false); assert.equal(again.swapId, "rv-1"); assert.equal(m.calls.createSwap.length, 1);
+  // other token: refused; other rails: refused without --switch-rail
+  assert.equal(await code(es.fundStable(c, "e1", { from: "usdt0" })), "FUNDING_IN_PROGRESS");
+  await assert.rejects(uc.fund(c, "e1"), (e) => e.code === "FUNDING_IN_PROGRESS" && /--from usdc --wait/.test(e.message) && /--switch-rail/.test(e.message));
+  assert.equal(await code(uc.fundArk(c, "e1")), "FUNDING_IN_PROGRESS");
+});
+
+test("fund --from: a swap paying less than the deal (or too much, or on another Ark server) is refused before any deposit address", async () => {
+  for (const [o, re] of [[{ targetSats: "4999" }, /pays 4999 sats, the deal needs 5000/], [{ targetSats: "5200" }, /far more/], [{ serverPk: "02" + "7c".repeat(32) }, /not this deal's Arkade server|Ark/]]) {
+    const m = mockClient(o); const { c } = await ctx({ client: m.client });
+    await assert.rejects(es.fundStable(c, "e1", { from: "usdc" }), (e) => e.code === "SWAP_FAILED" && re.test(e.message) && /Do NOT deposit/.test(e.message), JSON.stringify(o));
+    assert.equal(c.index.get("e1").fundStableSwap, undefined, "a refused swap is never recorded or shown");
+  }
+});
+
+test("fund --from: DEADLINE_TOO_CLOSE (30 min; 60 min for usdc-base), expired / funded deals, rail locks the other way, bad token", async () => {
+  const soon = (min) => (c) => deal(c, { deadline: new Date(Date.now() - 3600e3 + min * 60e3).toISOString() }); // expiresAt = deadline + 1 h grace
+  let { c } = await ctx({ dealOf: soon(20) }); await assert.rejects(es.fundStable(c, "e1", { from: "usdc" }), (e) => e.code === "DEADLINE_TOO_CLOSE" && e.details.minSeconds === 1800);
+  ({ c } = await ctx({ dealOf: soon(45) })); await assert.rejects(es.fundStable(c, "e1", { from: "usdc-base" }), (e) => e.code === "DEADLINE_TOO_CLOSE" && e.details.minSeconds === 3600);
+  assert.equal((await es.fundStable(c, "e1", { from: "usdc" })).newSwap, true, "45 min is enough for Arbitrum");
+  ({ c } = await ctx({ dealOf: (c) => deal(c, { state: "expired" }) })); assert.equal((await es.fundStable(c, "e1", { from: "usdc" })).state, "expired");
+  ({ c } = await ctx({ dealOf: (c) => deal(c, { state: "funded" }) })); assert.equal((await es.fundStable(c, "e1", { from: "usdc" })).note, "already funded");
+  ({ c } = await ctx()); c.index.set("e1", { fundRail: "ark", fundArkAt: "x" });
+  await assert.rejects(es.fundStable(c, "e1", { from: "usdc" }), (e) => e.code === "FUNDING_IN_PROGRESS" && /--switch-rail/.test(e.message));
+  assert.equal((await es.fundStable(c, "e1", { from: "usdc", switchRail: true })).newSwap, true);
+  assert.equal(await code(es.fundStable(c, "e1", { from: "dai" })), "USAGE");
+  ({ c } = await ctx({ network: "mutinynet" })); assert.equal(await code(es.fundStable(c, "e1", { from: "usdc" })), "SWAP_UNSUPPORTED_NETWORK");
+});
+
+test("fund --from --wait: deposit locked, sats claimed into the escrow, deal funded; never claims into an expired or funded deal", async () => {
+  let m = mockClient({ statuses: ["pending", "pending", "pending", "clientfunded", "serverfunded", "serverfunded", "clientredeemed"] }); let funded = false;
+  let { c } = await ctx({ client: m.client, dealOf: (c) => deal(c, funded ? { state: "funded", funding: { outpoint: "ab:0", amount: 5020 } } : {}),
+    routes: { "POST /escrows/e1/funding-ark": async () => [200, { escrowId: "e1", recorded: true, rail: "lightning" }] }, balances: [5085300n] });
+  const orig = m.client.claimArkade; m.client.claimArkade = async (...a) => { funded = true; return orig(...a); };
+  const shown = []; const r = await es.fundStable(c, "e1", { from: "usdc", wait: true, pollMs: 1, timeoutSec: 5, onInstructions: (x) => shown.push(x) });
+  assert.equal(shown.length, 1, "deposit instructions before waiting"); assert.equal(m.calls.fund.length, 1); assert.equal(m.calls.claimArkade.length, 1);
+  assert.equal(m.calls.claimArkade[0].destinationAddress, r.escrowAddress); assert.equal(r.funded, true); assert.equal(r.state, "funded"); assert.equal(r.ledger.recorded, true);
+  // the deal expired while the swap ran: nothing is claimed into it
+  m = mockClient({ statuses: ["serverfunded"] }); const made = (mm) => mm.calls.createSwap.length > 0;
+  ({ c } = await ctx({ client: m.client, dealOf: (c) => deal(c, made(m) ? { state: "expired" } : {}) }));
+  const x = await es.fundStable(c, "e1", { from: "usdc", wait: true, pollMs: 1, timeoutSec: 5, onInstructions: () => {} });
+  assert.equal(m.calls.claimArkade.length, 0); assert.equal(x.funded, false); assert.match(x.note, /expired before the swap paid out: NOT claimed/); assert.match(x.note, /swap recover rv-1/);
+  m = mockClient({ statuses: ["serverfunded"] });
+  ({ c } = await ctx({ client: m.client, dealOf: (c) => deal(c, made(m) ? { state: "funded" } : {}) }));
+  const y = await es.fundStable(c, "e1", { from: "usdc", wait: true, pollMs: 1, timeoutSec: 5, onInstructions: () => {} });
+  assert.equal(m.calls.claimArkade.length, 0); assert.match(y.note, /already funded \(another payment\): NOT claimed/); assert.equal(y.claimedIntoEscrow, false); assert.equal(y.ledger, undefined);
+});
+
+// ---------- approve / refund --payout-stable ----------
+const funded = (c, o = {}) => deal(c, { state: "funded", funding: { outpoint: "x:0", amount: 5000 }, buyerPubkey: OTHER, sellerPubkey: c.pubkey, ...o });
+function payoutRoutes(state, propose) {
+  return {
+    "POST /escrows/e1/proposals": async (b) => { state.posted = b; return [200, { escrow: state.escrow(), proposal: { id: "p1" } }]; },
+    "GET /escrows/e1/proposals/p1": async () => [200, { id: "p1", kind: state.posted?.kind ?? "release", dest: VHTLC, signers: ["buyer", "seller"], sigs: [], payout: state.posted?.payout ?? propose, arkTx: psbtPaying(VHTLC, 5000), checkpoints: [] }],
+    "POST /escrows/e1/proposals/p1/signatures": async (b) => { state.signed = b; return [200, { escrow: state.escrow() }]; },
+  };
+}
+test("approve --payout-stable: exact payee leg to a Satora swap paying my 0x address; proposed as type stable; co-sign check passes", async () => {
+  const m = mockClient(); const st = {}; let c0;
+  const { c } = await ctx({ client: m.client, dealOf: (c) => funded(c), routes: payoutRoutes(st) }); c0 = c; st.escrow = () => funded(c0);
+  // the mock PSBT carries no escrow tapscript: the signer throws only AFTER every Mark check (incl. the Satora check) passed
+  await assert.rejects(uc.approve(c, "e1", { payoutStable: "usdc", payoutAddress: ME }), (e) => /No taproot scripts signed/.test(e.message) && !e.code);
+  const cr = m.calls.createSwap[0]; assert.equal(cr.source.chain, "Arkade"); assert.equal(cr.sourceAmount, 5000); assert.equal(cr.targetAddress, ME); assert.equal(cr.extraFees, 50);
+  assert.deepEqual(st.posted.payout, { type: "stable", address: ME, swapId: "po-1", token: "usdc" }); assert.equal(st.posted.kind, "release");
+  const l = c.index.get("e1"); assert.equal(l.payoutSwap, "po-1"); assert.equal(l.payoutStable, "usdc"); assert.equal(l.payoutAddress, ME);
+  assert.equal(st.signed, undefined);
+});
+test("approve --payout-stable: refusals (exclusive flags, bad address, swap not on this Ark server, out of range); co-signer refuses a mismatching swap", async () => {
+  const st = {}; let { c } = await ctx({ dealOf: (c) => funded(c), routes: payoutRoutes(st) }); st.escrow = () => funded(c);
+  assert.equal(await code(uc.approve(c, "e1", { payoutStable: "usdc", payoutAddress: ME, payoutLnaddr: "a@b.c" })), "BAD_REQUEST");
+  assert.equal(await code(uc.approve(c, "e1", { payoutAddress: ME })), "BAD_REQUEST");
+  assert.equal(await code(uc.approve(c, "e1", { payoutStable: "usdc" })), "BAD_REQUEST");
+  assert.notEqual(await code(uc.approve(c, "e1", { payoutStable: "usdc", payoutAddress: "0x1234" })), "OK");
+  assert.equal(await code(uc.approve(c, "e1", { payoutStable: "dai", payoutAddress: ME })), "USAGE");
+  let m;
+  ({ c } = await ctx({ client: mockClient({ payTamper: { btc_vhtlc_address: undefined } }).client, dealOf: (c) => funded(c), routes: payoutRoutes(st) }));
+  assert.notEqual(await code(uc.approve(c, "e1", { payoutStable: "usdc", payoutAddress: ME })), "OK"); assert.equal(st.posted, undefined, "nothing proposed");
+  m = mockClient({ payQuote: { ...PQ, min_amount: 6000 } }); ({ c } = await ctx({ client: m.client, dealOf: (c) => funded(c), routes: payoutRoutes(st) }));
+  assert.equal(await code(uc.approve(c, "e1", { payoutStable: "usdc", payoutAddress: ME })), "SWAP_AMOUNT"); assert.equal(m.calls.createSwap.length, 0);
+  // co-signer (buyer): the server's proposal is checked against Satora before signing
+  for (const [o, re] of [[{ payRead: { source_amount: "4999" } }, /asks for 4999 sats/], [{ payRead: { target_evm_address: "0x" + "cd".repeat(20) } }, /it pays 0x/], [{ payStatus: "clientfunded" }, /status clientfunded/], [{ payRead: { direction: "evm_to_arkade" } }, /direction/]]) {
+    m = mockClient(o); const s2 = {}; let c2;
+    ({ c: c2 } = await ctx({ client: m.client, dealOf: (c) => funded(c, { buyerPubkey: c.pubkey, sellerPubkey: OTHER, proposals: [{ id: "p1", kind: "release", dest: VHTLC, signers: ["buyer", "seller"], sigs: ["seller"] }] }), routes: payoutRoutes(s2, { type: "stable", address: ME, swapId: "po-1", token: "usdc" }) }));
+    await m.client.createSwap({ source: { chain: "Arkade", tokenId: "btc" }, target: { chain: "42161", tokenId: "x" }, sourceAmount: 5000, targetAddress: ME });
+    await assert.rejects(uc.approve(c2, "e1"), (e) => e.code === "UNSAFE_TX" && re.test(e.message), JSON.stringify(o)); assert.equal(s2.signed, undefined);
+  }
+  m = mockClient(); const s3 = {}; let c3;
+  ({ c: c3 } = await ctx({ client: m.client, dealOf: (c) => funded(c, { buyerPubkey: c.pubkey, sellerPubkey: OTHER, proposals: [{ id: "p1", kind: "release", dest: VHTLC, signers: ["buyer", "seller"], sigs: ["seller"] }] }), routes: payoutRoutes(s3, { type: "stable", address: ME.toLowerCase(), swapId: "po-1", token: "usdc" }) }));
+  await m.client.createSwap({ source: { chain: "Arkade", tokenId: "btc" }, target: { chain: "42161", tokenId: "x" }, sourceAmount: 5000, targetAddress: ME });
+  await assert.rejects(uc.approve(c3, "e1"), (e) => /No taproot scripts signed/.test(e.message) && !e.code, "a matching swap passes every check (signer fails on the mock PSBT only)");
+  m = mockClient(); m.client.getSwap = async () => { throw new Error("satora down"); }; const s4 = {}; let c4;
+  ({ c: c4 } = await ctx({ client: m.client, dealOf: (c) => funded(c, { buyerPubkey: c.pubkey, sellerPubkey: OTHER, proposals: [{ id: "p1", kind: "release", dest: VHTLC, signers: ["buyer", "seller"], sigs: ["seller"] }] }), routes: payoutRoutes(s4, { type: "stable", address: ME, swapId: "po-1", token: "usdc" }) }));
+  assert.equal(await code(uc.approve(c4, "e1")), "SWAP_UNREACHABLE", "fails closed when Satora can't be read");
+});
+test("refund --payout-stable: the buyer's refund leg, same swap checks", async () => {
+  const m = mockClient(); const st = {}; let c0;
+  const { c } = await ctx({ client: m.client, dealOf: (c) => funded(c, { buyerPubkey: c.pubkey, sellerPubkey: OTHER, deadline: new Date(Date.now() - 1000).toISOString() }), routes: payoutRoutes(st) }); c0 = c;
+  st.escrow = () => funded(c0, { buyerPubkey: c0.pubkey, sellerPubkey: OTHER });
+  await assert.rejects(uc.refund(c, "e1", { payoutStable: "usdt0", payoutAddress: ME }), (e) => /No taproot scripts signed/.test(e.message));
+  assert.equal(st.posted.kind, "refund"); assert.deepEqual(st.posted.payout, { type: "stable", address: ME, swapId: "po-1", token: "usdt0" }); assert.deepEqual(st.posted.signers, ["buyer", "arbiter"]);
+});
+
+// ---------- claim-payout / refund-payout / quote ----------
+test("claim-payout: waits for the payout tx, claims the stablecoins (gasless); refuses without a stablecoin payout; refund-payout covers it", async () => {
+  let m = mockClient({ payStatus: "serverfunded" }); let state = "funded";
+  let { c } = await ctx({ client: m.client, dealOf: (c) => funded(c, { state }) });
+  assert.equal(await code(es.claimPayout(c, "e1")), "NOT_FOUND");
+  c.index.set("e1", { payoutSwap: "po-1" }); assert.equal(await code(es.claimPayout(c, "e1")), "USAGE", "Lightning payout: nothing to claim");
+  await m.client.createSwap({ source: { chain: "Arkade", tokenId: "btc" }, target: { chain: "42161", tokenId: "x" }, sourceAmount: 5000, targetAddress: ME });
+  c.index.set("e1", { payoutSwap: "po-1", payoutStable: "usdc", payoutAddress: ME });
+  const early = await es.claimPayout(c, "e1"); assert.equal(early.claimed, false); assert.match(early.note, /not submitted yet/); assert.equal(m.calls.claim.length, 0);
+  state = "released";
+  const r = await es.claimPayout(c, "e1", { pollMs: 1 }); assert.equal(m.calls.claim.length, 1); assert.equal(m.calls.claim[0], "po-1"); assert.equal(r.payoutAddress, ME); assert.equal(r.state, "released");
+  m = mockClient({ payStatus: "expired" }); ({ c } = await ctx({ client: m.client, dealOf: (c) => funded(c, { state: "released" }) }));
+  await m.client.createSwap({ source: { chain: "Arkade", tokenId: "btc" }, target: { chain: "42161", tokenId: "x" }, sourceAmount: 5000, targetAddress: ME });
+  c.index.set("e1", { payoutSwap: "po-1", payoutStable: "usdc", payoutAddress: ME });
+  const x = await es.claimPayout(c, "e1", { pollMs: 1 }); assert.equal(m.calls.claim.length, 0); assert.match(x.recover ?? x.note, /refund-payout|refund/);
+  const back = await uc.refundPayout(c, "e1", payoutArk(9, "ark")); assert.equal(back.success, true); assert.equal(m.calls.refund[0].id, "po-1"); assert.equal(m.calls.refund[0].destinationAddress, payoutArk(9, "ark"));
+});
+test("quote --payout-stable: payee leg, escrow fee, swap fee and what arrives; nothing created", async () => {
+  const m = mockClient(); const { c } = await ctx({ client: m.client, dealOf: (c) => funded(c), routes: { "GET /escrows/e1/quote": async () => [200, { path: "release", escrowSats: 5000, ark: { payoutSats: 4950 } }] } });
+  const q = await es.quoteStablePayout(c, "e1", "release", "usdc");
+  assert.equal(q.payeeLegSats, 4950); assert.equal(q.escrowFeeSats, 50); assert.equal(m.calls.getQuote[0].sourceAmount, 4950); assert.equal(m.calls.getQuote[0].extraFees, 50);
+  assert.equal(m.calls.createSwap.length, 0); assert.ok(q.totalFees.swapFeeSats > 0); assert.match(q.note, /two swaps/); assert.match(q.next, /--payout-stable usdc --payout-address/);
+});
+
+// ---------- CLI and MCP ----------
+test("CLI: --from / --payout-stable / --payout-address / claim-payout validation", () => {
+  const chk = (argv) => { const { pos, f } = parseArgs(argv); return checkEscrowArgs(pos[0], pos[1], f); };
+  for (const ok of [["fund", "e1", "--from", "usdc"], ["fund", "e1", "--from", "usdc-base", "--wait", "--timeout", "1800"], ["fund", "e1", "--from", "usdt0", "--switch-rail"],
+    ["approve", "e1", "--payout-stable", "usdc", "--payout-address", ME], ["approve", "e1", "--payout-stable", "usdt0", "--payout-address", ME, "--wait"],
+    ["refund", "e1", "--payout-stable", "usdc-base", "--payout-address", ME], ["quote", "e1", "--payout-stable", "usdc"], ["claim-payout", "e1", "--wait", "--timeout", "600"]]) assert.equal(chk(ok), null, ok.join(" "));
+  const bad = [[["fund", "e1", "--from", "dai"], /--from must be/], [["fund", "e1", "--from", "usdc", "--ark"], /pick one/], [["fund", "e1", "--from", "usdc", "--resume-claim"], /resume-claim/],
+    [["show", "e1", "--from", "usdc"], /only for escrow fund/], [["approve", "e1", "--payout-stable", "usdc"], /needs --payout-address/],
+    [["approve", "e1", "--payout-stable", "usdc", "--payout-address", "0x12"], /EVM address/], [["approve", "e1", "--payout-address", ME], /goes with --payout-stable/],
+    [["approve", "e1", "--payout-stable", "usdc", "--payout-address", ME, "--payout-lnaddr", "a@b.c"], /pick one/], [["quote", "e1", "--payout-stable", "usdc", "--dest", "a@b.c"], /pick one/],
+    [["approve", "e1", "--payout-lnaddr", "a@b.c", "--wait"], /only for a stablecoin payout/], [["claim-payout", "e1", "--to", "x"], /not an option/], [["claim-payout"], /escrow id required|claim-payout/]];
+  for (const [argv, re] of bad) { const r = chk(argv); assert.ok(r, argv.join(" ")); assert.match(r.message, re, argv.join(" ")); }
+  assert.match(ESCROW_USAGE["claim-payout"], /claim-payout <id>/); assert.match(ESCROW_USAGE.fund, /--from usdc\|usdt0\|usdc-base/);
+});
+test("MCP: escrow_fund from, escrow_approve/refund payoutStable+payoutAddress, escrow_quote payoutStable, escrow_claim_payout", async () => {
+  const home = tmpHome();
+  const t = new StdioClientTransport({ command: process.execPath, args: [new URL("../dist/src/cli.js", import.meta.url).pathname, "mcp"], env: { ...process.env, MARK_HOME: home }, stderr: "ignore" });
+  const cl = new Client({ name: "t", version: "1" }); await cl.connect(t);
+  try {
+    const tools = Object.fromEntries((await cl.listTools()).tools.map((x) => [x.name, x]));
+    assert.deepEqual(tools.escrow_fund.inputSchema.properties.from.enum, ["usdc", "usdt0", "usdc-base"]);
+    for (const n of ["escrow_approve", "escrow_refund"]) { const p = tools[n].inputSchema.properties; assert.deepEqual(p.payoutStable.enum, ["usdc", "usdt0", "usdc-base"]); assert.equal(p.payoutAddress.type, "string"); assert.equal(p.wait.type, "boolean"); }
+    assert.deepEqual(tools.escrow_quote.inputSchema.properties.payoutStable.enum, ["usdc", "usdt0", "usdc-base"]);
+    assert.ok(tools.escrow_claim_payout); assert.deepEqual(tools.escrow_claim_payout.inputSchema.required, ["id"]);
+    assert.match(tools.escrow_refund_payout.description, /stablecoin/);
+    const r = await cl.callTool({ name: "escrow_fund", arguments: { id: "e1", from: "usdc", rail: "ark" } }); assert.match(JSON.stringify(r), /USAGE|own funding rail/);
+  } finally { await cl.close(); }
+});
