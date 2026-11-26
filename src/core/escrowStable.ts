@@ -29,6 +29,9 @@ export const FUND_STABLE_MIN_SEC = 1800, FUND_STABLE_BRIDGED_MIN_SEC = 3600;
 /** Extra deposit on top of Satora's quote for the deal's sats, so a price tick between the quote and the create still pays at
  *  least the deal amount (the few extra sats stay in the escrow). */
 export const FUND_STABLE_CUSHION_BPS = 50;
+/** USDC on Base (bridged over Circle CCTP): Satora's created swap paid ~0.6% below its own quote for the same deposit (live,
+ *  26 Nov 2026: 925810 units -> 1498 sats, quote ~1507), so a bridged deposit carries a 1.5% cushion. */
+export const FUND_STABLE_BRIDGED_CUSHION_BPS = 150;
 const ROUND_TRIP = `two swaps around a bitcoin escrow (each ${SWAP_FEE_TOTAL_NOTE}): the BTC/USD price can move between funding and payout, so the USD amount paid out can differ from the USD deposited.`;
 /** Shown when funding with stablecoins (the payout may be in stablecoins too) and when paying out in stablecoins. */
 export const ROUND_TRIP_NOTE = `If the payout is in stablecoins too, that is ${ROUND_TRIP}`;
@@ -129,7 +132,7 @@ export async function fundStable(c: Ctx, id: string, o: FundStableOpts) {
       needBridgeFee(t, qs);
       if (!inRange(qs)) throw new MarkError("SWAP_AMOUNT", `Satora accepts ${qs.min_amount}..${qs.max_amount} sats for ${tokenLabel(t)} -> Arkade; this deal needs a ${tokenLabel(t)} deposit outside that range. Use Lightning or Ark.`, { minSats: qs.min_amount, maxSats: qs.max_amount });
       // the cushion: a price tick between this quote and the create must still pay at least the deal amount
-      const sourceUnits = (src * BigInt(10000 + FUND_STABLE_CUSHION_BPS) + 9999n) / 10000n;
+      const sourceUnits = (src * BigInt(10000 + (t.bridge ? FUND_STABLE_BRIDGED_CUSHION_BPS : FUND_STABLE_CUSHION_BPS)) + 9999n) / 10000n;
       const p: Parsed = { from, to: "arkade", bps, arkAddress: e.address, sourceUnits, token: t } as Parsed;
       const x = await createPinnedReverse(c, s, p, qs, (x) => {
         const bad = (why: string) => { throw new MarkError("SWAP_FAILED", `Satora's swap does not fund this deal (${why}). Do NOT deposit anything; nothing is lost while it is unfunded (it just expires).`, { id: x?.id }); };
