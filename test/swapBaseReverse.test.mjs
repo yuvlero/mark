@@ -13,6 +13,7 @@ import { gasNeedWei } from "../dist/src/swap/evm.js";
 import { SWAP_TARGETS, SWAP_REFERRAL_ID, SWAP_MARKUP_BPS, SWAP_FEE_BRIDGE_IN_NOTE, SWEEP_TX, BRIDGE_IN_TXS, ethText, formatReverseQuote, routeFeeNote, swapRoute } from "../dist/src/swap/stable.js";
 import { validPin } from "../dist/src/swap/reversePin.js";
 import * as sw from "../dist/src/core/swap.js";
+import { waitReverse } from "../dist/src/core/swapReverse.js";
 import { payoutArk, MOCK_SERVER_PK } from "./mockApi.mjs";
 import { makeInvoice } from "./helpers.mjs";
 
@@ -253,6 +254,13 @@ test("lost funding time: a recorded burn still resumes (fund and fund --wait), n
     assert.equal(m.calls.fundSwap.length, 1, `wait=${wait}`); assert.equal(m.calls.fundSwap[0].resume, BURN); assert.notEqual(p.fundAttemptedAt("rb-1"), undefined);
     if (!wait) assert.equal(r.funded, true);
   }
+});
+
+test("claimGuard: a recorded burn is not resumed (nothing locked) when the guard says stop (escrow deal expired/funded)", async () => {
+  const m = mockClient({ statuses: ["pending"] }); const p = provider(m.client, { base: { usdc: 0n, eth: 0n } }); await create(p);
+  m.stored["rb-1"].cctpBurnTxid = BURN; let asked = 0;
+  const r = await waitReverse(p, "rb-1", { timeoutSec: 1, pollMs: 1, claimGuard: async () => { asked++; return "The deal expired before the swap paid out."; } });
+  assert.equal(asked, 1); assert.equal(r.funded, false); assert.match(r.note, /NOT locked/); assert.equal(m.calls.fundSwap.length, 0);
 });
 
 test("create refuses a provider that cannot track the burn, and a Base quote without Circle's fee", async () => {
