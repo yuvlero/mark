@@ -114,10 +114,23 @@ export async function fundStable(c: Ctx, id: string, o: FundStableOpts) {
       if (!/^\d+$/.test(String(q?.source_amount ?? "")) || BigInt(q.source_amount) <= 0n || !(Number(q?.net_target_amount) > 0)) throw new MarkError("QUOTE_UNAVAILABLE", "Satora's quote has no amounts; nothing was created. Retry later.");
       needBridgeFee(t, q);
       if (!inRange(q)) throw new MarkError("SWAP_AMOUNT", `Satora accepts ${q.min_amount}..${q.max_amount} sats for ${tokenLabel(t)} -> Arkade; this deal is ${e.amountSats} sats. Use Lightning or Ark.`, { minSats: q.min_amount, maxSats: q.max_amount });
+      // Satora's quote by target treats targetAmount as the GROSS sats (live, 26 Nov 2026: target 2000 -> a deposit that pays
+      // 1976 net once the swap fees are taken). The swap is created from the deposit, so price the deposit by source: re-quote
+      // the deposit and gross it up until its net payout covers the deal (at most 3 rounds), then add the cushion.
+      let src = BigInt(q.source_amount), qs: any;
+      for (let i = 0; ; i++) {
+        qs = await s.quoteReverse({ from, to: "arkade", bps, sourceUnits: src });
+        const net = Number(qs?.net_target_amount);
+        if (!Number.isSafeInteger(net) || net <= 0) throw new MarkError("QUOTE_UNAVAILABLE", "Satora's quote has no payout amount; nothing was created. Retry later.");
+        if (net >= e.amountSats) break;
+        if (i >= 2) throw new MarkError("QUOTE_UNAVAILABLE", `Satora's quote for a ${tokenLabel(t)} deposit does not reach the deal's ${e.amountSats} sats (${net} net); nothing was created. Retry later.`, { netSats: net, dealSats: e.amountSats });
+        src = (src * BigInt(e.amountSats) + BigInt(net) - 1n) / BigInt(net) + 1n;
+      }
+      needBridgeFee(t, qs);
       // the cushion: a price tick between this quote and the create must still pay at least the deal amount
-      const sourceUnits = (BigInt(q.source_amount) * BigInt(10000 + FUND_STABLE_CUSHION_BPS) + 9999n) / 10000n;
+      const sourceUnits = (src * BigInt(10000 + FUND_STABLE_CUSHION_BPS) + 9999n) / 10000n;
       const p: Parsed = { from, to: "arkade", bps, arkAddress: e.address, sourceUnits, token: t } as Parsed;
-      const x = await createPinnedReverse(c, s, p, q, (x) => {
+      const x = await createPinnedReverse(c, s, p, qs, (x) => {
         const bad = (why: string) => { throw new MarkError("SWAP_FAILED", `Satora's swap does not fund this deal (${why}). Do NOT deposit anything; nothing is lost while it is unfunded (it just expires).`, { id: x?.id }); };
         if (!Number.isSafeInteger(x.targetSats) || x.targetSats! < e.amountSats) bad(`it pays ${x.targetSats} sats, the deal needs ${e.amountSats}`);
         if (x.targetSats! > Math.ceil(e.amountSats * 1.03)) bad(`it pays ${x.targetSats} sats, far more than the deal's ${e.amountSats}`);
@@ -125,7 +138,7 @@ export async function fundStable(c: Ctx, id: string, o: FundStableOpts) {
         if (!e.serverPubkey || pk !== String(e.serverPubkey).toLowerCase().slice(-64)) bad(`Satora's Arkade server key ${pk || "(none)"} is not this deal's Arkade server`);
       });
       c.index.set(id, { fundStableSwap: x.id, fundStableFrom: from, fundStableAt: new Date().toISOString(), fundRail: "stable", role: l.role ?? myRole(c, e) });
-      return { x, q, g };
+      return { x, q: qs, g };
     });
     if ("reuse" in r) { existing = await s.getReverse(r.reuse!); }
     else { created = r.x; gas = r.g; quote = formatReverseQuote(r.q, { from, to: "arkade", bps: SWAP_MARKUP_BPS, gas }); rate = r.q.exchange_rate; }

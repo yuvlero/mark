@@ -76,6 +76,25 @@ async function ctx({ dealOf = (c) => deal(c), routes = {}, client = mockClient()
 }
 
 // ---------- fund --from ----------
+test("fund --from: Satora's quote by target is GROSS (live 26 Nov 2026): the deposit is grossed up by source quote until the net covers the deal", async () => {
+  // realistic Satora: by target the source buys exactly the target sats gross (net echoes the target); by source the net is
+  // the gross minus 1% + 4 sats network fee. The created swap pays the net of its deposit.
+  const netOf = (src) => { const g = Math.floor(Number(src) / 1000); return g - Math.ceil(g * 0.01) - 4; };
+  const m = mockClient(); const q0 = m.client.getQuote;
+  m.client.getQuote = async (p) => { if (p.sourceChain === "Arkade") return q0(p); m.calls.getQuote.push(p);
+    if (p.targetAmount !== undefined) return { ...FQ, source_amount: String(p.targetAmount * 1000), target_amount: String(p.targetAmount), net_target_amount: String(p.targetAmount) };
+    const n = netOf(p.sourceAmount); return { ...FQ, source_amount: String(p.sourceAmount), target_amount: String(Math.floor(Number(p.sourceAmount) / 1000)), net_target_amount: String(n) }; };
+  const c0 = m.client.createSwap; m.client.createSwap = async (p) => { const r = await c0(p); if (p.source.chain !== "Arkade") r.response.target_amount = String(netOf(p.sourceAmount)); return r; };
+  const { c } = await ctx({ client: m.client });
+  const r = await es.fundStable(c, "e1", { from: "usdc" });
+  const src = BigInt(m.calls.createSwap[0].sourceAmount); assert.ok(src > 5060000n, `grossed up above the gross quote (${src})`);
+  assert.ok(r.swapPaysSats >= 5000 && r.swapPaysSats <= Math.ceil(5000 * 1.03), `swap pays ${r.swapPaysSats}`); assert.equal(r.newSwap, true);
+  assert.ok(m.calls.getQuote.some((x) => x.sourceAmount !== undefined), "re-quoted by source");
+});
+test("fund --from: a source quote that never reaches the deal is refused before anything is created", async () => {
+  const m = mockClient({ quote: { ...FQ, net_target_amount: "10" } }); const { c } = await ctx({ client: m.client });
+  assert.equal(await code(es.fundStable(c, "e1", { from: "usdc" })), "QUOTE_UNAVAILABLE"); assert.equal(m.calls.createSwap.length, 0);
+});
 test("fund --from usdc: swap into the escrow address for at least the deal, with cushion, fee disclosure; one rail per deal", async () => {
   const m = mockClient(); const { c, f } = await ctx({ client: m.client });
   const r = await es.fundStable(c, "e1", { from: "usdc" });
@@ -247,7 +266,7 @@ test("MCP: escrow_fund from, escrow_approve/refund payoutStable+payoutAddress, e
 // ---------- review fixes (Kimi, 2026-11-26) ----------
 test("fund --from: the disclosed platform fee is on what the escrow will hold (cushion can cross the free tier)", async () => {
   const fees = { v: 2, freeBelowSats: 3300, flatSats: 0, flatUntilSats: 33000, feeBps: 100, disputeFeeBps: 500, disputeMinSats: 330, dustSats: 330, address: payoutArk(8, "ark") };
-  const m = mockClient({ targetSats: "33165" }); const { c } = await ctx({ client: m.client, dealOf: (c) => deal(c, { amountSats: 33000, fees }) });
+  const m = mockClient({ targetSats: "33165", quote: { ...FQ, source_amount: "33400000", target_amount: "33330", net_target_amount: "33000" } }); const { c } = await ctx({ client: m.client, dealOf: (c) => deal(c, { amountSats: 33000, fees }) });
   const r = await es.fundStable(c, "e1", { from: "usdc" });
   assert.equal(r.swapPaysSats, 33165); assert.equal(r.fees.escrow.platformFeeSats, 332, "1% of 33,165 (not 0 for exactly 33,000)");
 });
