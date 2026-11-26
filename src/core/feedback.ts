@@ -19,7 +19,8 @@ export interface SubmitFeedbackOpts extends FeedbackInput { serverUrl: string; f
 
 /** What Mark attaches by default: version numbers and OS/arch only. */
 export function feedbackMeta() {
-  return { markVersion: MARK_VERSION.slice(0, 40), nodeVersion: process.version.slice(0, 40), platform: `${process.platform}/${process.arch}`.slice(0, 40) };
+  const cap = (v: string, k: "markVersion" | "nodeVersion" | "platform") => [...v].slice(0, FEEDBACK_LIMITS[k]).join("");
+  return { markVersion: cap(MARK_VERSION, "markVersion"), nodeVersion: cap(process.version, "nodeVersion"), platform: cap(`${process.platform}/${process.arch}`, "platform") };
 }
 
 /** Obvious secrets refused before anything is sent (a pasted error output or log can carry one). Not exhaustive: never paste keys. */
