@@ -58,7 +58,7 @@ async function main(): Promise<"keep" | void> {
       return void out(await uc.reputation(await openCtx(network, { escrowUrl, arbiterPubkey }), String(pos[1])));
     }
     case "feedback": {
-      // no Mark home is opened (no key is read or created): only the escrow server URL is resolved
+      // no key or wallet is opened or created: only the escrow server URL is resolved (config escrowUrl / MARK_ESCROW_URL)
       const a = feedbackArgs(pos, f); if (a instanceof MarkError) throw a;
       return void out(await submitFeedback({ ...a, serverUrl: feedbackServer(network, { server: a.server, escrowUrl }) }));
     }

@@ -1,7 +1,8 @@
 /** `mark feedback` / MCP `feedback`: send a bug report, feedback or a feature request to the escrow server's POST /feedback.
  *  What is sent: the message and the optional fields given, plus (unless --no-meta) Mark's version, the Node version and the
- *  platform. Never keys, the backup phrase, wallet files, balances, deal data, tokens or environment variables: this module reads
- *  none of them (no Mark home, no key is opened or created; the house header is never attached). */
+ *  platform. Never keys, the backup phrase, wallet files, balances, deal data, tokens or other environment variables: to find the
+ *  server it reads only the `escrowUrl` of this network's config file and `MARK_ESCROW_URL` (nothing else is read or sent; no key
+ *  or wallet is opened or created; the house header `MARK_HOUSE_KEY` is never read or attached). */
 import fs from "node:fs";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
 import { MarkError } from "../errors.js";
