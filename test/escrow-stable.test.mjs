@@ -1,4 +1,4 @@
-// 0.6.2: escrow with stablecoins at the edges (fund --from, approve/refund --payout-stable, claim-payout, quote --payout-stable).
+// 0.7.0: escrow with stablecoins at the edges (fund --from, approve/refund --payout-stable, claim-payout, quote --payout-stable).
 // The escrow API and the Satora SDK are mocked: no network, no money, nothing is ever sent.
 import test from "node:test"; import assert from "node:assert/strict";
 import fs from "node:fs"; import os from "node:os"; import path from "node:path";

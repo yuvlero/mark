@@ -1,4 +1,4 @@
-/** Escrow with stablecoins at the edges (Mark 0.6.2). The escrow itself stays 100% bitcoin (sats on Arkade); Mark wraps Satora's
+/** Escrow with stablecoins at the edges (Mark 0.7.0). The escrow itself stays 100% bitcoin (sats on Arkade); Mark wraps Satora's
  *  single-hop swaps around it:
  *  - fund --from usdc|usdt0|usdc-base: a swap from that stablecoin pays the deal's escrow address on Arkade (this Mark home holds
  *    the swap's keys and claims the sats into the escrow only while the deal still waits for funding);

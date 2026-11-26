@@ -342,7 +342,7 @@ Reading also refreshes funding: `created → funded` once the address holds `amo
   - The swap must be `pending` and its `source_amount` ≤ payee leg, within a small overpay tolerance (exact for lnaddr; otherwise `AMOUNT_MISMATCH`, `details.swapSourceSats/payeeLegSats/maxOverpaySats`).
   - The invoice must have more than 10 minutes left (`INVOICE_EXPIRED`).
   - The proposal pays the swap's VHTLC address.
-- **Stablecoin payouts** (`type: "stable"`, Mark 0.6.2+): the payee's Mark first creates a Satora **Arkade→stablecoin** swap (`direction: "arkade_to_evm"`) and keeps its claim key; the auth action is `propose:<kind>:swap:<swapId>`.
+- **Stablecoin payouts** (`type: "stable"`, Mark 0.7.0+): the payee's Mark first creates a Satora **Arkade→stablecoin** swap (`direction: "arkade_to_evm"`) and keeps its claim key; the auth action is `propose:<kind>:swap:<swapId>`.
   - The swap must be `pending`, its `source_amount` must equal the payee leg exactly (`AMOUNT_MISMATCH`), its `target_evm_address` must be `payout.address` (case-insensitive; `BAD_SWAP`), and its `btc_vhtlc_address` must be on this escrow's Arkade server (`BAD_DEST`).
   - Its `vhtlc_refund_locktime` must be at least 60 minutes away (`SWAP_EXPIRED`).
   - The proposal pays the swap's VHTLC address. After the payout tx, the payee's Mark claims the stablecoins (gasless): `mark escrow claim-payout <id>`.

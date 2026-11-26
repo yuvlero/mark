@@ -2,7 +2,7 @@
 
 All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-escrow. Dates are UTC+4 (Dubai). Versions follow semver; 0.x releases may change behaviour between minor versions.
 
-## [0.6.2] - 2026-11-26
+## [0.7.0] - 2026-11-26
 
 ### Added
 - **Escrow with stablecoins at the edges** (mainnet). The escrow itself stays bitcoin (sats on Arkade, same 2-of-3 contract, same fees); Mark wraps Satora's single-hop swaps around it. Fee for each swap: about 1% (Satora ~0.5% + Agent Escrow 0.5%) plus network fees; USDC on Base also pays Circle's CCTP fee.
