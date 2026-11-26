@@ -359,6 +359,16 @@ test("claim-payout / refund-payout: a submitted proposal without a payout swap i
     assert.equal(m.calls.claim.length + m.calls.refund.length, 0);
   }
 });
+test("refund-payout: a submitted invoice/lnaddr/ark proposal without a swap id never falls back to the local (later) swap", async () => {
+  for (const [payout, want] of [[{ type: "invoice", invoice: "lnbc1x" }, "ESCROW_BAD_RESPONSE"], [{ type: "lnaddr", address: "a@b.c" }, "ESCROW_BAD_RESPONSE"], [{ type: "ark", address: "ark1x" }, "NOT_FOUND"]]) {
+    const m = mockClient();
+    const { c } = await ctx({ client: m.client, dealOf: (c) => funded(c, { state: "released", proposals: [{ id: "p0", kind: "release", dest: VHTLC, signers: ["buyer", "seller"], sigs: [], submittedTxid: "ab".repeat(32) }] }),
+      routes: { "GET /escrows/e1/proposals/p0": async () => [200, { id: "p0", kind: "release", dest: VHTLC, signers: ["buyer", "seller"], sigs: [], payout, arkTx: psbtPaying(VHTLC, 5000), checkpoints: [] }] } });
+    c.index.set("e1", { payoutSwap: "po-later" });
+    assert.equal(await code(uc.refundPayout(c, "e1", payoutArk(9, "ark"))), want, payout.type);
+    assert.equal(m.calls.claim.length + m.calls.refund.length, 0, payout.type);
+  }
+});
 test("fund --from --wait: a deal that expired before the deposit is locked: the deposit is NOT locked into the swap", async () => {
   const m = mockClient({ statuses: ["pending"] }); const made = () => m.calls.createSwap.length > 0;
   const { c } = await ctx({ client: m.client, dealOf: (c) => deal(c, made() ? { state: "expired" } : {}), balances: [5085300n] });
