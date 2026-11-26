@@ -118,7 +118,7 @@ test("fund --from usdc: swap into the escrow address for at least the deal, with
 test("fund --from: a swap paying less than the deal (or too much, or on another Ark server) is refused before any deposit address", async () => {
   for (const [o, re] of [[{ targetSats: "4999" }, /both pay short \(4999, then 4999 sats/], [{ targetSats: "5200" }, /far more/], [{ serverPk: "02" + "7c".repeat(32) }, /not this deal's Arkade server|Ark/]]) {
     const m = mockClient(o); const { c } = await ctx({ client: m.client });
-    await assert.rejects(es.fundStable(c, "e1", { from: "usdc" }), (e) => e.code === "SWAP_FAILED" && re.test(e.message) && /(Do NOT|Nothing was shown or) deposit/.test(e.message), JSON.stringify(o));
+    await assert.rejects(es.fundStable(c, "e1", { from: "usdc" }), (e) => e.code === "SWAP_FAILED" && re.test(e.message) && /Do NOT deposit/.test(e.message), JSON.stringify(o));
     assert.equal(c.index.get("e1").fundStableSwap, undefined, "a refused swap is never recorded or shown");
   }
 });
@@ -160,6 +160,14 @@ test("fund --from: the retry re-checks the deal (funded / near expiry) and the b
   m2.client.getQuote = async (p) => { const q = await q0(p); return p.sourceChain !== "Arkade" && p.sourceAmount !== undefined && ++n > 1 ? { ...q, max_amount: 4000 } : q; };
   const { c: c2 } = await ctx({ client: m2.client });
   assert.equal(await code(es.fundStable(c2, "e1", { from: "usdc" })), "SWAP_AMOUNT"); assert.equal(m2.calls.createSwap.length, 1);
+  // near expiry by the second read: DEADLINE_TOO_CLOSE, no second swap, nothing recorded
+  let r3 = 0; const m3 = mockClient({ targetSeq: ["4990"] });
+  const { c: c3 } = await ctx({ client: m3.client, dealOf: (c) => deal(c, ++r3 > 1 ? { expiresAt: new Date(Date.now() + 600e3).toISOString() } : {}) });
+  assert.equal(await code(es.fundStable(c3, "e1", { from: "usdc" })), "DEADLINE_TOO_CLOSE"); assert.equal(m3.calls.createSwap.length, 1); assert.equal(c3.index.get("e1").fundStableSwap, undefined);
+  // the retried swap overpaying is refused like any other (not retried again, not recorded)
+  const m4 = mockClient({ targetSeq: ["4990", "5200"] }); const { c: c4 } = await ctx({ client: m4.client });
+  await assert.rejects(es.fundStable(c4, "e1", { from: "usdc" }), (e) => e.code === "SWAP_FAILED" && /far more/.test(e.message) && /Do NOT deposit/.test(e.message));
+  assert.equal(m4.calls.createSwap.length, 2); assert.equal(c4.index.get("e1").fundStableSwap, undefined);
 });
 
 test("fund --from: DEADLINE_TOO_CLOSE (30 min; 60 min for usdc-base), expired / funded deals, rail locks the other way, bad token", async () => {

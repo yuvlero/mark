@@ -130,14 +130,14 @@ export async function createFundingSwap(c: Ctx, s: Rev, e: Escrow, o: { from: Sw
   const bumped = (o.sourceUnits * BigInt(e.amountSats) * BigInt(10000 + FUND_STABLE_RETRY_BUFFER_BPS) + BigInt(first.targetSats) * 10000n - 1n) / (BigInt(first.targetSats) * 10000n);
   const cap = o.sourceUnits * BigInt(10000 + FUND_STABLE_RETRY_MAX_BPS) / 10000n;
   const tried = { firstSwap: first.id, firstPaysSats: first.targetSats, firstDepositUnits: String(o.sourceUnits) };
-  if (bumped > cap) throw new MarkError("SWAP_FAILED", `Satora's swap ${first.id} pays ${first.targetSats} sats, the deal needs ${e.amountSats}: covering that would raise the ${tokenLabel(t)} deposit by more than ${FUND_STABLE_RETRY_MAX_BPS / 100}%. Nothing was shown or deposited (the swap just expires). Retry later.`, { ...tried, neededUnits: String(bumped), maxUnits: String(cap) });
+  if (bumped > cap) throw new MarkError("SWAP_FAILED", `Satora's swap ${first.id} pays ${first.targetSats} sats, the deal needs ${e.amountSats}: covering that would raise the ${tokenLabel(t)} deposit by more than ${FUND_STABLE_RETRY_MAX_BPS / 100}%. Do NOT deposit anything: nothing was shown, and the swap just expires unfunded. Retry later.`, { ...tried, neededUnits: String(bumped), maxUnits: String(cap) });
   await o.beforeRetry();
   const q = await quoteDeposit(s, o.from, o.bps, bumped);
   depositInRange(t, q);
   try { return { x: await create(q, bumped), q, retry: { ...tried, depositUnits: String(bumped) } }; }
   catch (err) {
     const sh = shortOf(err); if (!sh) throw err;
-    throw new MarkError("SWAP_FAILED", `Satora's swaps for this deal both pay short (${first.targetSats}, then ${sh.targetSats} sats with a ${units(bumped, t.decimals)} ${t.symbol} deposit; the deal needs ${e.amountSats}). Nothing was shown or deposited (both just expire). Retry later.`, { ...tried, retrySwap: sh.id, retryPaysSats: sh.targetSats, depositUnits: String(bumped) });
+    throw new MarkError("SWAP_FAILED", `Satora's swaps for this deal both pay short (${first.targetSats}, then ${sh.targetSats} sats with a ${units(bumped, t.decimals)} ${t.symbol} deposit; the deal needs ${e.amountSats}). Do NOT deposit anything: nothing was shown, and both swaps just expire unfunded. Retry later.`, { ...tried, retrySwap: sh.id, retryPaysSats: sh.targetSats, depositUnits: String(bumped) });
   }
 }
 
