@@ -1,7 +1,7 @@
 /** What a swap from a stablecoin was confirmed with at create (kept in the Mark home), and the one check every later read of the
  *  swap goes through: status, fund (including the provider's own read under the deposit lock), claim, refund and recover. */
 import type { ReversePin, ReverseSwapInfo } from "./provider.js";
-import { SWAP_SOURCES, SWAP_TARGETS, sameHex } from "./stable.js";
+import { SWAP_SOURCES, SWAP_TARGETS, SWAP_MAX_SLIPPAGE_BPS, sameHex } from "./stable.js";
 import { reverseDir } from "./states.js";
 
 /** A well-formed record (read from disk): one payout target, the deposit terms, optional numeric fields. */
@@ -30,7 +30,11 @@ export function pinMismatch(pin: ReversePin, x: ReverseSwapInfo, myDeposit: stri
   if (pin.bridgeSourceChain !== undefined && !sameHex(pin.bridgeSourceToken, x.bridgeSourceToken)) return `deposit token ${x.bridgeSourceToken}`;
   if (x.gasless !== true) return "no longer a gasless swap";
   if (pin.evmChainId !== undefined ? x.evmChainId !== pin.evmChainId : strict) return `chain ${x.evmChainId}`;
-  if (pin.targetSats !== undefined ? x.targetSats !== pin.targetSats : strict) return `payout ${x.targetSats} sats, confirmed ${pin.targetSats ?? "unknown"}`;
+  // to Lightning the payout is the invoice (fixed). To Arkade Satora re-prices the payout at funding (live, 26 Nov 2026: 2002 sats
+  // confirmed, 2001 once the deposit was locked): a payout at most SWAP_MAX_SLIPPAGE_BPS below the confirmed one (or above it) is
+  // the same swap; callers with a floor (escrow funding: the deal amount) check it themselves.
+  const payoutOk = (t: number | undefined, p: number) => Number.isSafeInteger(t) && (ln ? t === p : t! * 10000 >= p * (10000 - SWAP_MAX_SLIPPAGE_BPS));
+  if (pin.targetSats !== undefined ? !payoutOk(x.targetSats, pin.targetSats) : strict) return `payout ${x.targetSats} sats, confirmed ${pin.targetSats ?? "unknown"}`;
   if (x.targetChain !== rail) return `payout chain ${x.targetChain}, confirmed ${rail}`;
   if (x.direction !== undefined || strict ? x.direction !== dir : false) return `direction ${x.direction}`;
   if (ln ? !sameHex(x.invoice, pin.invoice) : x.arkAddress !== pin.arkAddress) return ln ? "the invoice Satora pays is not the confirmed one" : `payout address ${x.arkAddress}, confirmed ${pin.arkAddress}`;

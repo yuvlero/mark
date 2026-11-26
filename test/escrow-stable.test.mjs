@@ -49,7 +49,7 @@ function mockClient(o = {}) {
       if (id === "po-1") return { ...stored[id].response, status: o.payStatus ?? "pending", ...(o.payRead ?? {}) };
       if (stored[id]?.fresh) { stored[id].fresh = false; return stored[id].response; }
       const s = statuses.length > 1 ? statuses.shift() : statuses[0]; const base = stored[id]?.response ?? {};
-      const r = { ...base, id, status: s, ...(s !== "pending" && !o.noFundTx ? { evm_fund_txid: "0xfund" } : {}) }; if (stored[id]) stored[id].response = r; return r;
+      const r = { ...base, id, status: s, ...(s !== "pending" && !o.noFundTx ? { evm_fund_txid: "0xfund" } : {}), ...(s !== "pending" && o.repriceTo ? { target_amount: o.repriceTo } : {}) }; if (stored[id]) stored[id].response = r; return r;
     },
     getStoredSwap: async (id) => stored[id] ?? null,
     swapStorage: { getAll: async () => Object.values(stored) },
@@ -386,6 +386,17 @@ test("refund-payout: a submitted invoice/lnaddr/ark proposal without a swap id n
     c.index.set("e1", { payoutSwap: "po-later" });
     assert.equal(await code(uc.refundPayout(c, "e1", payoutArk(9, "ark"))), want, payout.type);
     assert.equal(m.calls.claim.length + m.calls.refund.length, 0, payout.type);
+  }
+});
+test("fund --from --wait: Satora re-prices the payout at funding: a small drop still above the deal is claimed; below the deal it is NOT claimed", async () => {
+  for (const [to, claimed] of [["5010", true], ["4990", false]]) {
+    const m = mockClient({ statuses: ["pending", "clientfunded", "serverfunded"], repriceTo: to }); let funded = false;
+    const { c } = await ctx({ client: m.client, dealOf: (c) => deal(c, funded ? { state: "funded", funding: { outpoint: "ab:0", amount: Number(to) } } : {}),
+      routes: { "POST /escrows/e1/funding-ark": async () => [200, { escrowId: "e1", recorded: true, rail: "lightning" }] }, balances: [5085300n] });
+    const orig = m.client.claimArkade; m.client.claimArkade = async (...a) => { funded = true; return orig(...a); };
+    const r = await es.fundStable(c, "e1", { from: "usdc", wait: true, pollMs: 1, timeoutSec: 5, onInstructions: () => {} });
+    assert.equal(m.calls.claimArkade.length, claimed ? 1 : 0, to); assert.equal(r.funded, claimed, to);
+    if (!claimed) assert.match(r.note, /less than the deal's 5000: NOT claimed/);
   }
 });
 test("fund --from --wait: a deal that expired before the deposit is locked: the deposit is NOT locked into the swap", async () => {

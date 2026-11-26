@@ -180,6 +180,9 @@ export async function fundStable(c: Ctx, id: string, o: FundStableOpts) {
     if (now_.state === "expired") return `the deal expired before the swap paid out: NOT claimed into the escrow. The sats stay in the swap; Satora refunds the swap after its timelock, then: ${mk()} swap refund ${swapId} and ${mk()} swap recover ${swapId} --to <your 0x address>.`;
     if (FUNDED_STATES.has(now_.state)) return `the deal is already funded (another payment): NOT claimed into the escrow. Get the stablecoins back after the swap's timelock: ${mk()} swap refund ${swapId}, then ${mk()} swap recover ${swapId} --to <your 0x address>.`;
     if (now_.state !== "created") return `the deal is ${now_.state}: NOT claimed into the escrow. Check ${mk()} escrow status ${id}.`;
+    // Satora may re-price an Arkade payout at funding (the swap check allows 1% below what was confirmed): it must still cover the deal
+    let sw: ReverseSwapInfo; try { sw = await s.getReverse(swapId); } catch { return "could not read the funding swap from Satora just now, so nothing was claimed; run the same command again."; }
+    if (!Number.isSafeInteger(sw.targetSats) || sw.targetSats! < now_.amountSats) return `the swap now pays ${sw.targetSats} sats, less than the deal's ${now_.amountSats}: NOT claimed into the escrow (it would not fund the deal). Get the stablecoins back after the swap's timelock: ${mk()} swap refund ${swapId}, then ${mk()} swap recover ${swapId} --to <your 0x address>.`;
     return undefined;
   };
   const w: any = await waitReverse(s, swapId, { timeoutSec: o.timeoutSec ?? 1800, pollMs: o.pollMs, claimGuard: guard, retryHint: `${mk()} escrow fund ${id} --from ${from} --wait` });

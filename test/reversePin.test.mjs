@@ -21,6 +21,13 @@ test("pinMismatch strict vs lenient: unknown direction, or a record without chai
   assert.equal(pinMismatch(oldPin, x, DEP, false), undefined); assert.match(pinMismatch(oldPin, x, DEP, true), /chain|payout/);
   assert.match(pinMismatch({ ...pin, arkAddress: "ark1x" }, x, DEP, false), /single payout target/);
 });
+test("pinMismatch to Arkade: Satora re-prices the payout at funding; up to 1% below (or above) is the same swap, more is not; Lightning stays exact", () => {
+  const ap = { arkAddress: "ark1esc", depositAddress: DEP, tokenContract: USDC, sourceUnits: "1235858", targetSats: 2002, evmChainId: 42161 };
+  const ax = { depositAddress: DEP, tokenContract: USDC, sourceUnits: "1235858", gasless: true, targetSats: 2001, evmChainId: 42161, targetChain: "Arkade", direction: "evm_to_arkade", arkAddress: "ark1esc" };
+  assert.equal(pinMismatch(ap, ax, DEP, true), undefined, "2001 of 2002 (live)"); assert.equal(pinMismatch(ap, { ...ax, targetSats: 2050 }, DEP, true), undefined);
+  assert.equal(pinMismatch(ap, { ...ax, targetSats: 1982 }, DEP, true), undefined, "exactly 1% below"); assert.match(pinMismatch(ap, { ...ax, targetSats: 1981 }, DEP, true), /payout 1981 sats/);
+  assert.match(pinMismatch(pin, { ...x, targetSats: 2419 }, DEP, true), /payout 2419 sats/, "Lightning: exact");
+});
 test("validPin: needs the deposit terms and exactly one payout target", () => {
   assert.ok(validPin(pin)); assert.ok(!validPin({ depositAddress: DEP })); assert.ok(!validPin({ ...pin, arkAddress: "ark1x" }));
   assert.ok(!validPin({ ...pin, sourceUnits: "1.5" })); assert.ok(!validPin({ ...pin, targetSats: "2420" })); assert.ok(!validPin(null));
