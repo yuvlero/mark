@@ -103,8 +103,12 @@ export async function fundStable(c: Ctx, id: string, o: FundStableOpts) {
     if (t.bridge) { readerOf(s, t); if (!s.cctpBurn) throw new MarkError("BAD_CONFIG", `swap provider ${s.name} cannot track a ${t.bridge.via} burn; not creating a swap from ${tokenLabel(t)}`); }
     const r = await withFundLock(c, id, async () => {
       const cur = c.index.get(id);
-      if (cur.fundStableSwap && cur.fundStableSwap !== l.fundStableSwap) return { reuse: cur.fundStableSwap };
+      // rail and token are re-checked under the lock BEFORE reusing a swap another process just created
       await otherRail(cur);
+      if (cur.fundStableSwap && cur.fundStableSwap !== l.fundStableSwap) {
+        if (cur.fundStableFrom && cur.fundStableFrom !== from) throw new MarkError("FUNDING_IN_PROGRESS", `a stablecoin funding swap ${cur.fundStableSwap} from ${cur.fundStableFrom} was just created for this deal: continue with ${mk()} escrow fund ${id} --from ${cur.fundStableFrom}`, { swapId: cur.fundStableSwap, from: cur.fundStableFrom });
+        return { reuse: cur.fundStableSwap };
+      }
       const bps = checkMarkupBps(SWAP_MARKUP_BPS);
       const [q, g] = await Promise.all([s.quoteReverse({ from, to: "arkade", bps, targetSats: e.amountSats }), gasOf(s, t)]);
       if (!/^\d+$/.test(String(q?.source_amount ?? "")) || BigInt(q.source_amount) <= 0n || !(Number(q?.net_target_amount) > 0)) throw new MarkError("QUOTE_UNAVAILABLE", "Satora's quote has no amounts; nothing was created. Retry later.");

@@ -707,13 +707,14 @@ export const refund = (c: Ctx, id: string, o: PayoutOpts & { with?: "counterpart
 
 /** Refund a failed payout swap (Satora Arkade VHTLC: Lightning or stablecoin payout) to an Ark address, after its timelock. */
 export async function refundPayout(c: Ctx, id: string, to?: string) {
-  const l = c.index.get(requireId(id)); if (!l.payoutSwap) throw new MarkError("NOT_FOUND", "no payout swap recorded for this escrow");
+  const l = c.index.get(requireId(id));
   const raw = to ?? c.cfg.refundArkAddress; if (!raw) throw new MarkError("BAD_DEST", `--to <ark address> (or config refundArkAddress) required: an address from an Arkade wallet on ${c.cfg.arkServerUrl}`);
   let e: Escrow | null = null; try { e = await c.api.get(id); } catch { e = null; }
   const dest = await arkDest(c, raw, to ? "--to" : "config refundArkAddress", e);
   // the swap the payout tx actually funded is the one in the submitted proposal (a later proposal may have created another)
   let swapId = l.payoutSwap; const sub = e?.proposals.find((p) => p.submittedTxid);
   if (sub) { try { const po = (await c.api.proposal(id, sub.id)).payout; if (po?.swapId) swapId = po.swapId; } catch { /* keep the recorded one */ } }
+  if (!swapId) throw new MarkError("NOT_FOUND", "no payout swap recorded for this escrow (and no submitted proposal with a payout swap)");
   return { swapId, ...(await (await c.swaps()).refund(swapId, dest)) };
 }
 

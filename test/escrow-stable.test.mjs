@@ -292,3 +292,21 @@ test("approve --payout-stable: a refused propose leaves the recorded payout swap
   const r = await es.claimPayout(c2, "e1", { pollMs: 1 }); assert.equal(r.payoutSwap, "po-1"); assert.equal(m2.calls.claim[0], "po-1"); assert.equal(r.payoutStable, "usdc");
   const back = await uc.refundPayout(c2, "e1", payoutArk(9, "ark")); assert.equal(back.swapId, "po-1"); assert.equal(m2.calls.refund[0].id, "po-1");
 });
+test("fund --from: under the lock, a swap another process just created is reused only for the same token and rail", async () => {
+  const m = mockClient(); const { c } = await ctx({ client: m.client });
+  // another process created a USDC swap after this one read the index: a USDT0 request must not continue it
+  const realGet = c.index.get.bind(c.index); let first = true;
+  c.index.get = (id) => { const v = realGet(id); if (first) { first = false; return v; } return { ...v, fundStableSwap: "rv-x", fundStableFrom: "usdc", fundRail: "stable" }; };
+  await assert.rejects(es.fundStable(c, "e1", { from: "usdt0" }), (e) => e.code === "FUNDING_IN_PROGRESS" && /--from usdc/.test(e.message));
+  // ... and a switch to Ark in the meantime refuses instead of reusing
+  first = true; c.index.get = (id) => { const v = realGet(id); if (first) { first = false; return v; } return { ...v, fundStableSwap: "rv-x", fundStableFrom: "usdc", fundRail: "ark", fundArkAt: "now" }; };
+  await assert.rejects(es.fundStable(c, "e1", { from: "usdc" }), (e) => e.code === "FUNDING_IN_PROGRESS" && /direct Ark/.test(e.message));
+  assert.equal(m.calls.createSwap.length, 0);
+});
+test("refund-payout without a local payout record: refunds the submitted proposal's swap", async () => {
+  const m = mockClient({ payStatus: "expired" }); await m.client.createSwap({ source: { chain: "Arkade", tokenId: "btc" }, target: { chain: "42161", tokenId: "x" }, sourceAmount: 5000, targetAddress: ME });
+  const { c } = await ctx({ client: m.client, dealOf: (c) => funded(c, { state: "released", proposals: [{ id: "p0", kind: "release", dest: VHTLC, signers: ["buyer", "seller"], sigs: ["buyer", "seller"], submittedTxid: "ab".repeat(32) }] }),
+    routes: { "GET /escrows/e1/proposals/p0": async () => [200, { id: "p0", kind: "release", dest: VHTLC, signers: ["buyer", "seller"], sigs: [], payout: { type: "stable", swapId: "po-1", address: ME, token: "usdc" }, arkTx: psbtPaying(VHTLC, 5000), checkpoints: [] }] } });
+  const r = await uc.refundPayout(c, "e1", payoutArk(9, "ark")); assert.equal(r.swapId, "po-1"); assert.equal(m.calls.refund[0].id, "po-1");
+  const { c: c2 } = await ctx({ dealOf: (c) => funded(c) }); assert.equal(await code(uc.refundPayout(c2, "e1", payoutArk(9, "ark"))), "NOT_FOUND");
+});

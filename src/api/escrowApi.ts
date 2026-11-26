@@ -150,9 +150,11 @@ export class EscrowApi {
   proposal(id: string, pid: string) { return this.call<ProposalFull>("GET", `/escrows/${enc(id)}/proposals/${enc(pid)}`); }
   propose(id: string, b: { kind: "release" | "refund"; payout: Payout; signers: Party[]; preimage?: string; auth: Auth }) { return this.call<{ escrow: Escrow; proposal: ProposalSummary }>("POST", `/escrows/${enc(id)}/proposals`, b); }
   sign(id: string, pid: string, b: { party: "buyer" | "seller"; arkTx: string; checkpoints: string[] }) { return this.call<{ escrow: Escrow; proposal: ProposalSummary }>("POST", `/escrows/${enc(id)}/proposals/${enc(pid)}/signatures`, b); }
-  /** Report the Satora LN->Arkade funding swap so the server can record funding fees (server verifies it with Satora). */
-  /** Report a direct Ark funding (no swap) so the server records the funding rail (ark, fee 0). Older servers: 404 NOT_FOUND. */
+  /** Nudge the server to classify this deal's funding (POST .../funding-ark reads no body; the server proves the rail from the
+   *  funding transaction): a direct Ark payment is recorded as rail ark (fee 0); a swap's VHTLC claim into the escrow (Lightning,
+   *  or stablecoin funding via fund --from) as rail lightning / source vhtlc_claim with fees unknown. Older servers: 404 NOT_FOUND. */
   reportArkFunding(id: string) { return this.call<{ escrowId: string; recorded: boolean; rail: string; reason?: string }>("POST", `/escrows/${enc(id)}/funding-ark`, {}); }
+  /** Report the Satora LN->Arkade funding swap so the server can record funding fees (server verifies it with Satora). */
   reportFundingSwap(id: string, swapId: string) { return this.call<{ escrowId: string; recorded: boolean }>("POST", `/escrows/${enc(id)}/funding-swap`, { swapId }); }
   accept(id: string, b: { party: "buyer" | "seller"; sig: string; termsHash: string }) { return this.call<Escrow>("POST", `/escrows/${enc(id)}/accept`, b); }
   evidence(id: string, b: { party: "buyer" | "seller"; ts: number; sig: string; text: string; sha256?: string; url?: string }) { return this.call<Escrow>("POST", `/escrows/${enc(id)}/evidence`, b); }
