@@ -16,6 +16,10 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 ### Notes
 - `create` stays in sats (no `--usd` in this release); quotes, funding and payouts show live USD estimates.
 - Funding through a swap is recorded by the server like a Lightning funding through a swap.
+- Live-tested on mainnet before release (26 Nov 2026), which fixed three funding details:
+  - The deposit is priced from Satora's quote for that deposit, because a quote for a sats amount includes the swap fee in that amount. Before the fix, a 2,000-sat deal got a swap paying 1,977 sats, and Mark refused it before any deposit.
+  - USDC on Base gets a 1.5% deposit cushion, because Satora's bridged swap paid about 0.6% below its own quote. Arbitrum USDC and USDT0 keep 0.5%.
+  - Satora can lower an Arkade payout slightly once the deposit is locked (live: 2,002 to 2,001 sats). Mark accepts a drop of up to 1% and claims into the escrow only while the swap still covers the deal.
 
 ## [0.6.1] - 2026-11-25
 
