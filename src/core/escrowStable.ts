@@ -127,6 +127,7 @@ export async function fundStable(c: Ctx, id: string, o: FundStableOpts) {
         src = (src * BigInt(e.amountSats) + BigInt(net) - 1n) / BigInt(net) + 1n;
       }
       needBridgeFee(t, qs);
+      if (!inRange(qs)) throw new MarkError("SWAP_AMOUNT", `Satora accepts ${qs.min_amount}..${qs.max_amount} sats for ${tokenLabel(t)} -> Arkade; this deal needs a ${tokenLabel(t)} deposit outside that range. Use Lightning or Ark.`, { minSats: qs.min_amount, maxSats: qs.max_amount });
       // the cushion: a price tick between this quote and the create must still pay at least the deal amount
       const sourceUnits = (src * BigInt(10000 + FUND_STABLE_CUSHION_BPS) + 9999n) / 10000n;
       const p: Parsed = { from, to: "arkade", bps, arkAddress: e.address, sourceUnits, token: t } as Parsed;
