@@ -15,7 +15,7 @@ export function validPin(v: unknown): boolean {
 }
 
 /** Why the swap no longer matches its record and this home's deposit address, or undefined. strict (before signing or claiming):
- *  the direction, chain and payout sats must be known and equal; else a field Satora did not send, or a record from before it
+ *  the direction, chain and payout sats must be known and match (payout sats: equal to Lightning; to Arkade at most 1% below the confirmed sats); else a field Satora did not send, or a record from before it
  *  pinned that field, is not held against the swap. */
 export function pinMismatch(pin: ReversePin, x: ReverseSwapInfo, myDeposit: string, strict: boolean): string | undefined {
   const ln = typeof pin.invoice === "string", rail = ln ? SWAP_SOURCES.lightning.chain : SWAP_SOURCES.arkade.chain;
@@ -33,7 +33,7 @@ export function pinMismatch(pin: ReversePin, x: ReverseSwapInfo, myDeposit: stri
   // to Lightning the payout is the invoice (fixed). To Arkade Satora re-prices the payout at funding (live, 26 Nov 2026: 2002 sats
   // confirmed, 2001 once the deposit was locked): a payout at most SWAP_MAX_SLIPPAGE_BPS below the confirmed one (or above it) is
   // the same swap; callers with a floor (escrow funding: the deal amount) check it themselves.
-  const payoutOk = (t: number | undefined, p: number) => Number.isSafeInteger(t) && (ln ? t === p : t! * 10000 >= p * (10000 - SWAP_MAX_SLIPPAGE_BPS));
+  const payoutOk = (t: number | undefined, p: number) => Number.isSafeInteger(t) && (ln ? t === p : BigInt(t!) * 10000n >= BigInt(p) * BigInt(10000 - SWAP_MAX_SLIPPAGE_BPS));
   if (pin.targetSats !== undefined ? !payoutOk(x.targetSats, pin.targetSats) : strict) return `payout ${x.targetSats} sats, confirmed ${pin.targetSats ?? "unknown"}`;
   if (x.targetChain !== rail) return `payout chain ${x.targetChain}, confirmed ${rail}`;
   if (x.direction !== undefined || strict ? x.direction !== dir : false) return `direction ${x.direction}`;
