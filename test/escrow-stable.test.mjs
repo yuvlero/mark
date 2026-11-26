@@ -40,7 +40,7 @@ function mockClient(o = {}) {
       }
       const r = { id: `rv-${calls.createSwap.filter((x) => x.source.chain !== "Arkade").length}`, status: "pending", gasless: true, client_evm_address: DEP, source_amount: p.sourceAmount,
         source_token: { chain: p.source.chain, token_id: p.source.tokenId, symbol: "USDC", decimals: 6 }, evm_chain_id: 42161,
-        target_token: { chain: p.target.chain, token_id: "btc", symbol: "BTC", decimals: 8 }, target_amount: o.targetSats ?? "5020",
+        target_token: { chain: p.target.chain, token_id: "btc", symbol: "BTC", decimals: 8 }, target_amount: (o.targetSeq ? o.targetSeq.shift() : undefined) ?? o.targetSats ?? "5020",
         target_arkade_address: p.targetAddress, arkade_server_pk: o.serverPk ?? "02" + MOCK_SERVER_PK };
       stored[r.id] = { swapId: r.id, fresh: true, response: { ...r, direction: "evm_to_arkade" } }; return { response: r };
     },
@@ -116,11 +116,50 @@ test("fund --from usdc: swap into the escrow address for at least the deal, with
 });
 
 test("fund --from: a swap paying less than the deal (or too much, or on another Ark server) is refused before any deposit address", async () => {
-  for (const [o, re] of [[{ targetSats: "4999" }, /pays 4999 sats, the deal needs 5000/], [{ targetSats: "5200" }, /far more/], [{ serverPk: "02" + "7c".repeat(32) }, /not this deal's Arkade server|Ark/]]) {
+  for (const [o, re] of [[{ targetSats: "4999" }, /both pay short \(4999, then 4999 sats/], [{ targetSats: "5200" }, /far more/], [{ serverPk: "02" + "7c".repeat(32) }, /not this deal's Arkade server|Ark/]]) {
     const m = mockClient(o); const { c } = await ctx({ client: m.client });
-    await assert.rejects(es.fundStable(c, "e1", { from: "usdc" }), (e) => e.code === "SWAP_FAILED" && re.test(e.message) && /Do NOT deposit/.test(e.message), JSON.stringify(o));
+    await assert.rejects(es.fundStable(c, "e1", { from: "usdc" }), (e) => e.code === "SWAP_FAILED" && re.test(e.message) && /(Do NOT|Nothing was shown or) deposit/.test(e.message), JSON.stringify(o));
     assert.equal(c.index.get("e1").fundStableSwap, undefined, "a refused swap is never recorded or shown");
   }
+});
+
+test("fund --from: a created swap paying short (live: 1197 of 1200) is dropped and retried ONCE with the deposit bumped by the shortfall; only the second is pinned", async () => {
+  const m = mockClient({ targetSeq: ["4987", "5004"] }); const { c, f } = await ctx({ client: m.client });
+  const r = await es.fundStable(c, "e1", { from: "usdc" });
+  assert.equal(m.calls.createSwap.length, 2, "exactly one retry");
+  const d0 = BigInt(m.calls.createSwap[0].sourceAmount), d1 = BigInt(m.calls.createSwap[1].sourceAmount);
+  assert.equal(d1, (d0 * 5000n * 10030n + 4987n * 10000n - 1n) / (4987n * 10000n), "deposit x deal/paid x 1.003, rounded up");
+  assert.ok(d1 > d0 && d1 <= d0 * 105n / 100n);
+  assert.ok(m.calls.getQuote.some((q) => q.sourceAmount !== undefined && BigInt(q.sourceAmount) === d1), "the bumped deposit is re-quoted before the retry");
+  assert.equal(r.swapId, "rv-2"); assert.equal(r.swapPaysSats, 5004); assert.equal(r.newSwap, true);
+  assert.deepEqual(r.swapRetry, { firstSwap: "rv-1", firstPaysSats: 4987, firstDepositUnits: String(d0), depositUnits: String(d1) });
+  assert.equal(c.index.get("e1").fundStableSwap, "rv-2", "only the second swap is the deal's funding swap");
+  assert.equal(f.calls.filter((x) => x.key === "GET /escrows/e1").length >= 2, true, "the deal is re-read before the retry");
+  // the dropped first swap was never pinned: it does not block the deal's own swap (or another create) as an open deposit
+  const again = await es.fundStable(c, "e1", { from: "usdc" }); assert.equal(again.swapId, "rv-2"); assert.equal(m.calls.createSwap.length, 2);
+});
+test("fund --from: both swaps short -> SWAP_FAILED after ONE retry; a shortfall over the 5% cap -> SWAP_FAILED without retrying", async () => {
+  const m = mockClient({ targetSeq: ["4990", "4998"] }); const { c } = await ctx({ client: m.client });
+  await assert.rejects(es.fundStable(c, "e1", { from: "usdc" }), (e) => e.code === "SWAP_FAILED" && /both pay short \(4990, then 4998 sats/.test(e.message) && e.details.retrySwap === "rv-2");
+  assert.equal(m.calls.createSwap.length, 2, "never a third create"); assert.equal(c.index.get("e1").fundStableSwap, undefined);
+  // (a swap more than 1% below its quote is refused outright; the cap guards a quote that itself sits below the deal)
+  const m2 = mockClient({ targetSeq: ["4700"] }); const { c: c2 } = await ctx({ client: m2.client });
+  const s2 = await (await import("../dist/src/core/swapReverse.js")).reverse(c2); const e2 = await c2.api.get("e1"); let rechecked = 0;
+  await assert.rejects(es.createFundingSwap(c2, s2, e2, { from: "usdc", bps: 50, q: { ...FQ, net_target_amount: "4740" }, sourceUnits: 5085300n, beforeRetry: async () => { rechecked++; } }),
+    (e) => e.code === "SWAP_FAILED" && /more than 5%/.test(e.message) && e.details.firstSwap === "rv-1");
+  assert.equal(m2.calls.createSwap.length, 1, "no retry past the cap"); assert.equal(rechecked, 0); assert.equal(c2.index.get("e1").fundStableSwap, undefined);
+});
+test("fund --from: the retry re-checks the deal (funded / near expiry) and the bumped deposit's range before a second create", async () => {
+  // funded meanwhile: the second read of the deal says funded -> no second swap
+  let reads = 0; const m = mockClient({ targetSeq: ["4990"] });
+  const { c } = await ctx({ client: m.client, dealOf: (c) => deal(c, ++reads > 1 ? { state: "funded" } : {}) });
+  const n0 = () => m.calls.createSwap.length;
+  await assert.rejects(es.fundStable(c, "e1", { from: "usdc" }), (e) => e.code === "FUNDING_IN_PROGRESS" && /funded now/.test(e.message)); assert.equal(n0(), 1);
+  // the bumped deposit's quote above Satora's max: SWAP_AMOUNT, no second swap
+  const m2 = mockClient({ targetSeq: ["4990"] }); const q0 = m2.client.getQuote; let n = 0;
+  m2.client.getQuote = async (p) => { const q = await q0(p); return p.sourceChain !== "Arkade" && p.sourceAmount !== undefined && ++n > 1 ? { ...q, max_amount: 4000 } : q; };
+  const { c: c2 } = await ctx({ client: m2.client });
+  assert.equal(await code(es.fundStable(c2, "e1", { from: "usdc" })), "SWAP_AMOUNT"); assert.equal(m2.calls.createSwap.length, 1);
 });
 
 test("fund --from: DEADLINE_TOO_CLOSE (30 min; 60 min for usdc-base), expired / funded deals, rail locks the other way, bad token", async () => {

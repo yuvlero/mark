@@ -71,16 +71,74 @@ export async function priceStableDeposit(s: Rev, from: SwapStable, dealSats: num
   if (!inRange(q)) throw new MarkError("SWAP_AMOUNT", `Satora accepts ${q.min_amount}..${q.max_amount} sats for ${tokenLabel(t)} -> Arkade; this deal is ${dealSats} sats. Use Lightning or Ark.`, { minSats: q.min_amount, maxSats: q.max_amount });
   let src = BigInt(q.source_amount), qs: any;
   for (let i = 0; ; i++) {
-    qs = await s.quoteReverse({ from, to: "arkade", bps, sourceUnits: src });
-    const net = Number(qs?.net_target_amount);
-    if (!Number.isSafeInteger(net) || net <= 0) throw new MarkError("QUOTE_UNAVAILABLE", "Satora's quote has no payout amount; nothing was created. Retry later.");
+    qs = await quoteDeposit(s, from, bps, src);
+    const net = Number(qs.net_target_amount);
     if (net >= dealSats) break;
     if (i >= 2) throw new MarkError("QUOTE_UNAVAILABLE", `Satora's quote for a ${tokenLabel(t)} deposit does not reach the deal's ${dealSats} sats (${net} net); nothing was created. Retry later.`, { netSats: net, dealSats });
     src = (src * BigInt(dealSats) + BigInt(net) - 1n) / BigInt(net) + 1n;
   }
-  needBridgeFee(t, qs);
-  if (!inRange(qs)) throw new MarkError("SWAP_AMOUNT", `Satora accepts ${qs.min_amount}..${qs.max_amount} sats for ${tokenLabel(t)} -> Arkade; this deal needs a ${tokenLabel(t)} deposit outside that range. Use Lightning or Ark.`, { minSats: qs.min_amount, maxSats: qs.max_amount });
+  depositInRange(t, qs);
   return { qs, sourceUnits: (src * BigInt(10000 + (t.bridge ? FUND_STABLE_BRIDGED_CUSHION_BPS : FUND_STABLE_CUSHION_BPS)) + 9999n) / 10000n };
+}
+
+/** Satora's quote for an exact stablecoin deposit, with a positive whole payout. */
+async function quoteDeposit(s: Rev, from: SwapStable, bps: number, sourceUnits: bigint): Promise<any> {
+  const q = await s.quoteReverse({ from, to: "arkade", bps, sourceUnits });
+  const net = Number(q?.net_target_amount);
+  if (!Number.isSafeInteger(net) || net <= 0) throw new MarkError("QUOTE_UNAVAILABLE", "Satora's quote has no payout amount; nothing was created. Retry later.");
+  return q;
+}
+
+/** The deposit's quote must leave room for the bridge fee and stay inside Satora's pair limits. */
+function depositInRange(t: StableToken, q: any) {
+  needBridgeFee(t, q);
+  if (!inRange(q)) throw new MarkError("SWAP_AMOUNT", `Satora accepts ${q.min_amount}..${q.max_amount} sats for ${tokenLabel(t)} -> Arkade; this deal needs a ${tokenLabel(t)} deposit outside that range. Use Lightning or Ark.`, { minSats: q.min_amount, maxSats: q.max_amount });
+}
+
+/** Satora's created swap can pay a little less than its own quote for the same deposit (live, 26 Nov 2026: USDT0 deposit quoted
+ *  1206 sats, the swap paid 1197). Then Mark drops that swap (never shown, it expires unfunded) and creates ONE more, with the
+ *  deposit scaled by the exact shortfall plus this buffer; never more than FUND_STABLE_RETRY_MAX_BPS above the priced deposit. */
+export const FUND_STABLE_RETRY_BUFFER_BPS = 30, FUND_STABLE_RETRY_MAX_BPS = 500;
+
+/** Why a created swap cannot fund this deal (undefined = it can); short = it pays fewer sats than the deal needs. */
+function fundingProblem(e: Escrow, x: ReverseSwapCreated): { why: string; short?: true } | undefined {
+  if (!Number.isSafeInteger(x.targetSats) || x.targetSats! <= 0) return { why: `it pays ${x.targetSats} sats` };
+  if (x.targetSats! < e.amountSats) return { why: `it pays ${x.targetSats} sats, the deal needs ${e.amountSats}`, short: true };
+  if (x.targetSats! > Math.ceil(e.amountSats * 1.03)) return { why: `it pays ${x.targetSats} sats, far more than the deal's ${e.amountSats}` };
+  const pk = String((x.raw as any)?.arkade_server_pk ?? "").toLowerCase().slice(-64);
+  if (!e.serverPubkey || pk !== String(e.serverPubkey).toLowerCase().slice(-64)) return { why: `Satora's Arkade server key ${pk || "(none)"} is not this deal's Arkade server` };
+}
+
+const notFunding = (x: ReverseSwapCreated, why: string, details: Record<string, unknown> = {}) =>
+  new MarkError("SWAP_FAILED", `Satora's swap does not fund this deal (${why}). Do NOT deposit anything; nothing is lost while it is unfunded (it just expires).`, { id: x?.id, ...details });
+
+export interface FundingSwapRetry { firstSwap: string; firstPaysSats: number; firstDepositUnits: string; depositUnits: string }
+
+/** Create (and pin) the swap that funds deal `e` from `from`, depositing `sourceUnits` priced by quote `q`. A swap that pays short
+ *  is retried once (see FUND_STABLE_RETRY_BUFFER_BPS); `beforeRetry` re-checks the deal still waits for this funding. */
+export async function createFundingSwap(c: Ctx, s: Rev, e: Escrow, o: { from: SwapStable; bps: number; q: any; sourceUnits: bigint; beforeRetry: () => Promise<void> }):
+  Promise<{ x: ReverseSwapCreated; q: any; retry?: FundingSwapRetry }> {
+  const t = SWAP_TARGETS[o.from];
+  const create = (q: any, sourceUnits: bigint) => createPinnedReverse(c, s, { from: o.from, to: "arkade", bps: o.bps, arkAddress: e.address, sourceUnits, token: t } as Parsed, q, (x) => {
+    const p = fundingProblem(e, x);
+    if (p) throw notFunding(x, p.why, p.short ? { short: true, targetSats: x.targetSats } : {});
+  });
+  const shortOf = (err: unknown) => err instanceof MarkError && (err.details as any)?.short === true ? (err.details as any) as { id: string; targetSats: number } : undefined;
+  let first: { id: string; targetSats: number };
+  try { return { x: await create(o.q, o.sourceUnits), q: o.q }; }
+  catch (err) { const sh = shortOf(err); if (!sh) throw err; first = sh; }
+  const bumped = (o.sourceUnits * BigInt(e.amountSats) * BigInt(10000 + FUND_STABLE_RETRY_BUFFER_BPS) + BigInt(first.targetSats) * 10000n - 1n) / (BigInt(first.targetSats) * 10000n);
+  const cap = o.sourceUnits * BigInt(10000 + FUND_STABLE_RETRY_MAX_BPS) / 10000n;
+  const tried = { firstSwap: first.id, firstPaysSats: first.targetSats, firstDepositUnits: String(o.sourceUnits) };
+  if (bumped > cap) throw new MarkError("SWAP_FAILED", `Satora's swap ${first.id} pays ${first.targetSats} sats, the deal needs ${e.amountSats}: covering that would raise the ${tokenLabel(t)} deposit by more than ${FUND_STABLE_RETRY_MAX_BPS / 100}%. Nothing was shown or deposited (the swap just expires). Retry later.`, { ...tried, neededUnits: String(bumped), maxUnits: String(cap) });
+  await o.beforeRetry();
+  const q = await quoteDeposit(s, o.from, o.bps, bumped);
+  depositInRange(t, q);
+  try { return { x: await create(q, bumped), q, retry: { ...tried, depositUnits: String(bumped) } }; }
+  catch (err) {
+    const sh = shortOf(err); if (!sh) throw err;
+    throw new MarkError("SWAP_FAILED", `Satora's swaps for this deal both pay short (${first.targetSats}, then ${sh.targetSats} sats with a ${units(bumped, t.decimals)} ${t.symbol} deposit; the deal needs ${e.amountSats}). Nothing was shown or deposited (both just expire). Retry later.`, { ...tried, retrySwap: sh.id, retryPaysSats: sh.targetSats, depositUnits: String(bumped) });
+  }
 }
 
 // ---------- fund --from usdc|usdt0|usdc-base ----------
@@ -124,7 +182,7 @@ export async function fundStable(c: Ctx, id: string, o: FundStableOpts) {
   const fresh = !existing ? !l.fundStableSwap : existing.status === "expired" && !existing.fundTx;
   // another token while this deal's swap can still take (or holds) a deposit: refused (an expired unfunded one is replaced)
   if (l.fundStableSwap && l.fundStableFrom && l.fundStableFrom !== from && !fresh) throw new MarkError("FUNDING_IN_PROGRESS", `this deal's stablecoin funding swap ${l.fundStableSwap} is from ${l.fundStableFrom}: continue with ${mk()} escrow fund ${id} --from ${l.fundStableFrom}`, { swapId: l.fundStableSwap, from: l.fundStableFrom });
-  let created: ReverseSwapCreated | undefined; let quote: ReturnType<typeof formatReverseQuote> | undefined; let gas: Awaited<ReturnType<typeof gasOf>> = null; let rate: string | undefined;
+  let created: ReverseSwapCreated | undefined; let quote: ReturnType<typeof formatReverseQuote> | undefined; let gas: Awaited<ReturnType<typeof gasOf>> = null; let rate: string | undefined; let retry: FundingSwapRetry | undefined;
   if (fresh) {
     const left = Math.floor((expiresAtMs(e) - Date.now()) / 1000); const min = t.bridge ? FUND_STABLE_BRIDGED_MIN_SEC : FUND_STABLE_MIN_SEC;
     if (left < min) throw new MarkError("DEADLINE_TOO_CLOSE", `refusing to fund from ${tokenLabel(t)}: the deal expires in ${Math.max(0, left)} s (deadline ${e.deadline} + grace), less than the ${min} s a stablecoin funding needs (deposit, lock${t.bridge ? `, ${t.bridge.via} mint` : ""}, swap). Stablecoins that arrive later do not fund the deal and must be recovered. Use Lightning, or create a new deal with a later deadline.`, { expiresAt: new Date(expiresAtMs(e)).toISOString(), secondsLeft: Math.max(0, left), minSeconds: min });
@@ -139,19 +197,18 @@ export async function fundStable(c: Ctx, id: string, o: FundStableOpts) {
       }
       const bps = checkMarkupBps(SWAP_MARKUP_BPS);
       const [{ qs, sourceUnits }, g] = await Promise.all([priceStableDeposit(s, from, e.amountSats, bps), gasOf(s, t)]);
-      const p: Parsed = { from, to: "arkade", bps, arkAddress: e.address, sourceUnits, token: t } as Parsed;
-      const x = await createPinnedReverse(c, s, p, qs, (x) => {
-        const bad = (why: string) => { throw new MarkError("SWAP_FAILED", `Satora's swap does not fund this deal (${why}). Do NOT deposit anything; nothing is lost while it is unfunded (it just expires).`, { id: x?.id }); };
-        if (!Number.isSafeInteger(x.targetSats) || x.targetSats! < e.amountSats) bad(`it pays ${x.targetSats} sats, the deal needs ${e.amountSats}`);
-        if (x.targetSats! > Math.ceil(e.amountSats * 1.03)) bad(`it pays ${x.targetSats} sats, far more than the deal's ${e.amountSats}`);
-        const pk = String((x.raw as any)?.arkade_server_pk ?? "").toLowerCase().slice(-64);
-        if (!e.serverPubkey || pk !== String(e.serverPubkey).toLowerCase().slice(-64)) bad(`Satora's Arkade server key ${pk || "(none)"} is not this deal's Arkade server`);
-      });
+      const { x, q, retry } = await createFundingSwap(c, s, e, { from, bps, q: qs, sourceUnits, beforeRetry: async () => {
+        // a second swap only while this deal still waits for funding, with enough time left to deposit
+        const now = await c.api.get(id);
+        if (now.state !== "created") throw new MarkError("FUNDING_IN_PROGRESS", `the deal is ${now.state} now; not creating another funding swap. Nothing was deposited.`, { state: now.state });
+        const left = Math.floor((expiresAtMs(now) - Date.now()) / 1000);
+        if (left < min) throw new MarkError("DEADLINE_TOO_CLOSE", `the deal expires in ${Math.max(0, left)} s, less than the ${min} s a stablecoin funding needs; not creating another funding swap. Nothing was deposited.`, { secondsLeft: left, minSeconds: min });
+      } });
       c.index.set(id, { fundStableSwap: x.id, fundStableFrom: from, fundStableAt: new Date().toISOString(), fundRail: "stable", role: l.role ?? myRole(c, e) });
-      return { x, q: qs, g };
+      return { x, q, g, retry };
     });
     if ("reuse" in r) { existing = await s.getReverse(r.reuse!); }
-    else { created = r.x; gas = r.g; quote = formatReverseQuote(r.q, { from, to: "arkade", bps: SWAP_MARKUP_BPS, gas }); rate = r.q.exchange_rate; }
+    else { created = r.x; gas = r.g; retry = r.retry; quote = formatReverseQuote(r.q, { from, to: "arkade", bps: SWAP_MARKUP_BPS, gas }); rate = r.q.exchange_rate; }
   } else if (l.fundRail !== "stable") {
     // resuming this deal's stable swap (allowed by the rail checks above): record the rail, so fund / fund --ark refuse while it is live
     await withFundLock(c, id, async () => { await otherRail(c.index.get(id)); c.index.set(id, { fundRail: "stable" }); });
@@ -162,7 +219,7 @@ export async function fundStable(c: Ctx, id: string, o: FundStableOpts) {
   if (created) {
     const deposit = await depositInfo(s, created, gas);
     const extra = created.targetSats! - e.amountSats;
-    const first = { ...base, swapId, newSwap: true, swapStatus: created.status, deposit, swapPaysSats: created.targetSats, extraSats: extra, ...(rate ? { amountUsd: usdOf(e.amountSats, rate) } : {}), quote,
+    const first = { ...base, swapId, newSwap: true, swapStatus: created.status, deposit, swapPaysSats: created.targetSats, extraSats: extra, ...(retry ? { swapRetry: retry } : {}), ...(rate ? { amountUsd: usdOf(e.amountSats, rate) } : {}), quote,
       fees: { escrow: fees, swap: quote!.fees, note: quote!.markupNote },
       disclosure: [
         `${deposit.howToDeposit}`,

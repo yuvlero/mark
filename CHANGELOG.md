@@ -20,6 +20,7 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 - Live-tested on mainnet before release (26 Nov 2026), which fixed three funding details:
   - The deposit is priced from Satora's quote for that deposit, because a quote for a sats amount includes the swap fee in that amount. Before the fix, a 2,000-sat deal got a swap paying 1,977 sats, and Mark refused it before any deposit.
   - USDC on Base gets a 1.5% deposit cushion, because Satora's bridged swap paid about 0.6% below its own quote. Arbitrum USDC and USDT0 keep 0.5%.
+  - Satora's created swap can still pay a little less than its own quote (live: a USDT0 deposit quoted 1,206 sats, the swap paid 1,197 for a 1,200-sat deal). Mark now drops that swap before showing it (it expires unfunded) and retries once, raising the deposit by exactly the shortfall plus 0.3%, capped at 5% above the priced deposit. Before the retry it re-checks that the deal is still unfunded with enough time left, and re-quotes the new deposit. If the second swap is also short, Mark refuses with `SWAP_FAILED` and nothing is deposited. The result reports the retry as `swapRetry`.
   - Satora can lower an Arkade payout slightly once the deposit is locked (live: 2,002 to 2,001 sats). Mark accepts a drop of up to 1% and claims into the escrow only while the swap still covers the deal.
 
 ## [0.6.1] - 2026-11-25
