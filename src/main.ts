@@ -9,7 +9,8 @@ import { updateNotice } from "./core/clientVersion.js";
 import type { NetworkName } from "./config.js";
 import * as uc from "./core/usecases.js";
 import * as es from "./core/escrowStable.js";
-import { checkEscrowArgs, checkDemoArgs, checkSwapArgs, parseArgs, helpFor } from "./cliArgs.js";
+import { checkEscrowArgs, checkDemoArgs, checkSwapArgs, parseArgs, helpFor, feedbackArgs } from "./cliArgs.js";
+import { submitFeedback, feedbackServer } from "./core/feedback.js";
 import * as sw from "./core/swap.js";
 import { mk, firstDealNext } from "./invocation.js";
 import { walletFile } from "./crypto/keystore.js";
@@ -34,7 +35,7 @@ function termsFrom(f: Record<string, string | boolean>): uc.TermsInput {
   for (const [flag, k] of [["title", "title"], ["description", "description"], ["deliverable", "deliverable"], ["acceptance", "acceptance"], ["deliverable-sha256", "deliverableSha256"]]) if (s(f[flag]) !== undefined) t[k] = s(f[flag]);
   return t;
 }
-const USAGE = "mark <init|pubkey|demo|reputation <pubkey>|backup|mcp|swap [quote|routes|create|status|claim|fund|refund|recover]|escrow create|show|accept|evidence|fund|limits|quote|status|pending|approve|dispute|refund|refund-payout|claim-payout|messages|message|inbox|invites> [--network bitcoin|mutinynet] [--escrow-url URL] [--arbiter-pubkey HEX]";
+const USAGE = "mark <init|pubkey|demo|reputation <pubkey>|feedback \"<message>\"|backup|mcp|swap [quote|routes|create|status|claim|fund|refund|recover]|escrow create|show|accept|evidence|fund|limits|quote|status|pending|approve|dispute|refund|refund-payout|claim-payout|messages|message|inbox|invites> [--network bitcoin|mutinynet] [--escrow-url URL] [--arbiter-pubkey HEX]";
 /** `mark` with no args: usage (unchanged keys) plus a short "what you can do now". */
 function quickstart(network: ReturnType<typeof normalizeNetwork>) {
   let firstRun = true; try { firstRun = !fs.existsSync(walletFile(dataDir(network))); } catch { /* keep true */ }
@@ -55,6 +56,11 @@ async function main(): Promise<"keep" | void> {
     case "reputation": {
       if (!pos[1]) throw new MarkError("USAGE", "mark reputation <pubkey>  (64-hex x-only key; public aggregates from the escrow server)");
       return void out(await uc.reputation(await openCtx(network, { escrowUrl, arbiterPubkey }), String(pos[1])));
+    }
+    case "feedback": {
+      // no Mark home is opened (no key is read or created): only the escrow server URL is resolved
+      const a = feedbackArgs(pos, f); if (a instanceof MarkError) throw a;
+      return void out(await submitFeedback({ ...a, serverUrl: feedbackServer(network, { server: a.server, escrowUrl }) }));
     }
     case "backup": {
       const phrase = uc.revealBackupPhrase(network, !!process.stdout.isTTY && !!process.stdin.isTTY && !f.json);

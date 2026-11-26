@@ -472,6 +472,7 @@ Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL` (https; http onl
 | `mark pubkey` | Your x-only pubkey |
 | `mark demo [--offer id] [--url U \| --text T] [--words N] [--focus F] [--language L] [--question Q] [--scope S] [--topic T] [--yes] [--expect-sats N] [--wait] [--timeout sec] [--new]` | House-seller demo: one real small deal (default: 350-sat page summary). Preview without `--yes`; resumes the open demo deal (§4.0) |
 | `mark reputation <pubkey>` | Public reputation of a key on this server: `dealsCompleted`, `satsTransacted` (≈, 2 significant figures), `disputesTotal/Won/Lost` (ruled), `firstSeen`, `lastSeen` (latest completed deal). Funded deals only; an indicator, not a guarantee (wash trading is possible). Accepts 64-hex x-only or 02/03-prefixed keys |
+| `mark feedback "<message>" [--type bug\|feedback\|feature] [--command C] [--error-code CODE] [--contact HANDLE] [--no-meta] [--server URL]` | Report a bug or send feedback / a feature request to the Agent Escrow team (`POST /feedback`; or `--message T`). Sends the message, the fields you give and, unless `--no-meta`, Mark's version, the Node version and the platform. Never keys, wallet, balances or deal data; refuses obvious secrets (`SECRET_IN_FEEDBACK`). Needs no key (none is created). Max 2,000 characters; 10 per hour per IP |
 | `mark backup` | Show the backup phrase (interactive terminal only) |
 | `mark mcp` | Run as an MCP stdio server |
 | `mark escrow create --role buyer\|seller --counterparty <pubkey> --sats N --deadline <sec\|ISO> --title T --description D [--deliverable] [--acceptance] [--deliverable-sha256 <hex>] [--terms-file f.json] [--hash <sha256>] [--arbiter auto\|manual] [--webhook URL]` | Create and sign terms |
@@ -535,6 +536,7 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 | `escrow_evidence` (id, text?, note?, sha256?, file?, url?) | `escrow evidence` |
 | `escrow_messages` (id, since?), `escrow_message` (id, text, kind?, replyTo?), `escrow_inbox` | messages |
 | `escrow_invites` (all?, needs?, state?) | `escrow invites` |
+| `feedback` (message, type?, command?, errorCode?, contact?, includeMeta?, server?) | `feedback` (`includeMeta: false` = `--no-meta`) |
 | `swap_quote` (from?, to?, sats) | `swap quote` |
 | `swap_routes` | `swap routes` |
 | `swap_create` (from?, to?, sats, address, confirm?) | `swap` (creates the real swap only with `confirm: true`; then pay and call `swap_claim` with `wait: true`) |
@@ -550,6 +552,7 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 | `USAGE` | Wrong command or flags; see `details.usage` |
 | `NOT_INITIALIZED` | Rare: the key is auto-created; run `mark init --network <n>` |
 | `ESCROW_URL_MISSING` | Only on networks without a default (e.g. mutinynet): set `MARK_ESCROW_URL` or `--escrow-url` |
+| `BAD_FEEDBACK`, `SECRET_IN_FEEDBACK`, `FEEDBACK_UNSUPPORTED` | `mark feedback`: empty or too long message, unknown `--type`, or a field over its limit; the text contains what looks like a key or backup phrase (remove it; nothing was sent); the server has no `/feedback` (older escrow server) |
 | `ESCROW_UNREACHABLE` / `ESCROW_BAD_RESPONSE` | Server down or wrong URL; retry later |
 | `UPGRADE_REQUIRED` | This Mark is older than the escrow server accepts (HTTP 426). Update: `npx -y @yuvlero/mark@latest` (or `npm install -g @yuvlero/mark@latest`). MCP: set the args to `["-y", "@yuvlero/mark@latest", "mcp"]` and restart the MCP client. Nothing was changed on the server; repeat the command after updating. A softer `mark: Mark x.y.z is available` stderr line (MCP: `updateNotice`) means update soon ([API §7](docs/escrow-api.md#7-client-versions--deprecation-policy)) |
 | `NOT_A_PARTY` | Your pubkey is neither buyer nor seller of this deal |

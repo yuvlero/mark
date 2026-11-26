@@ -161,6 +161,21 @@ export function checkEscrowArgs(sub: string | undefined, id: string | undefined,
 /** `--help` / `-h` / `help` after a command: that command's usage (the CLI prints it, exit 0) before any check, key or network
  *  access. `mark escrow --help fund` (the flag took the word as its value) also works. null: not a help request, or no command
  *  (plain `mark` / `mark --help` print the full usage and quickstart). */
+/** mark feedback: bug reports, feedback and feature requests to the escrow server (POST /feedback). */
+export const FEEDBACK_USAGE = 'mark feedback "<message>" [--type bug|feedback|feature] [--command "<the mark command>"] [--error-code <CODE>] [--contact <handle, npub or email for a reply>] [--no-meta] [--server <escrow URL>]   (or --message "<text>"; sends a bug report or feedback to the Agent Escrow team: the message, the fields you give and, unless --no-meta, Mark\'s version, the Node version and the platform. Never keys, wallet, balances or deal data; max 2000 characters)';
+const FEEDBACK_FLAGS = new Set(["message", "type", "command", "error-code", "contact", "no-meta", "server", "json", "network", "escrow-url"]);
+const FEEDBACK_BOOL = ["no-meta", "json"];
+/** Parsed `mark feedback` arguments, or a USAGE error. A boolean flag written before the message (`--no-meta "text"`) keeps the text as the message. */
+export function feedbackArgs(pos: string[], f: Record<string, string | boolean>): { message?: string; type?: string; command?: string; errorCode?: string; contact?: string; includeMeta: boolean; server?: string } | MarkError {
+  for (const k of Object.keys(f)) if (!FEEDBACK_FLAGS.has(k)) return new MarkError("USAGE", `--${k} is not an option of mark feedback. ${FEEDBACK_USAGE}`);
+  const words = pos.slice(1);
+  for (const k of FEEDBACK_BOOL) if (typeof f[k] === "string") { if (!["true", "false"].includes(f[k] as string)) words.unshift(f[k] as string); f[k] = f[k] !== "false"; }
+  for (const k of ["message", "type", "command", "error-code", "contact", "server"]) if (f[k] === true) return new MarkError("USAGE", `--${k} needs a value. ${FEEDBACK_USAGE}`);
+  const positional = words.length ? words.join(" ") : undefined;
+  if (positional !== undefined && f.message !== undefined) return new MarkError("USAGE", `give the message once: as text or with --message, not both. ${FEEDBACK_USAGE}`);
+  const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+  return { message: positional ?? str(f.message), type: str(f.type), command: str(f.command), errorCode: str(f["error-code"]), contact: str(f.contact), includeMeta: f["no-meta"] !== true, server: str(f.server) };
+}
 export function helpFor(pos: string[], f: Record<string, string | boolean>, mainUsage: string): { usage: unknown } | null {
   const word = typeof f.help === "string" ? f.help : undefined;
   if (!pos[0] || (f.help === undefined && !pos.includes("-h") && pos[1] !== "help")) return null;
@@ -168,5 +183,6 @@ export function helpFor(pos: string[], f: Record<string, string | boolean>, main
   if (pos[0] === "escrow") { const sub = [pos[1], word].find((x) => x && x !== "help" && x !== "-h" && Object.hasOwn(ESCROW_USAGE, x)); return { usage: sub ? ESCROW_USAGE[sub] : ESCROW_USAGE }; }
   if (pos[0] === "swap") { const sub = [pos[1], word].find((x) => x && x !== "help" && x !== "-h" && Object.hasOwn(SWAP_USAGE, x)); return { usage: sub ? SWAP_USAGE[sub] : SWAP_USAGE }; }
   if (pos[0] === "reputation") return { usage: "mark reputation <pubkey>  (64-hex x-only key; public aggregates from the escrow server)" };
+  if (pos[0] === "feedback") return { usage: FEEDBACK_USAGE };
   return { usage: mainUsage };
 }

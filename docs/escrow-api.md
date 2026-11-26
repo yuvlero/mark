@@ -295,6 +295,16 @@ The house-seller demo offers used by `mark demo` (MCP `escrow_demo`): small real
 - No demo offered: `{"enabled":false,"network":"…","code":"DEMO_NOT_CONFIGURED"|"DEMO_DISABLED"|"DEMO_MISCONFIGURED","error":"…"}` (still 200). Older servers answer 404 `NOT_FOUND`.
 - Mark re-checks the offer locally (network, key, amount cap, deadline, fields) and the buyer's inputs, and creates nothing without explicit consent (`--yes`, MCP `confirm: true`).
 
+### POST /feedback → 201  (public, no auth; JSON only)
+Bug reports, feedback and feature requests for the Agent Escrow team (`mark feedback`, MCP `feedback`).
+```json
+{"message":"escrow fund --from usdc timed out","type":"bug","command":"escrow fund","errorCode":"SWAP_EXPIRED","contact":"@my-agent","markVersion":"0.7.0","nodeVersion":"v22.12.0","platform":"linux/x64"}
+```
+- `message` (required, trimmed, ≤ 2,000 characters). `type`: `bug` | `feedback` | `feature` (default `feedback`). Optional: `command` ≤ 200, `errorCode` ≤ 100, `markVersion` ≤ 40, `nodeVersion` ≤ 40, `platform` ≤ 40, `contact` ≤ 128 (how to reach you; omit to stay anonymous). Lengths count characters. Unknown fields are ignored.
+- Control characters are removed (`message` keeps newlines and tabs). Never send keys, backup phrases or private deal data; Mark refuses obvious secrets before sending (`SECRET_IN_FEEDBACK`).
+- `201` `{"id":"fb_…","receivedAt":"<ISO>","type":"bug"}`. Errors: `400 BAD_FEEDBACK` / `BAD_JSON`, `413 PAYLOAD_TOO_LARGE` (body > 16 KB), `415 UNSUPPORTED_MEDIA_TYPE` (not `application/json`), `403 FORBIDDEN` (cross-site browser post), `429 RATE_LIMITED` (10 per hour per IP, and a server-wide daily cap; server defaults). Other methods → `404`.
+- Never refused for an old Mark version (an outdated client can still report). Stored by the operator (newest 5,000 kept by default) and never shown publicly.
+
 ### GET /escrows/:id → 200 Escrow
 Reading also refreshes funding: `created → funded` once the address holds `amountSats`, and `created → expired` once `expiresAt` (deadline + grace) has passed unfunded. Reading an expired deal within the watch window also records late payments.
 
@@ -444,13 +454,14 @@ Webhooks are unauthenticated. Treat them as hints and confirm with `GET /escrows
 | Listing (`GET /escrows?party=`) | ±120 s ts window, nonce single-use, 30/min per key, 120/min per IP (server defaults) |
 | Reputation (`GET /reputation/:pubkey`) | 60/min per IP, cached up to 30 s (server defaults) |
 | Deal creation (`POST /escrows`) | 60 per hour per IP (server default) |
+| Feedback (`POST /feedback`) | message 2,000 chars, body 16 KB, 10 per hour per IP, 500 per day server-wide (server defaults) |
 | Evidence | 4,000 chars text, 500 chars URL, 200 per deal |
 | Terms | title 120, description 4,000, deliverable 1,000, acceptance 2,000 |
 | Request body | 2 MB |
 
 ## 6. Error codes (public API)
 
-`BAD_JSON`, `BAD_REQUEST`, `NOT_FOUND`, `UNAUTHORIZED`, `FORBIDDEN`, `RATE_LIMITED`, `BAD_AMOUNT`, `AMOUNT_TOO_SMALL`, `LIMIT_EXCEEDED`, `BAD_PUBKEY`, `BAD_DEADLINE`, `BAD_RULE`, `BAD_WEBHOOK_URL`, `BAD_TERMS`, `TERMS_SIGNATURE_REQUIRED`, `BAD_TERMS_SIGNATURE`, `TERMS_HASH_MISMATCH`, `TERMS_INTEGRITY`, `BAD_TERMS_VERSION`, `NO_TERMS`, `TERMS_NOT_ACCEPTED`, `BAD_EVIDENCE`, `BAD_MESSAGE`, `BAD_STATE`, `BAD_SIGNERS`, `BAD_DEST`, `BAD_INVOICE`, `AMOUNTLESS_INVOICE_UNSUPPORTED`, `AMOUNT_MISMATCH`, `INVOICE_EXPIRED`, `BAD_SWAP`, `SWAP_LOOKUP_FAILED`, `QUOTE_UNAVAILABLE`, `BAD_SIGNATURE`, `FEE_MISMATCH`, `CORE_ERROR`, `UPGRADE_REQUIRED`, `ERROR`. See the README error table for what to do.
+`BAD_JSON`, `BAD_REQUEST`, `BAD_FEEDBACK`, `UNSUPPORTED_MEDIA_TYPE`, `PAYLOAD_TOO_LARGE`, `NOT_FOUND`, `UNAUTHORIZED`, `FORBIDDEN`, `RATE_LIMITED`, `BAD_AMOUNT`, `AMOUNT_TOO_SMALL`, `LIMIT_EXCEEDED`, `BAD_PUBKEY`, `BAD_DEADLINE`, `BAD_RULE`, `BAD_WEBHOOK_URL`, `BAD_TERMS`, `TERMS_SIGNATURE_REQUIRED`, `BAD_TERMS_SIGNATURE`, `TERMS_HASH_MISMATCH`, `TERMS_INTEGRITY`, `BAD_TERMS_VERSION`, `NO_TERMS`, `TERMS_NOT_ACCEPTED`, `BAD_EVIDENCE`, `BAD_MESSAGE`, `BAD_STATE`, `BAD_SIGNERS`, `BAD_DEST`, `BAD_INVOICE`, `AMOUNTLESS_INVOICE_UNSUPPORTED`, `AMOUNT_MISMATCH`, `INVOICE_EXPIRED`, `BAD_SWAP`, `SWAP_LOOKUP_FAILED`, `QUOTE_UNAVAILABLE`, `BAD_SIGNATURE`, `FEE_MISMATCH`, `CORE_ERROR`, `UPGRADE_REQUIRED`, `ERROR`. See the README error table for what to do.
 
 ## 7. Client versions & deprecation policy
 
@@ -460,7 +471,7 @@ Old clients are told to update before a breaking change reaches them, instead of
 - **`GET /limits` → `client`:** `minMarkVersion` (older versions are refused; `null` = none refused), `latestMarkVersion` (the version to update to; `null` = no recommendation; never below the minimum), optional `latestMarkHighlights` (a one-line what's-new, `null` if unset; Mark 0.5.1+ appends it to the update notice, older Mark ignores it), `refuseUnversioned` (requests without a version are refused), and `upgrade` (`command`, `global`, `mcp`: how to update).
 - **Below `minMarkVersion`:** `426` `{"code":"UPGRADE_REQUIRED","error":"Mark 0.2.2 is too old for this escrow server (minimum 0.3.0). Update Mark: npx -y @yuvlero/mark@latest … MCP: …","details":{"markVersion","minMarkVersion","latestMarkVersion","refuseUnversioned","upgrade"}}` and the response header `x-mark-upgrade: required`. Nothing was changed on the server; update and repeat the request.
 - **No version (older clients):** allowed while `refuseUnversioned` is false, with the response header `x-mark-upgrade: recommended`. Below `latestMarkVersion` the request also works and gets the same header.
-- **Never refused:** `GET /health`, `GET /limits`, `GET /demo` and the public pages and docs (`/`, `/docs`, `/llms.txt`, `/skill.md`, …), so an old client can always read the policy and the update instructions. Other methods on those paths are a plain `404`.
+- **Never refused:** `GET /health`, `GET /limits`, `GET /demo`, `POST /feedback` and the public pages and docs (`/`, `/docs`, `/llms.txt`, `/skill.md`, …), so an old client can always read the policy and the update instructions. Other methods on those paths are a plain `404`.
 - **What Mark does:** it caches `client` per escrow URL for 6 hours (refreshed whenever a command reads `/limits` anyway, otherwise at most one extra `GET /limits` per 6 hours, with a 2 s timeout; if that request fails, Mark does not try again for 15 minutes, remembered across CLI runs in the same file). Below `latestMarkVersion` it prints one `mark: …` notice line on stderr (CLI; stdout stays JSON) or adds an `updateNotice` field to MCP results. If `latestMarkHighlights` is a short plain-text line, Mark 0.5.1+ appends it as display-only (control characters and ANSI stripped, length capped; never interpreted as a command); a missing or invalid field leaves the notice unchanged. On `UPGRADE_REQUIRED` it fails with that code and the update command. The server's `upgrade` texts are only shown if they are exactly `npx -y @yuvlero/mark[@tag]` (`command`), `npm install -g @yuvlero/mark[@tag]` (`global`), or a plain sentence about `@yuvlero/mark` with no other package, URL or shell syntax (`mcp`); otherwise Mark shows its built-in instructions. On `426` Mark shows the server's message marked as the server's and always adds its own update instructions. Mark never updates itself.
 - **Updating:** `npx -y @yuvlero/mark@latest …` (or `npm install -g @yuvlero/mark@latest`). MCP clients: set the server's args to `["-y", "@yuvlero/mark@latest", "mcp"]` (a bare `@yuvlero/mark` can keep running an old cached copy), then restart the MCP client.
 - **Policy for breaking changes:** (1) announce the change and release a Mark that supports both the old and the new behaviour; (2) set `latestMarkVersion` to it, so older clients see the update notice (and optionally `latestMarkHighlights` for a one-line what's new); (3) keep the old behaviour working for at least 14 days (default window: 30 days); (4) then raise `minMarkVersion` (and set `refuseUnversioned` once no supported client is unversioned). The server changes these values without a deploy.

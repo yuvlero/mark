@@ -48,7 +48,7 @@ test("agent skill: frontmatter, ships in the package, uses only real CLI command
   assert.ok(sk.includes(MCP_JOBS_ON_OTHER_BOARDS), "skill carries MCP_JOBS_ON_OTHER_BOARDS verbatim");
   const { ESCROW_USAGE, SWAP_USAGE } = await import("../dist/src/cliArgs.js");
   for (const [, sub] of sk.matchAll(/`mark escrow ([a-z-]+)/g)) assert.ok(sub in ESCROW_USAGE, `unknown subcommand ${sub}`);
-  for (const [, c] of sk.matchAll(/`mark ([a-z]+)[ `]/g)) assert.ok(["escrow", "pubkey", "reputation", "backup", "init", "mcp", "demo", "swap"].includes(c), `unknown command ${c}`);
+  for (const [, c] of sk.matchAll(/`mark ([a-z]+)[ `]/g)) assert.ok(["escrow", "pubkey", "reputation", "backup", "init", "mcp", "demo", "swap", "feedback"].includes(c), `unknown command ${c}`);
   const tools = [...rd("../src/mcp.ts").matchAll(/s\.tool\("([a-z_]+)"/g)].map((m) => m[1]);
   for (const [, sub] of sk.matchAll(/`mark swap ([a-z]+)/g)) assert.ok(sub in SWAP_USAGE, `unknown swap subcommand ${sub}`);
   for (const [, t] of sk.matchAll(/`((?:escrow|swap)_[a-z_]+)`/g)) assert.ok(tools.includes(t), `unknown MCP tool ${t}`);
