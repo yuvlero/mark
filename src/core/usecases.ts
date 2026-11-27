@@ -668,6 +668,9 @@ async function payoutSpec(c: Ctx, e: Escrow, kind: Kind, o: PayoutOpts): Promise
  * approve: with no payout given, sign the pending proposal that needs my signature.
  * With a payout, as payee for `kind` (seller->release, buyer->refund): propose, then sign.
  */
+const PAYOUT_DONE = new Set(["released", "refunded"]);
+const APPROVE_WAIT_SEC = 900;
+
 export async function approve(c: Ctx, id: string, o: ApproveOpts = {}) {
   const e = await c.api.get(requireId(id)); const role = myRole(c, e);
   const hasPayout = !!(o.payoutInvoice || o.payoutLnaddr || o.payoutArk || o.payoutStable || o.payoutAddress);
@@ -677,7 +680,11 @@ export async function approve(c: Ctx, id: string, o: ApproveOpts = {}) {
       const signed = await signProposal(c, e, await c.api.proposal(id, pending[pending.length - 1].id), role);
       return o.wait ? waitAfterApprove(c, id, { signed, timeoutSec: o.timeoutSec, pollMs: o.pollMs }) : signed;
     }
-    const open = e.proposals.filter((p) => !p.submittedTxid && (!o.kind || p.kind === o.kind));
+    // --wait with nothing to sign: resume waiting if a payout is already proposed or submitted (a proposer who
+    // already signed can re-run approve --wait instead of getting NOTHING_TO_SIGN).
+    const mine = e.proposals.filter((p) => !o.kind || p.kind === o.kind);
+    if (o.wait && (PAYOUT_DONE.has(e.state) || mine.length)) return waitAfterApprove(c, id, { signed: { escrow: e }, timeoutSec: o.timeoutSec, pollMs: o.pollMs });
+    const open = mine.filter((p) => !p.submittedTxid);
     const why = open.length ? `open proposal(s) ${open.map((p) => `${p.kind}:${p.id} signed by [${p.sigs.join(",")}]`).join("; ")} need nothing from me (${role})` : "there is no pending proposal yet";
     throw new MarkError("NOTHING_TO_SIGN", `nothing to sign: ${why}. A co-signer needs no payout. To PROPOSE as payee (seller->release, buyer->refund), pass exactly one of --payout-invoice | --payout-lnaddr | --payout-ark | --payout-stable (with --payout-address).`, { state: e.state, role });
   }
@@ -706,9 +713,7 @@ export async function approve(c: Ctx, id: string, o: ApproveOpts = {}) {
 }
 
 
-const PAYOUT_DONE = new Set(["released", "refunded"]);
-const APPROVE_WAIT_SEC = 900;
-/** After approve/refund (propose+sign or co-sign): wait until the deal is released/refunded, then until the payout settles. */
+/** After approve/refund (propose+sign, co-sign, or a --wait resume): wait until the deal is released/refunded, then until the payout settles. */
 export async function waitAfterApprove(c: Ctx, id: string, o: { signed: any; stable?: Record<string, unknown>; timeoutSec?: number; pollMs?: number }) {
   const end = Date.now() + (o.timeoutSec ?? APPROVE_WAIT_SEC) * 1000; const poll = o.pollMs ?? 5000;
   const out: any = { ...o.signed, ...(o.stable ? { payoutStable: o.stable } : {}) };
@@ -723,15 +728,22 @@ export async function waitAfterApprove(c: Ctx, id: string, o: { signed: any; sta
   const left = Math.max(0, (end - Date.now()) / 1000);
   const sp = await submittedPayout(c, id, e);
   const typ = sp?.payout?.type;
-  if (o.stable || typ === "stable") {
-    return { ...out, escrow: e, claim: await claimPayout(c, id, { wait: true, timeoutSec: left, pollMs: o.pollMs }) };
+  const swapId = typeof sp?.payout?.swapId === "string" && sp.payout.swapId ? sp.payout.swapId : undefined;
+  if (typ === "stable") {
+    if (o.stable) return { ...out, escrow: e, claim: await claimPayout(c, id, { wait: true, timeoutSec: left, pollMs: o.pollMs }) };
+    return { ...out, escrow: e, settled: false, next: `deal ${e.state}. Only the Mark home that proposed the payout can claim the stablecoins: ${mk()} escrow claim-payout ${id} --wait` };
   }
-  const swapId = sp?.payout?.swapId ?? c.index.get(id).payoutSwap;
-  if (typ === "ark" || !swapId) {
-    return { ...out, escrow: e, settled: true, next: `deal ${e.state}. The payout is complete.` };
+  if (typ === "ark") {
+    return { ...out, escrow: e, settled: true, next: `deal ${e.state}. The Ark payout is complete.` };
   }
-  const payoutSwap = await waitLightningPayoutSwap(c, swapId, { timeoutSec: left, pollMs: poll, escrowId: id, state: e.state });
-  return { ...out, escrow: e, payoutSwap, settled: !!(payoutSwap as any).settled, timedOut: !!(payoutSwap as any).timedOut, next: (payoutSwap as any).note };
+  if ((typ === "invoice" || typ === "lnaddr") && swapId) {
+    const payoutSwap = await waitLightningPayoutSwap(c, swapId, { timeoutSec: left, pollMs: poll, escrowId: id, state: e.state });
+    return { ...out, escrow: e, payoutSwap, settled: !!(payoutSwap as any).settled, timedOut: !!(payoutSwap as any).timedOut, next: (payoutSwap as any).note };
+  }
+  if (typ === "invoice" || typ === "lnaddr") {
+    return { ...out, escrow: e, settled: false, next: `deal ${e.state}. The submitted Lightning payout names no swap id. Check ${mk()} escrow status ${id}` };
+  }
+  return { ...out, escrow: e, settled: false, next: `deal ${e.state}. Could not tell which payout to wait on. Check ${mk()} escrow status ${id}` };
 }
 
 async function waitLightningPayoutSwap(c: Ctx, swapId: string, o: { timeoutSec: number; pollMs: number; escrowId: string; state: string }) {

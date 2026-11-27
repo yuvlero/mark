@@ -2,7 +2,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { checkEscrowArgs, parseArgs } from "../dist/src/cliArgs.js";
-import { waitAfterApprove } from "../dist/src/core/usecases.js";
+import { waitAfterApprove, init, approve } from "../dist/src/core/usecases.js";
+import { openCtx } from "../dist/src/core/context.js";
+import { tmpHome, mockFetch, arkAddr, payoutArk } from "./mockApi.mjs";
 
 const chk = (argv) => { const { pos, f } = parseArgs(argv); return checkEscrowArgs(pos[0], pos[1], f); };
 
@@ -74,4 +76,48 @@ test("waitAfterApprove: times out cleanly if the Lightning payout swap does not 
   const c = ctx({ deals: e, proposal: { id: "p0", payout: { type: "invoice", swapId: "sw1" } }, statuses: ["pending"] });
   const r = await waitAfterApprove(c, "e1", { signed: signed(e), pollMs: 5, timeoutSec: 0.05 });
   assert.equal(r.timedOut, true); assert.equal(r.payoutSwap.status, "pending"); assert.match(r.next, /still pending/);
+});
+
+test("waitAfterApprove: missing payout metadata is not reported as settled", async () => {
+  const e = released();
+  const c = ctx({ deals: e, proposal: { id: "p0" } });
+  c.index = { get: () => ({ payoutSwap: "stale-sw" }) };
+  const r = await waitAfterApprove(c, "e1", { signed: signed(e), pollMs: 1, timeoutSec: 1 });
+  assert.equal(r.settled, false); assert.doesNotMatch(r.next, /complete|paid/); assert.match(r.next, /Could not tell which payout/);
+});
+
+test("waitAfterApprove: a Lightning payout without swapId is not settled (and a stale local swap is ignored)", async () => {
+  const e = released();
+  let got = 0;
+  const c = ctx({ deals: e, proposal: { id: "p0", payout: { type: "invoice", invoice: "lnbc1x" } }, statuses: ["clientredeemed"] });
+  const g = c.swaps;
+  c.swaps = async () => { const s = await g(); return { get: async (id) => { got++; return s.get(id); } }; };
+  c.index = { get: () => ({ payoutSwap: "stale-sw" }) };
+  const r = await waitAfterApprove(c, "e1", { signed: signed(e), pollMs: 1, timeoutSec: 1 });
+  assert.equal(r.settled, false); assert.equal(got, 0, "must not poll a local/stale swap id"); assert.match(r.next, /names no swap id/);
+});
+
+test("waitAfterApprove: a co-signer does not try to claim a stablecoin payout", async () => {
+  const e = released();
+  let claimed = 0;
+  const c = ctx({ deals: e, proposal: { id: "p0", payout: { type: "stable", swapId: "po-1", address: "0x" + "ab".repeat(20), token: "usdc" } } });
+  c.swaps = async () => ({ get: async () => ({ id: "po-1", status: "serverfunded" }), claim: async () => { claimed++; return { success: true }; } });
+  c.index = { get: () => ({}) };
+  const r = await waitAfterApprove(c, "e1", { signed: signed(e), pollMs: 1, timeoutSec: 1 });
+  assert.equal(claimed, 0); assert.equal(r.settled, false); assert.equal(r.claim, undefined); assert.match(r.next, /claim-payout/);
+});
+
+test("approve --wait resumes when this home already signed (does not throw NOTHING_TO_SIGN)", async () => {
+  tmpHome(); await init("mutinynet");
+  let n = 0, c0;
+  const opening = (c) => ({ id: "e1", state: "releasing", amountSats: 1200, deadline: new Date(Date.now() + 3600e3).toISOString(), address: arkAddr(5), buyerPubkey: c.pubkey, sellerPubkey: "11".repeat(32), arbiterPubkey: "22".repeat(32), funding: { outpoint: "x:0", amount: 1200 }, proposals: [{ id: "p0", kind: "release", dest: payoutArk(7), signers: ["buyer", "seller"], sigs: ["buyer", "seller"] }] });
+  const done = (c) => ({ ...opening(c), state: "released", proposals: [{ id: "p0", kind: "release", dest: payoutArk(7), signers: ["buyer", "seller"], sigs: ["buyer", "seller"], submittedTxid: "ab".repeat(32) }] });
+  const f = mockFetch({
+    "GET /escrows/e1": async () => [200, (n++ === 0 ? opening : done)(c0)],
+    "GET /escrows/e1/proposals/p0": async () => [200, { id: "p0", kind: "release", dest: payoutArk(7), signers: ["buyer", "seller"], sigs: ["buyer", "seller"], submittedTxid: "ab".repeat(32), payout: { type: "ark", address: payoutArk(7) }, arkTx: "", checkpoints: [] }],
+  });
+  const c = await openCtx("mutinynet", { escrowUrl: "https://escrow.test", fetchImpl: f, swapFactory: async () => { throw new Error("swap must not be used"); } });
+  c0 = c;
+  const r = await approve(c, "e1", { wait: true, timeoutSec: 2, pollMs: 5 });
+  assert.equal(r.settled, true); assert.equal(r.escrow.state, "released"); assert.match(r.next, /Ark payout is complete/);
 });
