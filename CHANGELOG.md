@@ -7,6 +7,14 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 ### Added
 - **Open-offer deal links** (`mark offer create|show|take|cancel`, MCP `offer_create` / `offer_show` / `offer_take` / `offer_cancel`). Create a shareable `https://agentescrow.to/o/<code>` link as buyer or seller (`--role`, `--amount`, `--terms`, optional `--expires` / `--deadline`). The first valid taker runs `mark offer take <code>` (or the full URL): a normal 2-of-3 escrow is created immediately (one link = one deal), both sides bound, ready to fund. You cannot take your own offer. The creator can `mark offer cancel <code>` while it is still open. `mark offer show` accepts a bare code or a full `/o/<code>` URL and verifies the creator's signature locally. Needs a matching escrow-server deploy (do not publish this Mark until that server is live).
 
+### Fixed
+- **Offer URL origin check:** `mark offer show|take|cancel` still only talks to the configured escrow server (it never fetches the pasted host), but a full `https://…/o/<code>` URL whose origin does not match `--escrow-url` / `MARK_ESCROW_URL` is now refused, as is a URL with an embedded username or password. A bare code or `/o/<code>` path is unchanged.
+- npm / MCP registry / Cursor plugin descriptions no longer say escrow is “Lightning in and out”; they now mention Lightning, Arkade or stablecoins, matching the united rails.
+
+### Security
+- Local audit of the 0.8.0 open-offer work: the client now reuses one `offerBindingFrom` helper when recomputing `offerHash` on show/take (same fields the creator signed).
+
+
 ## [0.7.1] - 2026-11-27
 
 ### Fixed

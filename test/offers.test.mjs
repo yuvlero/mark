@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { parseOfferCode, randomOfferCode, OFFER_CODE_LEN, OFFER_CODE_RE } from "../dist/src/core/offerDocs.js";
-import { parseDuration, parseOfferRef, offerCreate, offerShow, offerTake, offerCancel } from "../dist/src/core/offers.js";
+import { parseDuration, parseOfferRef, offerCreate, offerShow, offerTake, offerCancel, assertOfferUrlHost } from "../dist/src/core/offers.js";
 import { checkOfferArgs, helpFor, OFFER_USAGE } from "../dist/src/cliArgs.js";
 import { init, pubkey } from "../dist/src/core/usecases.js";
 import { openCtx } from "../dist/src/core/context.js";
@@ -208,8 +208,9 @@ test("live local escrow-server: create, show (code + URL), take (code + URL), ca
   assert.equal(taken.escrow.acceptances.seller.via, "offer");
   assert.ok(taken.escrow.acceptances.buyer.sig);
   assert.equal(taken.dealCheck.ok, true);
-  const after = await offerShow(seller.c, `https://example.test/o/${created.code}.md`);
+  const after = await offerShow(seller.c, `${P}/o/${created.code}.md`);
   assert.equal(after.status, "taken"); assert.equal(after.escrowId, taken.escrowId);
+  await assert.rejects(offerShow(seller.c, `https://example.test/o/${created.code}.md`), (e) => e.code === "BAD_OFFER_CODE");
 
   await assert.rejects(offerTake(seller.c, created.code), (e) => e.code === "OFFER_ALREADY_TAKEN");
 
@@ -250,4 +251,19 @@ test("live local escrow-server: create, show (code + URL), take (code + URL), ca
   const mcpToCancel = await mcpTool(seller.home, P, "offer_create", { role: "buyer", amount: 1200, terms: "MCP cancel" });
   const mcpCanceled = await mcpTool(seller.home, P, "offer_cancel", { code: mcpToCancel.code });
   assert.equal(mcpCanceled.offer.status, "canceled");
+});
+
+
+test("assertOfferUrlHost allows a bare code or a URL on the configured escrow origin, and refuses a foreign host or embedded credentials", () => {
+  const api = "http://127.0.0.1:18790";
+  const code = "abcdefghjk";
+  assert.equal(assertOfferUrlHost(code, api), undefined);
+  assert.equal(assertOfferUrlHost(`/o/${code}`, api), undefined);
+  assert.equal(assertOfferUrlHost(`${api}/o/${code}`, api), undefined);
+  assert.equal(assertOfferUrlHost(`${api}/o/${code}.md?x=1#y`, api), undefined);
+  assert.throws(() => assertOfferUrlHost(`https://evil.example/o/${code}`, api), (x) => x.code === "BAD_OFFER_CODE" && /evil\.example/.test(x.message));
+  assert.throws(() => assertOfferUrlHost(`https://agentescrow.to/o/${code}`, api), (x) => x.code === "BAD_OFFER_CODE");
+  assert.throws(() => assertOfferUrlHost(`http://user:pass@127.0.0.1:18790/o/${code}`, api), (x) => x.code === "BAD_OFFER_CODE");
+  assert.throws(() => assertOfferUrlHost(`javascript:alert(1)/o/${code}`, api), (x) => x.code === "BAD_OFFER_CODE");
+  assert.throws(() => assertOfferUrlHost(`https://agentescrow.to/o/${code}`), (x) => x.code === "ESCROW_URL_MISSING");
 });

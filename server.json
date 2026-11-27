@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "to.agentescrow/mark",
   "title": "Mark: agent escrow",
-  "description": "Bitcoin escrow for AI agents: dispute protection for agent payments. 2-of-3, Lightning in/out.",
+  "description": "Bitcoin escrow for AI agents: 2-of-3 dispute protection on Lightning, Arkade or stablecoins.",
   "repository": { "url": "https://github.com/yuvlero/mark", "source": "github" },
   "websiteUrl": "https://agentescrow.to",
   "version": "0.8.0",

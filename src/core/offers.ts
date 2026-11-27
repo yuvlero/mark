@@ -8,7 +8,7 @@ import { serverLimits, verifyDeal } from "./dealCheck.js";
 import { normalizeTerms, termsHash, dealTermsDocument, webhookUrlHash, verifyTermsSig, type Terms } from "./terms.js";
 import { mk } from "../invocation.js";
 import {
-  offerHash, takeHash, cancelHash, parseOfferCode,
+  offerHash, offerBindingFrom, takeHash, cancelHash, parseOfferCode,
   OFFER_DEFAULT_DEADLINE_SEC, OFFER_DEFAULT_EXPIRES_SEC, OFFER_MIN_DEADLINE_SEC, OFFER_MIN_EXPIRES_SEC, OFFER_MAX_EXPIRES_SEC,
   type OfferRole,
 } from "./offerDocs.js";
@@ -32,6 +32,33 @@ export function parseDuration(d: string | number, label: string): number {
 }
 
 export const parseOfferRef = (input: string) => parseOfferCode(input);
+
+/** If `input` is an absolute URL, it must be http(s) with no userinfo, and its origin must match the configured escrow server.
+ *  Mark never fetches the pasted host — it always talks to `escrowUrl` — but a mismatched origin would silently query the wrong server. */
+export function assertOfferUrlHost(input: string, escrowUrl?: string): void {
+  const raw = String(input || "").trim();
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(raw) && !raw.startsWith("//")) return; // bare code or path
+  let u: URL;
+  try { u = new URL(raw.startsWith("//") ? "https:" + raw : raw); } catch { throw new MarkError("BAD_OFFER_CODE", "offer URL is not a valid URL"); }
+  if (u.username || u.password) throw new MarkError("BAD_OFFER_CODE", "offer URL must not include a username or password");
+  if (u.protocol !== "http:" && u.protocol !== "https:") throw new MarkError("BAD_OFFER_CODE", "offer URL must be http or https");
+  if (!escrowUrl) throw new MarkError("ESCROW_URL_MISSING", "escrow server URL not set; pass --escrow-url or set MARK_ESCROW_URL");
+  let base: URL;
+  try { base = new URL(escrowUrl); } catch { throw new MarkError("BAD_REQUEST", "escrow URL is not a valid URL"); }
+  if (u.origin !== base.origin) {
+    throw new MarkError("BAD_OFFER_CODE", `this offer link is for ${u.origin}, but Mark is talking to ${base.origin}. Re-run with --escrow-url ${u.origin} if that is the server you want, or pass only the offer code.`);
+  }
+}
+
+function resolveOfferRef(c: Ctx, ref: string): string {
+  assertOfferUrlHost(ref, c.cfg.escrowUrl);
+  return parseOfferRef(ref);
+}
+
+function hashOfOffer(network: string, offer: { creatorPubkey: string; creatorRole: OfferRole; amountSats: number; terms: Terms; deadlineSeconds: number; expiresAt: string; fees?: unknown; rule?: unknown; arbiterMode?: "auto" | "manual"; ts: number; nonce: string }) {
+  return offerHash(offerBindingFrom({ network, creatorPubkey: offer.creatorPubkey, creatorRole: offer.creatorRole, amountSats: offer.amountSats, terms: offer.terms, deadlineSeconds: offer.deadlineSeconds, expiresAt: offer.expiresAt, fees: offer.fees ?? null, rule: offer.rule ?? { type: "manual" }, arbiterMode: offer.arbiterMode ?? "auto", ts: offer.ts, nonce: offer.nonce }));
+}
+
 
 export interface OfferCreateOpts {
   role: string; amount: number; terms?: string | { title?: string; description?: string; deliverable?: string; acceptance?: string };
@@ -74,9 +101,9 @@ export async function offerCreate(c: Ctx, o: OfferCreateOpts) {
 }
 
 export async function offerShow(c: Ctx, ref: string) {
-  const code = parseOfferRef(ref);
+  const code = resolveOfferRef(c, ref);
   const offer = await c.api.getOffer(code);
-  const h = offerHash({ network: c.network, creatorPubkey: offer.creatorPubkey, creatorRole: offer.creatorRole, amountSats: offer.amountSats, terms: offer.terms, deadlineSeconds: offer.deadlineSeconds, expiresAt: Math.floor(Date.parse(offer.expiresAt) / 1000), fees: offer.fees ?? null, rule: offer.rule ?? { type: "manual" }, arbiterMode: offer.arbiterMode ?? "auto", ts: offer.ts, nonce: offer.nonce });
+  const h = hashOfOffer(c.network, offer);
   const sigOk = (!offer.network || offer.network === c.network) && h === offer.offerHash && verifyTermsSig(offer.creatorPubkey, h, offer.sig);
   const mine = offer.creatorPubkey === c.pubkey;
   const next = offer.status === "open"
@@ -88,13 +115,13 @@ export async function offerShow(c: Ctx, ref: string) {
 }
 
 export async function offerTake(c: Ctx, ref: string) {
-  const code = parseOfferRef(ref);
+  const code = resolveOfferRef(c, ref);
   const offer = await c.api.getOffer(code);
   if (offer.status !== "open") throw new MarkError(offer.status === "taken" ? "OFFER_ALREADY_TAKEN" : offer.status === "expired" ? "OFFER_EXPIRED" : offer.status === "canceled" ? "OFFER_CANCELED" : "OFFER_NOT_OPEN",
     offer.status === "taken" ? `this offer was already taken (escrow ${offer.escrowId})` : `this offer is ${offer.status} and can no longer be taken`);
   if (offer.creatorPubkey === c.pubkey) throw new MarkError("SELF_TAKE", "you cannot take your own offer");
   if (offer.network && offer.network !== c.network) throw new MarkError("BAD_OFFER_SIGNATURE", `this offer is for network ${offer.network}, but this Mark is on ${c.network}`);
-  const h = offerHash({ network: c.network, creatorPubkey: offer.creatorPubkey, creatorRole: offer.creatorRole, amountSats: offer.amountSats, terms: offer.terms, deadlineSeconds: offer.deadlineSeconds, expiresAt: Math.floor(Date.parse(offer.expiresAt) / 1000), fees: offer.fees ?? null, rule: offer.rule ?? { type: "manual" }, arbiterMode: offer.arbiterMode ?? "auto", ts: offer.ts, nonce: offer.nonce });
+  const h = hashOfOffer(c.network, offer);
   if (h !== offer.offerHash || !verifyTermsSig(offer.creatorPubkey, h, offer.sig)) throw new MarkError("BAD_OFFER_SIGNATURE", "the offer signature does not verify; refusing to take it");
   const buyerPubkey = offer.creatorRole === "buyer" ? offer.creatorPubkey : c.pubkey;
   const sellerPubkey = offer.creatorRole === "seller" ? offer.creatorPubkey : c.pubkey;
@@ -116,7 +143,7 @@ export async function offerTake(c: Ctx, ref: string) {
 }
 
 export async function offerCancel(c: Ctx, ref: string) {
-  const code = parseOfferRef(ref);
+  const code = resolveOfferRef(c, ref);
   const offer = await c.api.getOffer(code);
   if (offer.creatorPubkey !== c.pubkey) throw new MarkError("FORBIDDEN", "only the creator can cancel this offer");
   const ts = tsNow(); const n = nonce();

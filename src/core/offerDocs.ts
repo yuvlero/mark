@@ -24,6 +24,13 @@ export const OFFER_MAX_EXPIRES_SEC = 30 * 86_400;
 export const OFFER_DEFAULT_DEADLINE_SEC = 7 * 86_400;
 export const OFFER_MIN_DEADLINE_SEC = 300;
 
+/** In-memory nonce cache TTL for create/take/cancel: twice the signed-request window, so a captured request stays rejected for as long as its ts is still accepted. The default NonceCache TTL (4 minutes, for list auth) is shorter than this 10-minute window. */
+export const OFFER_NONCE_TTL_MS = 2 * OFFER_AUTH_WINDOW_SEC * 1000;
+/** Expired and canceled offer rows older than this are deleted (taken offers are kept as an audit trail). */
+export const OFFER_RETENTION_SEC = 30 * 86_400;
+/** JSON body cap for POST /offers, /offers/:code/take and /cancel (terms are at most a few thousand characters; this is a DoS lid). */
+export const OFFER_BODY_MAX = 65_536;
+
 export type OfferRole = "buyer" | "seller";
 export type OfferStatus = "open" | "taken" | "canceled" | "expired";
 
@@ -57,6 +64,19 @@ export function offerDocument(o: OfferBinding) {
     rule: canonicalRule(o.rule ?? { type: "manual" }), arbiterMode: o.arbiterMode, ts: o.ts, nonce: o.nonce.toLowerCase() };
 }
 export const offerHash = (o: OfferBinding) => termsHash(offerDocument(o));
+
+/** Rebuild the signed offer binding from a stored or public offer (ISO or unix `expiresAt`). */
+export function offerBindingFrom(o: {
+  network: string; creatorPubkey: string; creatorRole: OfferRole; amountSats: number; terms: Terms;
+  deadlineSeconds: number; expiresAt: number | string; fees?: unknown; rule?: unknown; arbiterMode: "auto" | "manual"; ts: number; nonce: string;
+}): OfferBinding {
+  const expiresAt = typeof o.expiresAt === "number" ? o.expiresAt : Math.floor(Date.parse(String(o.expiresAt)) / 1000);
+  return {
+    network: o.network, creatorPubkey: o.creatorPubkey, creatorRole: o.creatorRole, amountSats: o.amountSats, terms: o.terms,
+    deadlineSeconds: o.deadlineSeconds, expiresAt, fees: (o.fees ?? null) as OfferBinding["fees"],
+    rule: o.rule ?? { type: "manual" }, arbiterMode: o.arbiterMode, ts: o.ts, nonce: String(o.nonce).toLowerCase(),
+  };
+}
 
 export interface TakeBinding { code: string; takerPubkey: string; offerHash: string; ts: number; nonce: string }
 export function takeDocument(o: TakeBinding) {
