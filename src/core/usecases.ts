@@ -683,7 +683,10 @@ export async function approve(c: Ctx, id: string, o: ApproveOpts = {}) {
     // --wait with nothing to sign: resume waiting if a payout is already proposed or submitted (a proposer who
     // already signed can re-run approve --wait instead of getting NOTHING_TO_SIGN).
     const mine = e.proposals.filter((p) => !o.kind || p.kind === o.kind);
-    if (o.wait && (PAYOUT_DONE.has(e.state) || mine.length)) return waitAfterApprove(c, id, { signed: { escrow: e }, timeoutSec: o.timeoutSec, pollMs: o.pollMs });
+    if (o.wait && (PAYOUT_DONE.has(e.state) || mine.length)) {
+      const sp = await submittedPayout(c, id, e);
+      return waitAfterApprove(c, id, { signed: { escrow: e }, stable: ownStablePayout(c, id, sp), timeoutSec: o.timeoutSec, pollMs: o.pollMs });
+    }
     const open = mine.filter((p) => !p.submittedTxid);
     const why = open.length ? `open proposal(s) ${open.map((p) => `${p.kind}:${p.id} signed by [${p.sigs.join(",")}]`).join("; ")} need nothing from me (${role})` : "there is no pending proposal yet";
     throw new MarkError("NOTHING_TO_SIGN", `nothing to sign: ${why}. A co-signer needs no payout. To PROPOSE as payee (seller->release, buyer->refund), pass exactly one of --payout-invoice | --payout-lnaddr | --payout-ark | --payout-stable (with --payout-address).`, { state: e.state, role });
@@ -713,6 +716,19 @@ export async function approve(c: Ctx, id: string, o: ApproveOpts = {}) {
 }
 
 
+/** This Mark home proposed the deal's stablecoin payout (it holds the claim key in the local index, matching the submitted swap when one exists). */
+function ownStablePayout(c: Ctx, id: string, submitted?: { pid: string; payout: any }): Record<string, unknown> | undefined {
+  const l = c.index.get(id);
+  if (!l.payoutStable || !l.payoutSwap) return undefined;
+  const po = submitted?.payout;
+  if (po) {
+    if (po.type !== "stable") return undefined;
+    if (po.swapId && po.swapId !== l.payoutSwap) return undefined;
+    return { token: po.token ?? l.payoutStable, address: po.address ?? l.payoutAddress, swapId: po.swapId ?? l.payoutSwap };
+  }
+  return { token: l.payoutStable, address: l.payoutAddress, swapId: l.payoutSwap };
+}
+
 /** After approve/refund (propose+sign, co-sign, or a --wait resume): wait until the deal is released/refunded, then until the payout settles. */
 export async function waitAfterApprove(c: Ctx, id: string, o: { signed: any; stable?: Record<string, unknown>; timeoutSec?: number; pollMs?: number }) {
   const end = Date.now() + (o.timeoutSec ?? APPROVE_WAIT_SEC) * 1000; const poll = o.pollMs ?? 5000;
@@ -730,7 +746,8 @@ export async function waitAfterApprove(c: Ctx, id: string, o: { signed: any; sta
   const typ = sp?.payout?.type;
   const swapId = typeof sp?.payout?.swapId === "string" && sp.payout.swapId ? sp.payout.swapId : undefined;
   if (typ === "stable") {
-    if (o.stable) return { ...out, escrow: e, claim: await claimPayout(c, id, { wait: true, timeoutSec: left, pollMs: o.pollMs }) };
+    const mine = o.stable ?? ownStablePayout(c, id, sp);
+    if (mine) return { ...out, escrow: e, payoutStable: o.stable ?? mine, claim: await claimPayout(c, id, { wait: true, timeoutSec: left, pollMs: o.pollMs }) };
     return { ...out, escrow: e, settled: false, next: `deal ${e.state}. Only the Mark home that proposed the payout can claim the stablecoins: ${mk()} escrow claim-payout ${id} --wait` };
   }
   if (typ === "ark") {

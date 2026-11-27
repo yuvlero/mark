@@ -274,6 +274,20 @@ test("claim-payout: waits for the payout tx, claims the stablecoins (gasless); r
   const x = await es.claimPayout(c, "e1", { pollMs: 1 }); assert.equal(m.calls.claim.length, 0); assert.match(x.recover ?? x.note, /refund-payout|refund/);
   const back = await uc.refundPayout(c, "e1", payoutArk(9, "ark")); assert.equal(back.success, true); assert.equal(m.calls.refund[0].id, "po-1"); assert.equal(m.calls.refund[0].destinationAddress, payoutArk(9, "ark"));
 });
+test("approve --wait resumes a proposing home's already-signed stable payout and claims it", async () => {
+  const m = mockClient({ payStatus: "serverfunded" });
+  await m.client.createSwap({ source: { chain: "Arkade", tokenId: "btc" }, target: { chain: "42161", tokenId: "x" }, sourceAmount: 5000, targetAddress: ME });
+  const payout = { type: "stable", swapId: "po-1", address: ME, token: "usdc" };
+  const { c } = await ctx({
+    client: m.client,
+    dealOf: (c) => funded(c, { state: "released", proposals: [{ id: "p0", kind: "release", dest: VHTLC, signers: ["buyer", "seller"], sigs: ["buyer", "seller"], submittedTxid: "ab".repeat(32) }] }),
+    routes: { "GET /escrows/e1/proposals/p0": async () => [200, { id: "p0", kind: "release", dest: VHTLC, signers: ["buyer", "seller"], sigs: ["buyer", "seller"], submittedTxid: "ab".repeat(32), payout, arkTx: "", checkpoints: [] }] },
+  });
+  c.index.set("e1", { payoutSwap: "po-1", payoutStable: "usdc", payoutAddress: ME, payoutProposal: "p0" });
+  const r = await uc.approve(c, "e1", { wait: true, timeoutSec: 5, pollMs: 5 });
+  assert.equal(m.calls.claim.length, 1); assert.equal(m.calls.claim[0], "po-1");
+  assert.ok(r.claim); assert.doesNotMatch(JSON.stringify(r), /Only the Mark home/);
+});
 test("quote --payout-stable: payee leg, escrow fee, swap fee and what arrives; nothing created", async () => {
   const m = mockClient(); const { c } = await ctx({ client: m.client, dealOf: (c) => funded(c), routes: { "GET /escrows/e1/quote": async () => [200, { path: "release", escrowSats: 5000, ark: { payoutSats: 4950 } }] } });
   const q = await es.quoteStablePayout(c, "e1", "release", "usdc");
