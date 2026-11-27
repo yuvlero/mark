@@ -16,6 +16,9 @@ import { checkOfferArgs, helpFor, OFFER_USAGE } from "../dist/src/cliArgs.js";
 import { init, pubkey } from "../dist/src/core/usecases.js";
 import { openCtx } from "../dist/src/core/context.js";
 import { tmpHome } from "./mockApi.mjs";
+import { schnorr } from "@noble/curves/secp256k1.js";
+import { hex } from "@scure/base";
+import { offerHash } from "../dist/src/core/offerDocs.js";
 
 const CLI = fileURLToPath(new URL("../dist/src/cli.js", import.meta.url));
 const SERVER_ROOT = fileURLToPath(new URL("../../escrow-server/", import.meta.url));
@@ -112,6 +115,77 @@ async function mcpTool(home, escrowUrl, name, args) {
     return j;
   } finally { await cl.close(); }
 }
+
+
+const kp = () => { const s = schnorr.utils.randomSecretKey(); return { s, p: hex.encode(schnorr.getPublicKey(s)) }; };
+function signedOffer(creator, over = {}) {
+  const ts = Math.floor(Date.now() / 1000);
+  const n = crypto.randomBytes(16).toString("hex");
+  const expiresAtSec = ts + 86_400;
+  const binding = { network: "mutinynet", creatorPubkey: creator.p, creatorRole: "seller", amountSats: 1200,
+    terms: { title: "T", description: "Write a summary." }, deadlineSeconds: 86_400, expiresAt: expiresAtSec,
+    fees: null, rule: { type: "manual" }, arbiterMode: "auto", ts, nonce: n, ...over };
+  const h = offerHash(binding);
+  return {
+    code: "abcdefghjk", url: "http://127.0.0.1/o/abcdefghjk", status: "open", network: binding.network,
+    creatorPubkey: binding.creatorPubkey, creatorRole: binding.creatorRole, takerRole: "buyer",
+    amountSats: binding.amountSats, terms: binding.terms, deadlineSeconds: binding.deadlineSeconds,
+    expiresAt: new Date(expiresAtSec * 1000).toISOString(), createdAt: new Date().toISOString(),
+    fees: binding.fees, rule: binding.rule, arbiterMode: binding.arbiterMode, offerHash: h,
+    sig: hex.encode(schnorr.sign(hex.decode(h), creator.s)), ts: binding.ts, nonce: binding.nonce,
+  };
+}
+function takeCtx(taker, offer, takeImpl) {
+  const calls = { take: 0 };
+  return {
+    ctx: {
+      network: "mutinynet", pubkey: taker.p, secret: taker.s, cfg: {}, dir: "/tmp",
+      index: { set() {}, get() { return {}; } },
+      api: {
+        getOffer: async () => offer,
+        takeOffer: async (...a) => { calls.take++; if (takeImpl) return takeImpl(...a); throw new Error("takeOffer should not be called"); },
+      },
+      swaps: async () => { throw new Error("no"); },
+    },
+    calls,
+  };
+}
+
+test("offerCreate refuses conflicting terms and description aliases", async () => {
+  await assert.rejects(offerCreate(null, { role: "buyer", amount: 1200, terms: "A", description: "B" }), (e) => e.code === "USAGE" && /not both/.test(e.message));
+});
+
+test("offerTake refuses a tampered or badly signed offer before creating an escrow", async () => {
+  const creator = kp(), taker = kp();
+  const fresh = signedOffer(creator);
+  const shown = await offerShow(takeCtx(taker, fresh).ctx, fresh.code);
+  assert.equal(shown.signatureValid, true);
+
+  for (const [label, offer] of [
+    ["terms", { ...fresh, terms: { title: "T", description: "tampered" } }],
+    ["amount", { ...fresh, amountSats: 9999 }],
+    ["deadline", { ...fresh, deadlineSeconds: 10_000 }],
+    ["network", { ...fresh, network: "bitcoin" }],
+    ["sig", { ...fresh, sig: "11".repeat(64) }],
+  ]) {
+    const { ctx, calls } = takeCtx(taker, offer);
+    await assert.rejects(offerTake(ctx, offer.code), (e) => e.code === "BAD_OFFER_SIGNATURE", label);
+    assert.equal(calls.take, 0, `${label}: must not call takeOffer`);
+    const shownBad = await offerShow(ctx, offer.code);
+    assert.equal(shownBad.signatureValid, false, label);
+  }
+});
+
+test("offerTake refuses a take reply whose termsHash does not match what Mark signed", async () => {
+  const creator = kp(), taker = kp();
+  const offer = signedOffer(creator);
+  const { ctx, calls } = takeCtx(taker, offer, async () => ({
+    code: offer.code, escrowId: "e1", offer: { ...offer, status: "taken", escrowId: "e1" },
+    escrow: { id: "e1", termsHash: "ff".repeat(32), amountSats: offer.amountSats, terms: offer.terms },
+  }));
+  await assert.rejects(offerTake(ctx, offer.code), (e) => e.code === "TERMS_HASH_MISMATCH" && /do not fund escrow e1/.test(e.message));
+  assert.equal(calls.take, 1);
+});
 
 test("live local escrow-server: create, show (code + URL), take (code + URL), cancel, self-take, CLI and MCP", { timeout: 180_000 }, async (t) => {
   if (!fs.existsSync(path.join(SERVER_ROOT, "dist/src/server.js"))) throw new Error("escrow-server dist/src/server.js missing; build it first");

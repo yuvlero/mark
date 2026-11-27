@@ -40,6 +40,9 @@ export interface OfferCreateOpts {
 
 function termsFrom(o: OfferCreateOpts): Terms {
   const t = typeof o.terms === "string" ? { description: o.terms } : (o.terms ?? {});
+  if (o.description !== undefined && t.description !== undefined && o.description.trim() !== String(t.description).trim()) {
+    throw new MarkError("USAGE", "give the terms once: terms or description, not both");
+  }
   const description = (o.description ?? t.description ?? "").trim();
   if (!description) throw new MarkError("BAD_TERMS", "terms are required: --terms \"...\" (or --description)");
   let title = (o.title ?? t.title ?? "").trim();
@@ -74,7 +77,7 @@ export async function offerShow(c: Ctx, ref: string) {
   const code = parseOfferRef(ref);
   const offer = await c.api.getOffer(code);
   const h = offerHash({ network: c.network, creatorPubkey: offer.creatorPubkey, creatorRole: offer.creatorRole, amountSats: offer.amountSats, terms: offer.terms, deadlineSeconds: offer.deadlineSeconds, expiresAt: Math.floor(Date.parse(offer.expiresAt) / 1000), fees: offer.fees ?? null, rule: offer.rule ?? { type: "manual" }, arbiterMode: offer.arbiterMode ?? "auto", ts: offer.ts, nonce: offer.nonce });
-  const sigOk = h === offer.offerHash && verifyTermsSig(offer.creatorPubkey, h, offer.sig);
+  const sigOk = (!offer.network || offer.network === c.network) && h === offer.offerHash && verifyTermsSig(offer.creatorPubkey, h, offer.sig);
   const mine = offer.creatorPubkey === c.pubkey;
   const next = offer.status === "open"
     ? (mine ? `this is your offer. Share ${offer.url}. Cancel with: ${mk()} offer cancel ${code}. A taker runs: ${mk()} offer take ${code}`
@@ -90,6 +93,7 @@ export async function offerTake(c: Ctx, ref: string) {
   if (offer.status !== "open") throw new MarkError(offer.status === "taken" ? "OFFER_ALREADY_TAKEN" : offer.status === "expired" ? "OFFER_EXPIRED" : offer.status === "canceled" ? "OFFER_CANCELED" : "OFFER_NOT_OPEN",
     offer.status === "taken" ? `this offer was already taken (escrow ${offer.escrowId})` : `this offer is ${offer.status} and can no longer be taken`);
   if (offer.creatorPubkey === c.pubkey) throw new MarkError("SELF_TAKE", "you cannot take your own offer");
+  if (offer.network && offer.network !== c.network) throw new MarkError("BAD_OFFER_SIGNATURE", `this offer is for network ${offer.network}, but this Mark is on ${c.network}`);
   const h = offerHash({ network: c.network, creatorPubkey: offer.creatorPubkey, creatorRole: offer.creatorRole, amountSats: offer.amountSats, terms: offer.terms, deadlineSeconds: offer.deadlineSeconds, expiresAt: Math.floor(Date.parse(offer.expiresAt) / 1000), fees: offer.fees ?? null, rule: offer.rule ?? { type: "manual" }, arbiterMode: offer.arbiterMode ?? "auto", ts: offer.ts, nonce: offer.nonce });
   if (h !== offer.offerHash || !verifyTermsSig(offer.creatorPubkey, h, offer.sig)) throw new MarkError("BAD_OFFER_SIGNATURE", "the offer signature does not verify; refusing to take it");
   const buyerPubkey = offer.creatorRole === "buyer" ? offer.creatorPubkey : c.pubkey;
