@@ -746,7 +746,8 @@ export async function waitAfterApprove(c: Ctx, id: string, o: { signed: any; sta
   const typ = sp?.payout?.type;
   const swapId = typeof sp?.payout?.swapId === "string" && sp.payout.swapId ? sp.payout.swapId : undefined;
   if (typ === "stable") {
-    const mine = o.stable ?? ownStablePayout(c, id, sp);
+    // recompute from the *submitted* payout: a stale o.stable from an earlier unsubmitted proposal must not trigger a claim
+    const mine = ownStablePayout(c, id, sp) ?? (sp ? undefined : o.stable);
     if (mine) return { ...out, escrow: e, payoutStable: o.stable ?? mine, claim: await claimPayout(c, id, { wait: true, timeoutSec: left, pollMs: o.pollMs }) };
     return { ...out, escrow: e, settled: false, next: `deal ${e.state}. Only the Mark home that proposed the payout can claim the stablecoins: ${mk()} escrow claim-payout ${id} --wait` };
   }

@@ -97,6 +97,16 @@ test("waitAfterApprove: a Lightning payout without swapId is not settled (and a 
   assert.equal(r.settled, false); assert.equal(got, 0, "must not poll a local/stale swap id"); assert.match(r.next, /names no swap id/);
 });
 
+test("waitAfterApprove: a stale local stable payout is not claimed if a different proposal was submitted", async () => {
+  const e = released();
+  let claimed = 0;
+  const c = ctx({ deals: e, proposal: { id: "p0", payout: { type: "stable", swapId: "po-B", address: "0x" + "ab".repeat(20), token: "usdc" } } });
+  c.index = { get: () => ({ payoutSwap: "po-A", payoutStable: "usdc", payoutAddress: "0x" + "ab".repeat(20) }) };
+  c.swaps = async () => ({ get: async () => ({ id: "po-B", status: "serverfunded" }), claim: async () => { claimed++; return { success: true }; } });
+  const r = await waitAfterApprove(c, "e1", { signed: signed(e), stable: { token: "usdc", swapId: "po-A" }, pollMs: 1, timeoutSec: 1 });
+  assert.equal(claimed, 0); assert.equal(r.claim, undefined); assert.equal(r.settled, false); assert.match(r.next, /claim-payout/);
+});
+
 test("waitAfterApprove: a co-signer does not try to claim a stablecoin payout", async () => {
   const e = released();
   let claimed = 0;
