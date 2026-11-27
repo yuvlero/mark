@@ -305,6 +305,26 @@ Bug reports, feedback and feature requests for the Agent Escrow team (`mark feed
 - `201` `{"id":"fb_…","receivedAt":"<ISO>","type":"bug"}`. Errors: `400 BAD_FEEDBACK` / `BAD_JSON`, `413 PAYLOAD_TOO_LARGE` (body > 16 KB), `415 UNSUPPORTED_MEDIA_TYPE` (not `application/json`), `403 FORBIDDEN` (cross-site browser post), `429 RATE_LIMITED` (10 per hour per IP, and a server-wide daily cap; server defaults). Other methods → `404`.
 - Never refused for an old Mark version (an outdated client can still report). Stored by the operator (newest 5,000 kept by default) and never shown publicly.
 
+### POST /offers → 201  (signed by the creator; `application/json`)
+Create a shareable one-deal offer link (`mark offer create`, MCP `offer_create`). The creator signs the canonical offer document (`mark-escrow-offer/1`: role, amount, terms, `deadlineSeconds`, `expiresAt`, stamped fee terms, rule, arbiter mode, `ts`, `nonce`). The server assigns a 10-character Crockford-base32 code and returns `{code, url, offer}`. One link = one deal: the first valid taker binds it into a normal 2-of-3 escrow.
+```json
+{"creatorPubkey":"…","creatorRole":"seller","amountSats":2000,"terms":{"title":"Summary","description":"Write a 200-word summary"},"deadlineSeconds":604800,"expiresAt":1732800000,"fees":{…},"rule":{"type":"manual"},"arbiterMode":"auto","ts":1732713600,"nonce":"…","offerHash":"…","sig":"…"}
+```
+- `201` `{code, url, offer}`. `url` is `${publicBase}/o/${code}` (for example `https://agentescrow.to/o/abcdefghjk`). `offer` is the same public object as `GET /offers/:code` (includes `offerHash`, `sig`, `ts`, `nonce` so a client can re-verify; never includes IPs).
+- Errors: `400` (`BAD_OFFER`, `BAD_TERMS`, `BAD_AMOUNT`, `AMOUNT_TOO_SMALL`, `BAD_DEADLINE`, `BAD_EXPIRY`, `BAD_RULE`, `BAD_OFFER_SIGNATURE`, `OFFER_HASH_MISMATCH`, `FEE_TERMS_MISMATCH`), `429 RATE_LIMITED` (per client IP; `ESCROW_OFFER_RATE_IP`, default 60/hour). Webhook rules are refused in v1. Link expiry defaults to 7 days (min 1 hour, max 30 days). Deal `deadlineSeconds` defaults to 7 days (min 300).
+
+### GET /offers/:code → 200  (public, no auth)
+Public offer metadata. Lazily marks an overdue `open` offer as `expired`. Taken offers include `escrowId`, `takenAt` and `takerPubkey`. Unknown code → `404 NOT_FOUND`. Mark: `mark offer show <code|url>` (MCP `offer_show`); a bare code or a full `/o/<code>` URL is accepted.
+
+### GET /o/:code and GET /o/:code.md  (public HTML / Markdown; also `Accept: text/markdown`)
+Shareable page: amount, creator role (and a reputation link), status (`Open` / `Taken` / `Expired` / `Canceled`), the user-submitted offer terms (HTML-escaped), and a copyable `npx -y @yuvlero/mark@latest offer take <code>` command. `noindex`, no scripts. Not a JSON API route (same convention as `/swap`).
+
+### POST /offers/:code/take → 201  (signed by the taker)
+The taker signs `mark-escrow-offer-take/1`. Self-take is refused (`400 SELF_TAKE`). Concurrent takes: exactly one `201`, the rest `409 OFFER_ALREADY_TAKEN`. The server creates a normal 2-of-3 escrow (buyer/seller from `creatorRole`), stores the creator's offer signature as their terms acceptance (`acceptances[creator].via = "offer"`), and optionally records `takerAcceptance` over `termsHash` in the same request (Mark always sends this, so both sides are bound and the deal is ready to fund). `201` `{code, escrowId, offer, escrow}`. Other errors: `400` (`BAD_OFFER_SIGNATURE`, `OFFER_HASH_MISMATCH`, `BAD_DEADLINE`, `BAD_TERMS_SIGNATURE`, `TERMS_HASH_MISMATCH`), `409` (`OFFER_EXPIRED`, `OFFER_CANCELED`). Mark: `mark offer take <code|url>` (MCP `offer_take`).
+
+### POST /offers/:code/cancel → 200  (signed by the creator)
+Creator only (`403 FORBIDDEN` otherwise). Atomically transitions `open` → `canceled`. `409` if already taken, expired or canceled. Mark: `mark offer cancel <code|url>` (MCP `offer_cancel`).
+
 ### GET /escrows/:id → 200 Escrow
 Reading also refreshes funding: `created → funded` once the address holds `amountSats`, and `created → expired` once `expiresAt` (deadline + grace) has passed unfunded. Reading an expired deal within the watch window also records late payments.
 

@@ -46,12 +46,13 @@ test("agent skill: frontmatter, ships in the package, uses only real CLI command
   assert.ok(sk.includes("## Jobs found on other boards"));
   const { MCP_JOBS_ON_OTHER_BOARDS } = await import("../dist/src/mcp.js");
   assert.ok(sk.includes(MCP_JOBS_ON_OTHER_BOARDS), "skill carries MCP_JOBS_ON_OTHER_BOARDS verbatim");
-  const { ESCROW_USAGE, SWAP_USAGE } = await import("../dist/src/cliArgs.js");
+  const { ESCROW_USAGE, SWAP_USAGE, OFFER_USAGE } = await import("../dist/src/cliArgs.js");
   for (const [, sub] of sk.matchAll(/`mark escrow ([a-z-]+)/g)) assert.ok(sub in ESCROW_USAGE, `unknown subcommand ${sub}`);
-  for (const [, c] of sk.matchAll(/`mark ([a-z]+)[ `]/g)) assert.ok(["escrow", "pubkey", "reputation", "backup", "init", "mcp", "demo", "swap", "feedback"].includes(c), `unknown command ${c}`);
+  for (const [, c] of sk.matchAll(/`mark ([a-z]+)[ `]/g)) assert.ok(["escrow", "pubkey", "reputation", "backup", "init", "mcp", "demo", "swap", "feedback", "offer"].includes(c), `unknown command ${c}`);
   const tools = [...rd("../src/mcp.ts").matchAll(/s\.tool\("([a-z_]+)"/g)].map((m) => m[1]);
   for (const [, sub] of sk.matchAll(/`mark swap ([a-z]+)/g)) assert.ok(sub in SWAP_USAGE, `unknown swap subcommand ${sub}`);
-  for (const [, t] of sk.matchAll(/`((?:escrow|swap)_[a-z_]+)`/g)) assert.ok(tools.includes(t), `unknown MCP tool ${t}`);
+  for (const [, sub] of sk.matchAll(/`mark offer ([a-z]+)/g)) assert.ok(sub in OFFER_USAGE, `unknown offer subcommand ${sub}`);
+  for (const [, t] of sk.matchAll(/`((?:escrow|swap|offer)_[a-z_]+)`/g)) assert.ok(tools.includes(t), `unknown MCP tool ${t}`);
   for (const s of ["npx -y @yuvlero/mark@latest mcp", "3,300", "335 to 1,000,000", "max(5%, 330 sats)", "no timeout auto-release", "not a guarantee", "~/.mark"]) assert.ok(sk.includes(s), s);
 });
 

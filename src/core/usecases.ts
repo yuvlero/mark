@@ -19,6 +19,7 @@ import type { Ctx } from "./context.js";
 import { dealStatus, arbiterPolicy } from "./status.js";
 import { deadlineCountdown, countdownFor } from "./deadline.js";
 import { serverLimits, supportsTermsV2, verifyDeal } from "./dealCheck.js";
+import { offerHash, OFFER_DEADLINE_SKEW_SEC } from "./offerDocs.js";
 import { rememberPolicy } from "./clientVersion.js";
 import { mk, walletLine } from "../invocation.js";
 import { checkArkadeAddress, arkadeNote, ARK_HRP } from "./arkAddress.js";
@@ -205,7 +206,24 @@ function verifyDealTerms(c: Ctx, e: Escrow) {
     terms: e.terms as Terms, rule: e.rule, arbiterMode: e.arbiterMode, deadline: e.deadline, webhookUrlSha256: e.webhookUrlSha256 ?? null })); }
   catch { local = ""; }
   const ok = local === e.termsHash;
-  const acc = (p: "buyer" | "seller") => { const a = e.acceptances?.[p]; return a ? { accepted: true, at: a.at, signatureValid: ok && verifyTermsSig(p === "buyer" ? e.buyerPubkey : e.sellerPubkey, local, a.sig) } : { accepted: false }; };
+  const acc = (p: "buyer" | "seller") => {
+    const a = e.acceptances?.[p]; if (!a) return { accepted: false };
+    if (a.via === "offer") {
+      let signatureValid = false;
+      try {
+        const ob = e.offer; const pk = p === "buyer" ? e.buyerPubkey : e.sellerPubkey;
+        if (ob && ob.creatorRole === p && e.terms && e.createdAt) {
+          const skew = Math.abs(deadlineUnix(e.deadline) - (deadlineUnix(e.createdAt) + ob.deadlineSeconds));
+          const h = offerHash({ network: c.network, creatorPubkey: pk, creatorRole: ob.creatorRole, amountSats: e.amountSats,
+            terms: e.terms as Terms, deadlineSeconds: ob.deadlineSeconds, expiresAt: ob.expiresAt, fees: e.fees ?? null,
+            rule: e.rule ?? { type: "manual" }, arbiterMode: e.arbiterMode ?? "auto", ts: ob.ts, nonce: ob.nonce });
+          signatureValid = skew <= OFFER_DEADLINE_SKEW_SEC && h === ob.offerHash && verifyTermsSig(pk, h, a.sig);
+        }
+      } catch { signatureValid = false; }
+      return { accepted: true, at: a.at, signatureValid, via: "offer" as const };
+    }
+    return { accepted: true, at: a.at, signatureValid: ok && verifyTermsSig(p === "buyer" ? e.buyerPubkey : e.sellerPubkey, local, a.sig) };
+  };
   const accepted = { buyer: acc("buyer"), seller: acc("seller") };
   return { terms: e.terms, termsHash: local, termsVersion: tv, legacy: false, hashVerified: ok, accepted, agreed: ok && accepted.buyer.signatureValid === true && accepted.seller.signatureValid === true,
     ...(tv === 1 ? { termsWarning: "terms v1: the release rule, arbiter mode, deadline and webhook are not covered by the signatures" } : {}) };

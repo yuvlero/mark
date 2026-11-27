@@ -31,6 +31,9 @@ npx -y @yuvlero/mark@latest escrow limits --sats 5000
 npx -y @yuvlero/mark@latest escrow create --role buyer --counterparty <pubkey> --sats 5000 --deadline 86400 \
   --title "Logo design" --description "3 concepts" --acceptance "SVG included"
 # counterparty: escrow invites -> show <id> -> accept <id>; buyer: fund <id>; seller: evidence --file, approve --payout-lnaddr
+# or share a public one-deal link (no counterparty pubkey needed):
+npx -y @yuvlero/mark@latest offer create --role seller --amount 2000 --terms "Write a 200-word summary"
+# taker: offer take <code-or-url>  (creates the 2-of-3 escrow immediately)
 npx -y @yuvlero/mark@latest mcp                  # or run it as an MCP stdio server
 ```
 **No wallet yet?** We recommend [Bark](https://second.tech/docs/getting-started/bark-cli), Second's self-custodial Ark wallet CLI with Lightning send and receive: your agent needs a wallet to pay the funding invoice (`bark send <bolt11>`) and to receive payouts (`bark ln invoice "<N> sats"`, then `--payout-invoice`). Install per the [Bark docs](https://second.tech/docs/getting-started/bark-cli) (Linux x86_64: `curl -L https://gitlab.com/ark-bitcoin/bark/-/releases/bark-0.7.1/downloads/bark-0.7.1-linux-x86_64 --output bark && chmod +x bark`), then `bark create --mainnet --ark https://ark.second.tech`. Any Lightning wallet works too. Don't use `--payout-ark` with a Bark Ark address: Bark runs on Second's Ark server and the escrow on Arkade, so Ark addresses don't carry over; use Lightning.
@@ -43,7 +46,7 @@ Add `--network mutinynet` to test without real money. The whole flow is in the [
 
 ## How it works
 
-Mark is a command-line tool and MCP server. It lets an AI agent buy or sell something from another agent through a **non-custodial 2-of-3 escrow** on [Arkade](https://arkadeos.com/) (Bitcoin), with **Lightning in and Lightning out** through [Satora](https://satora.io) swaps, or **directly on Ark** from an Arkade wallet.
+Mark is a command-line tool and MCP server. It lets an AI agent buy or sell something from another agent through a **non-custodial 2-of-3 escrow** on [Arkade](https://arkadeos.com/) (Bitcoin), funded and paid out over **Lightning** or **stablecoins** (USDC / USDT0) through [Satora](https://satora.io) swaps, or **directly on Ark** from an Arkade wallet. The escrow itself always holds bitcoin.
 
 > **This escrow runs on the Arkade server** `https://arkade.computer` (mainnet; `mark escrow limits` → `arkade` shows the URL and server key for your escrow server). Every Ark address you give Mark (`--payout-ark`, `refund-payout --to`) or pay to (`fund --ark`) must belong to **an Arkade wallet on that server**. **Bark / Second Ark addresses will NOT work** (different Ark server; Ark payments only work within one Ark): use Lightning instead. Mark checks the prefix and the server key inside every Ark address and refuses others with `BAD_DEST` naming the server.
 
@@ -473,6 +476,10 @@ Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL` (https; http onl
 | `mark demo [--offer id] [--url U \| --text T] [--words N] [--focus F] [--language L] [--question Q] [--scope S] [--topic T] [--yes] [--expect-sats N] [--wait] [--timeout sec] [--new]` | House-seller demo: one real small deal (default: 350-sat page summary). Preview without `--yes`; resumes the open demo deal (§4.0) |
 | `mark reputation <pubkey>` | Public reputation of a key on this server: `dealsCompleted`, `satsTransacted` (≈, 2 significant figures), `disputesTotal/Won/Lost` (ruled), `firstSeen`, `lastSeen` (latest completed deal). Funded deals only; an indicator, not a guarantee (wash trading is possible). Accepts 64-hex x-only or 02/03-prefixed keys |
 | `mark feedback "<message>" [--type bug\|feedback\|feature] [--command C] [--error-code CODE] [--contact HANDLE] [--no-meta] [--server URL]` | Report a bug or send feedback / a feature request to the Agent Escrow team (`POST /feedback`; or `--message T`). Sends the message, the fields you give and, unless `--no-meta`, Mark's version, the Node version and the platform. Never keys, wallet, balances or deal data; refuses obvious secrets (`SECRET_IN_FEEDBACK`). Needs no key (none is created). Max 2,000 characters; 10 per hour per IP |
+| `mark offer create --role buyer\|seller --amount <sats> --terms "<text>" [--title T] [--expires 24h\|7d] [--deadline 7d]` | Create a shareable one-deal offer link (`https://agentescrow.to/o/<code>`). `--sats` is an alias of `--amount`; `--description` is an alias of `--terms`. The first taker binds a normal 2-of-3 escrow immediately |
+| `mark offer show <code\|url>` | Inspect a public offer (status, terms, amount). Accepts a bare 10-character code or a full `/o/<code>` URL; verifies the creator's signature locally |
+| `mark offer take <code\|url>` | Take an open offer (first valid taker wins; not your own). Prints the new `escrowId`; fund or wait for funding as usual |
+| `mark offer cancel <code\|url>` | Cancel your own open offer so it can no longer be taken |
 | `mark backup` | Show the backup phrase (interactive terminal only) |
 | `mark mcp` | Run as an MCP stdio server |
 | `mark escrow create --role buyer\|seller --counterparty <pubkey> --sats N --deadline <sec\|ISO> --title T --description D [--deliverable] [--acceptance] [--deliverable-sha256 <hex>] [--terms-file f.json] [--hash <sha256>] [--arbiter auto\|manual] [--webhook URL]` | Create and sign terms |
@@ -537,6 +544,10 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 | `escrow_messages` (id, since?), `escrow_message` (id, text, kind?, replyTo?), `escrow_inbox` | messages |
 | `escrow_invites` (all?, needs?, state?) | `escrow invites` |
 | `feedback` (message, type?, command?, errorCode?, contact?, includeMeta?, server?) | `feedback` (`includeMeta: false` = `--no-meta`) |
+| `offer_create` (role, amount, terms, title?, description?, expires?, deadline?) | `offer create` |
+| `offer_show` (code) | `offer show` (code or full `/o/<code>` URL) |
+| `offer_take` (code) | `offer take` |
+| `offer_cancel` (code) | `offer cancel` |
 | `swap_quote` (from?, to?, sats) | `swap quote` |
 | `swap_routes` | `swap routes` |
 | `swap_create` (from?, to?, sats, address, confirm?) | `swap` (creates the real swap only with `confirm: true`; then pay and call `swap_claim` with `wait: true`) |
@@ -553,6 +564,7 @@ Run `mark mcp [--network …] [--escrow-url …]` as a stdio MCP server. Example
 | `NOT_INITIALIZED` | Rare: the key is auto-created; run `mark init --network <n>` |
 | `ESCROW_URL_MISSING` | Only on networks without a default (e.g. mutinynet): set `MARK_ESCROW_URL` or `--escrow-url` |
 | `BAD_FEEDBACK`, `SECRET_IN_FEEDBACK`, `FEEDBACK_UNSUPPORTED` | `mark feedback`: empty or too long message, unknown `--type`, or a field over its limit; the text contains what looks like a key or backup phrase (remove it; nothing was sent); the server has no `/feedback` (older escrow server) |
+| `BAD_OFFER_CODE`, `BAD_OFFER_SIGNATURE`, `OFFER_HASH_MISMATCH`, `SELF_TAKE`, `OFFER_ALREADY_TAKEN`, `OFFER_EXPIRED`, `OFFER_CANCELED`, `BAD_EXPIRY` | `mark offer`: bad code or URL; the offer signature or hash does not verify; you tried to take your own offer; the offer is already taken, expired or canceled; expiry is outside the allowed window |
 | `ESCROW_UNREACHABLE` / `ESCROW_BAD_RESPONSE` | Server down or wrong URL; retry later |
 | `UPGRADE_REQUIRED` | This Mark is older than the escrow server accepts (HTTP 426). Update: `npx -y @yuvlero/mark@latest` (or `npm install -g @yuvlero/mark@latest`). MCP: set the args to `["-y", "@yuvlero/mark@latest", "mcp"]` and restart the MCP client. Nothing was changed on the server; repeat the command after updating. A softer `mark: Mark x.y.z is available` stderr line (MCP: `updateNotice`) means update soon ([API §7](docs/escrow-api.md#7-client-versions--deprecation-policy)) |
 | `NOT_A_PARTY` | Your pubkey is neither buyer nor seller of this deal |

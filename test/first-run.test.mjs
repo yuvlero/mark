@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { commandPrefix, startedViaNpx, markOnPath, firstDealNext, walletSats, walletLine, NPX_CMD, DEMO_SATS } from "../dist/src/invocation.js";
-import { helpFor, DEMO_USAGE, ESCROW_USAGE } from "../dist/src/cliArgs.js";
+import { helpFor, DEMO_USAGE, ESCROW_USAGE, OFFER_USAGE } from "../dist/src/cliArgs.js";
 import { mcpInstructions, MCP_INSTRUCTIONS, MCP_JOBS_ON_OTHER_BOARDS, withKeyNotice } from "../dist/src/mcp.js";
 import { dataDir } from "../dist/src/config.js";
 import { walletFile } from "../dist/src/crypto/keystore.js";

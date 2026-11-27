@@ -160,6 +160,34 @@ export function checkEscrowArgs(sub: string | undefined, id: string | undefined,
 /** `--help` / `-h` / `help` after a command: that command's usage (the CLI prints it, exit 0) before any check, key or network
  *  access. `mark escrow --help fund` (the flag took the word as its value) also works. null: not a help request, or no command
  *  (plain `mark` / `mark --help` print the full usage and quickstart). */
+
+/** mark offer create|show|take|cancel: shareable one-deal links (auto-bind, single taker). */
+export const OFFER_USAGE: Record<string, string> = {
+  create: 'mark offer create --role buyer|seller --amount <sats> --terms "<text>" [--title T] [--expires 24h|7d] [--deadline 7d]   (share the returned url; the first taker binds a normal 2-of-3 escrow. --sats is an alias of --amount; --description is an alias of --terms)',
+  show: "mark offer show <code|url>   (bare 10-character code or a full https://agentescrow.to/o/<code> link)",
+  take: "mark offer take <code|url>   (first valid taker wins; you cannot take your own offer; prints the new escrowId)",
+  cancel: "mark offer cancel <code|url>   (creator only; open offers only)",
+};
+const OFFER_CREATE_FLAGS = new Set(["role", "amount", "sats", "terms", "title", "description", "deliverable", "acceptance", "terms-file", "expires", "deadline", "json", "network", "escrow-url", "arbiter-pubkey"]);
+const OFFER_SHOW_FLAGS = new Set(["json", "network", "escrow-url", "arbiter-pubkey"]);
+export function checkOfferArgs(sub: string | undefined, ref: string | undefined, f: Record<string, string | boolean>): MarkError | null {
+  const usage = (msg: string) => new MarkError("USAGE", `${msg}. usage: ${OFFER_USAGE[sub!] ?? Object.values(OFFER_USAGE).join(" | ")}`, { usage: sub && OFFER_USAGE[sub] ? OFFER_USAGE[sub] : OFFER_USAGE });
+  if (!sub || !OFFER_USAGE[sub]) return usage(sub ? `unknown offer subcommand '${sub}' (one of: ${Object.keys(OFFER_USAGE).join(", ")})` : "offer subcommand required");
+  if (sub === "create") {
+    for (const k of Object.keys(f)) if (!OFFER_CREATE_FLAGS.has(k)) return usage(`--${k} is not an option of offer create`);
+    for (const k of ["role", "amount", "sats", "terms", "title", "description", "deliverable", "acceptance", "terms-file", "expires", "deadline"]) if (f[k] === true) return usage(`--${k} needs a value`);
+    if (!f.role) return usage("--role buyer or --role seller is required");
+    if (f.amount === undefined && f.sats === undefined) return usage("--amount <sats> is required (--sats is an alias)");
+    if (f.amount !== undefined && f.sats !== undefined && String(f.amount) !== String(f.sats)) return usage("give the amount once: --amount or --sats, not both");
+    if (f.terms !== undefined && f.description !== undefined && String(f.terms) !== String(f.description)) return usage("give the terms once: --terms or --description, not both");
+    if (f.terms === undefined && f.description === undefined && f["terms-file"] === undefined) return usage('--terms "<text>" is required');
+    return null;
+  }
+  for (const k of Object.keys(f)) if (!OFFER_SHOW_FLAGS.has(k)) return usage(`--${k} is not an option of offer ${sub}`);
+  if (!ref) return usage("offer code or https://agentescrow.to/o/<code> URL required");
+  return null;
+}
+
 /** mark feedback: bug reports, feedback and feature requests to the escrow server (POST /feedback). */
 export const FEEDBACK_USAGE = 'mark feedback "<message>" [--type bug|feedback|feature] [--command "<the mark command>"] [--error-code <CODE>] [--contact <handle, npub or email for a reply>] [--no-meta] [--server <escrow URL>]   (or --message "<text>"; sends a bug report or feedback to the Agent Escrow team: the message, the fields you give and, unless --no-meta, Mark\'s version, the Node version and the platform. Never keys, wallet, balances or deal data; max 2000 characters)';
 const FEEDBACK_FLAGS = new Set(["message", "type", "command", "error-code", "contact", "no-meta", "server", "json", "network", "escrow-url"]);
@@ -183,5 +211,6 @@ export function helpFor(pos: string[], f: Record<string, string | boolean>, main
   if (pos[0] === "swap") { const sub = [pos[1], word].find((x) => x && x !== "help" && x !== "-h" && Object.hasOwn(SWAP_USAGE, x)); return { usage: sub ? SWAP_USAGE[sub] : SWAP_USAGE }; }
   if (pos[0] === "reputation") return { usage: "mark reputation <pubkey>  (64-hex x-only key; public aggregates from the escrow server)" };
   if (pos[0] === "feedback") return { usage: FEEDBACK_USAGE };
+  if (pos[0] === "offer") { const sub = [pos[1], word].find((x) => x && x !== "help" && x !== "-h" && Object.hasOwn(OFFER_USAGE, x)); return { usage: sub ? OFFER_USAGE[sub] : OFFER_USAGE }; }
   return { usage: mainUsage };
 }

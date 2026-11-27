@@ -61,7 +61,10 @@ export interface Escrow {
   deadlineCountdown?: unknown;
   /** null on legacy deals */
   terms?: { title: string; description: string; deliverable?: string; acceptance?: string; deliverableSha256?: string } | null; termsHash?: string | null;
-  acceptances?: Partial<Record<"buyer" | "seller", { sig: string; at: string }>> | null; termsAgreed?: boolean;
+  acceptances?: Partial<Record<"buyer" | "seller", { sig: string; at: string; via?: "offer" }>> | null; termsAgreed?: boolean;
+  /** Present on deals created by taking an open offer; used to verify the creator's via:"offer" acceptance. */
+  offer?: { code: string; creatorRole: "buyer" | "seller"; deadlineSeconds: number; expiresAt: number; ts: number; nonce: string; offerHash: string };
+  createdAt?: string;
   /** Published fee terms (covered by termsHash); absent on legacy / pre-fee deals = no fees. */
   fees?: FeeTerms | null; dispute?: unknown; ruling?: { outcome: string; at: string } | null;
   evidence?: { id: string; party: "buyer" | "seller"; at: string; ts: number; text: string; sha256?: string; url?: string; sig: string }[];
@@ -112,6 +115,15 @@ export function houseHeader(baseUrl: string | undefined, env: NodeJS.ProcessEnv 
   return trusted || local ? { "x-escrow-house": k } : {};
 }
 
+export interface PublicOffer {
+  code: string; url: string; status: "open" | "taken" | "canceled" | "expired"; network: string;
+  creatorPubkey: string; creatorRole: "buyer" | "seller"; takerRole: "buyer" | "seller";
+  amountSats: number; terms: { title: string; description: string; deliverable?: string; acceptance?: string; deliverableSha256?: string };
+  deadlineSeconds: number; expiresAt: string; createdAt: string;
+  fees: FeeTerms | null; rule: { type: string; sha256?: string; url?: string }; arbiterMode: "auto" | "manual";
+  offerHash: string; sig: string; ts: number; nonce: string;
+  escrowId?: string | null; takenAt?: string | null; takerPubkey?: string | null; canceledAt?: string | null;
+}
 export class EscrowApi {
   constructor(private baseUrl: string | undefined, private fetchImpl: typeof fetch = fetch, private timeoutMs = 180_000) {}
 
@@ -162,6 +174,10 @@ export class EscrowApi {
   messages(id: string, a: { party: "buyer" | "seller"; ts: number; sig: string }, since?: number) { return this.call<MessageList>("GET", `/escrows/${enc(id)}/messages?party=${a.party}&ts=${a.ts}&sig=${a.sig}${since ? `&since=${since}` : ""}`); }
   postMessage(id: string, b: { author: "buyer" | "seller"; ts: number; sig: string; body: string; kind?: string; replyTo?: string }) { return this.call<Message>("POST", `/escrows/${enc(id)}/messages`, b); }
   dispute(id: string, b: { reason?: string; auth: Auth }) { return this.call<Escrow>("POST", `/escrows/${enc(id)}/dispute`, b); }
+  createOffer(b: Record<string, unknown>) { return this.call<{ code: string; url: string; offer: PublicOffer }>("POST", "/offers", b); }
+  getOffer(code: string) { return this.call<PublicOffer>("GET", `/offers/${enc(code)}`); }
+  takeOffer(code: string, b: Record<string, unknown>) { return this.call<{ code: string; escrowId: string; offer: PublicOffer; escrow: Escrow }>("POST", `/offers/${enc(code)}/take`, b); }
+  cancelOffer(code: string, b: Record<string, unknown>) { return this.call<{ code: string; offer: PublicOffer }>("POST", `/offers/${enc(code)}/cancel`, b); }
 }
 const enc = encodeURIComponent;
 /** 426 UPGRADE_REQUIRED: this Mark is older than the server's minimum. The message always carries the update command and the MCP hint. */

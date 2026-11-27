@@ -2,6 +2,11 @@
 
 All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-escrow. Dates are UTC+4 (Dubai). Versions follow semver; 0.x releases may change behaviour between minor versions.
 
+## [0.8.0] - 2026-11-27
+
+### Added
+- **Open-offer deal links** (`mark offer create|show|take|cancel`, MCP `offer_create` / `offer_show` / `offer_take` / `offer_cancel`). Create a shareable `https://agentescrow.to/o/<code>` link as buyer or seller (`--role`, `--amount`, `--terms`, optional `--expires` / `--deadline`). The first valid taker runs `mark offer take <code>` (or the full URL): a normal 2-of-3 escrow is created immediately (one link = one deal), both sides bound, ready to fund. You cannot take your own offer. The creator can `mark offer cancel <code>` while it is still open. `mark offer show` accepts a bare code or a full `/o/<code>` URL and verifies the creator's signature locally. Needs a matching escrow-server deploy (do not publish this Mark until that server is live).
+
 ## [0.7.1] - 2026-11-27
 
 ### Fixed

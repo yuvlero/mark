@@ -9,8 +9,9 @@ import { updateNotice } from "./core/clientVersion.js";
 import type { NetworkName } from "./config.js";
 import * as uc from "./core/usecases.js";
 import * as es from "./core/escrowStable.js";
-import { checkEscrowArgs, checkDemoArgs, checkSwapArgs, parseArgs, helpFor, feedbackArgs } from "./cliArgs.js";
+import { checkEscrowArgs, checkDemoArgs, checkSwapArgs, checkOfferArgs, parseArgs, helpFor, feedbackArgs } from "./cliArgs.js";
 import { submitFeedback, feedbackServer } from "./core/feedback.js";
+import * as of from "./core/offers.js";
 import * as sw from "./core/swap.js";
 import { mk, firstDealNext } from "./invocation.js";
 import { walletFile } from "./crypto/keystore.js";
@@ -35,7 +36,7 @@ function termsFrom(f: Record<string, string | boolean>): uc.TermsInput {
   for (const [flag, k] of [["title", "title"], ["description", "description"], ["deliverable", "deliverable"], ["acceptance", "acceptance"], ["deliverable-sha256", "deliverableSha256"]]) if (s(f[flag]) !== undefined) t[k] = s(f[flag]);
   return t;
 }
-const USAGE = "mark <init|pubkey|demo|reputation <pubkey>|feedback \"<message>\"|backup|mcp|swap [quote|routes|create|status|claim|fund|refund|recover]|escrow create|show|accept|evidence|fund|limits|quote|status|pending|approve|dispute|refund|refund-payout|claim-payout|messages|message|inbox|invites> [--network bitcoin|mutinynet] [--escrow-url URL] [--arbiter-pubkey HEX]";
+const USAGE = "mark <init|pubkey|demo|reputation <pubkey>|feedback \"<message>\"|backup|mcp|swap [quote|routes|create|status|claim|fund|refund|recover]|offer create|show|take|cancel|escrow create|show|accept|evidence|fund|limits|quote|status|pending|approve|dispute|refund|refund-payout|claim-payout|messages|message|inbox|invites> [--network bitcoin|mutinynet] [--escrow-url URL] [--arbiter-pubkey HEX]";
 /** `mark` with no args: usage (unchanged keys) plus a short "what you can do now". */
 function quickstart(network: ReturnType<typeof normalizeNetwork>) {
   let firstRun = true; try { firstRun = !fs.existsSync(walletFile(dataDir(network))); } catch { /* keep true */ }
@@ -90,6 +91,18 @@ async function main(): Promise<"keep" | void> {
       } // plain `mark swap` or `mark swap create`
       return void out(await sw.swapRun(c, { ...swapIn, confirm: f.yes === true, wait: f.wait === true,
         timeoutSec: optNum(f.timeout), onProgress: out }));
+    }
+    case "offer": {
+      const bad = checkOfferArgs(pos[1], pos[2], f); if (bad) throw bad;
+      const c = await openCtx(network, { escrowUrl, arbiterPubkey });
+      const terms = termsFrom(f);
+      switch (pos[1]) {
+        case "create": return void out(await of.offerCreate(c, { role: String(s(f.role)), amount: Number(f.amount ?? f.sats), terms, title: s(f.title), description: s(f.description) ?? s(f.terms), expires: s(f.expires), deadline: s(f.deadline) }));
+        case "show": return void out(await of.offerShow(c, String(pos[2])));
+        case "take": return void out(await of.offerTake(c, String(pos[2])));
+        case "cancel": return void out(await of.offerCancel(c, String(pos[2])));
+      }
+      throw new MarkError("USAGE", USAGE);
     }
     case "mcp": { const { runMcp } = await import("./mcp.js"); await runMcp(network, { escrowUrl, arbiterPubkey }); return "keep"; }
     case "escrow": {
