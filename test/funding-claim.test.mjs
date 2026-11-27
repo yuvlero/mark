@@ -85,11 +85,24 @@ test("satora claim: the generic 'already spent' is replaced by the finalize step
   const thrown = provider({ claimArkade: async () => { throw new Error("socket hang up"); } }); assert.match((await thrown.claim("sw1", "a")).message, /socket hang up/);
 });
 test("satora claim: library console.log goes to stderr, never stdout (CLI JSON / MCP stdio)", async () => {
-  const w = process.stdout.write; let out = "";
+  const w = process.stdout.write, e = process.stderr.write; let out = "", err = "";
   process.stdout.write = (x, ...a) => { out += x; return true; };
-  try { await provider({ claimArkade: async () => { console.log("No pending Arkade claim found; submitting a new claim"); return { success: true, txId: "t" }; } }).claim("sw1", "a"); }
-  finally { process.stdout.write = w; }
+  process.stderr.write = (x, ...a) => { err += x; return true; };
+  try {
+    await provider({ claimArkade: async () => { console.log("claim progress"); return { success: true, txId: "t" }; } }).claim("sw1", "a");
+  } finally { process.stdout.write = w; process.stderr.write = e; }
+  assert.equal(out, ""); assert.match(err, /claim progress/);
+});
+test("satora claim: the normal first-claim 'No pending Arkade claim found' line is not printed", async () => {
+  const w = process.stdout.write, e = process.stderr.write; let out = "", err = "";
+  process.stdout.write = (x, ...a) => { out += x; return true; };
+  process.stderr.write = (x, ...a) => { err += x; return true; };
+  try {
+    await provider({ claimArkade: async () => { console.log("No pending Arkade claim found; submitting a new claim"); console.log("submitting claim"); return { success: true, txId: "t" }; } }).claim("sw1", "a");
+  } finally { process.stdout.write = w; process.stderr.write = e; }
   assert.equal(out, "");
+  assert.doesNotMatch(err, /No pending Arkade claim found/);
+  assert.match(err, /submitting claim/);
 });
 test("swap storage written by @satora/swap 1.7.0 (version 2 record) loads with 1.11.1", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mark-swaps-")); const key = crypto.randomBytes(32);

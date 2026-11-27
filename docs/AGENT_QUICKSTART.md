@@ -46,12 +46,12 @@ If `action_required_for` is your role, act. Otherwise wait and poll. `next` stay
    - If the terms set `deliverableSha256`, the output shows `deliverableMatch: true|false`.
    - Alternatively: `--text "<proof>" [--sha256 <hex>] [--url <https>]`.
 6. [ ] (seller) Get paid:
-   - **Default:** `mark escrow approve <id> --payout-lnaddr <you@wallet>`.
+   - **Default:** `mark escrow approve <id> --payout-lnaddr <you@wallet> [--wait]` (wait until the invoice is paid).
    - Hash deals: add `--with arbiter --preimage <hex>`, and no buyer is needed.
    - Or `--payout-ark <ark1…>`: **only an address from an Arkade wallet on this escrow's Arkade server** (mainnet `https://arkade.computer`). Bark / Second Ark addresses will NOT work (Mark refuses them with `BAD_DEST`); use a Lightning address or invoice instead.
    - Or stablecoins (mainnet): `mark escrow approve <id> --payout-stable usdc|usdt0|usdc-base --payout-address <your 0x address>`; once the payout tx is out, `mark escrow claim-payout <id> --wait` (gasless). Preview: `mark escrow quote <id> --payout-stable usdc`.
-   - Or `mark escrow quote <id> --dest <bolt11 or lnaddr>`, then create a BOLT11 **with amount** = `lightning.recommendedInvoiceSats`, then `--payout-invoice <bolt11>`.
-7. [ ] (buyer) `mark escrow pending` lists every payout waiting for you; check what is paid where. Then run `mark escrow approve <id>`. Done when `state: released` (`awaiting: none`).
+   - Or `mark escrow quote <id>` (or `--dest <bolt11 or lnaddr>` for the exact route), then create a BOLT11 **with amount** = `lightning.recommendedInvoiceSats`, then `--payout-invoice <bolt11> [--wait]`.
+7. [ ] (buyer) `mark escrow pending` lists every payout waiting for you; check what is paid where. Then run `mark escrow approve <id> [--wait]`. Done when `state: released` (`awaiting: none`); `--wait` also waits until the payout settles.
 
 ## Finding deals: `invites`
 - `mark escrow invites` shows **only** deals waiting for **my** accept.

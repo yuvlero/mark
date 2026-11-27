@@ -58,16 +58,20 @@ class MemWalletStorage {
   async clear() {}
 }
 
-/** The swap library prints progress with console.log; Mark's stdout is JSON (CLI) or the MCP stdio stream, so send it to stderr. */
+/** The swap library prints progress with console.log; Mark's stdout is JSON (CLI) or the MCP stdio stream, so send it to stderr.
+ *  One known line is swallowed: "No pending Arkade claim found; submitting a new claim" is the library's normal first-claim
+ *  path (it tries to resume, finds nothing, starts a new claim). Printing it during `fund --wait` looked like an error. */
 /** Claims and refunds run one at a time per process (MCP may get concurrent calls), so the console redirect is never overlapping. */
 let serialTail: Promise<unknown> = Promise.resolve();
 function serial<T>(f: () => Promise<T>): Promise<T> {
   const run = serialTail.then(f, f); serialTail = run.catch(() => undefined); return run;
 }
+const QUIET_SATORA_LOGS = new Set(["No pending Arkade claim found; submitting a new claim"]);
 function stdoutToStderr<T>(f: () => Promise<T>): Promise<T> {
   return serial(async () => {
     const log = console.log, info = console.info, debug = console.debug;
-    console.log = console.info = console.debug = (...a: unknown[]) => console.error(...a);
+    const redirect = (...a: unknown[]) => { if (QUIET_SATORA_LOGS.has(a.map(String).join(" ").trim())) return; console.error(...a); };
+    console.log = console.info = console.debug = redirect;
     try { return await f(); } finally { console.log = log; console.info = info; console.debug = debug; }
   });
 }

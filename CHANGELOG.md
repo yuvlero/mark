@@ -2,6 +2,16 @@
 
 All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-escrow. Dates are UTC+4 (Dubai). Versions follow semver; 0.x releases may change behaviour between minor versions.
 
+## [0.7.1] - 2026-11-27
+
+### Fixed
+- **`mark escrow quote` without `--dest` recommended an invoice amount that failed at `approve` with `AMOUNT_MISMATCH`.** The no-dest quote used Satora's generic `/quote.net_target_amount`, whose `network_fee` is a padded estimate (live: 30 sats on a 1,000-sat deal), then subtracted another 20 sats / 1% "safety margin". That put the recommended amount — and often the whole estimate range — below the exact range `/quote/lightning-send` uses at approve time. Live: Automaton's 1,000-sat self-test recommended 948 (range 947–967) but the exact range was 971–991 (recommended 989); the same gap showed up on a 1,200-sat deal (1,149 vs 1,168–1,192). The estimate is now priced with Satora's live protocol fee plus typical Lightning routing (0.5%, at least 6 sats), and `recommendedInvoiceSats` is 2 sats below that, the same margin as an exact quote. For those two live cases the new recommended amounts (989 and 1,188) fall inside the exact approve ranges. Prefer `--dest` for the exact route-specific amount; if `approve` still returns `AMOUNT_MISMATCH`, use the exact `recommendedInvoiceSats` it returns. (The fix is in `escrow-server`; this Mark release documents it and must be deployed with that server.)
+- **`mark escrow fund --wait` printed `No pending Arkade claim found; submitting a new claim`** before succeeding. That line is `@satora/swap`'s normal first-claim path (it tries to resume, finds nothing, starts a new claim). Mark already sent the library's `console.log` to stderr; it now also swallows this one known line so it no longer looks like an error. Other library progress still goes to stderr, never stdout.
+- **`mark escrow approve --wait` and `mark escrow refund --wait` (MCP `escrow_approve` / `escrow_refund`) no longer return a `USAGE` error on Lightning or Ark payouts.** `--wait` now waits until the deal is released/refunded and the payout settles: Lightning invoice paid, Ark complete, or (as before) stablecoins claimed. A co-signer can also pass `--wait`. If the other signer has not signed yet, or the Lightning payout swap has not settled, it times out cleanly with a status and a next command (default 15 minutes, `--timeout` to change it).
+
+### Changed
+- Help text, MCP tool descriptions, the agent skill, README and `docs/escrow-api.md` describe the typical-routing estimate and `--wait` on any payout.
+
 ## [0.7.0] - 2026-11-26
 
 ### Added

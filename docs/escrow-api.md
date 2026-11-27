@@ -322,16 +322,16 @@ Reading also refreshes funding: `created → funded` once the address holds `amo
 ### GET /escrows/:id/quote?path=release|refund[&dest=<lnaddr|bolt11>] → 200
 ```json
 { "escrowId": "…", "path": "release", "payee": "seller", "funded": true, "escrowSats": 5000, "payeeLegSats": 5000,
-  "lightning": {"invoiceSats": 4998, "minInvoiceSats": 4898, "maxInvoiceSats": 4998, "recommendedInvoiceSats": 4948, "toleranceSats": 100,
-                "quoteType": "estimate", "estimate": true, "estimateMarginSats": 50, "protocolFeeSats": 0, "networkFeeSats": 2, "minSats": 335, "maxSats": 1000000, "exact": false},
+  "lightning": {"invoiceSats": 4975, "minInvoiceSats": 4875, "maxInvoiceSats": 4975, "recommendedInvoiceSats": 4973, "toleranceSats": 100,
+                "quoteType": "estimate", "estimate": true, "estimateMarginSats": 2, "protocolFeeSats": 0, "networkFeeSats": 25, "minSats": 335, "maxSats": 1000000, "exact": false},
   "ark": {"payoutSats": 5000},
   "fees": {"terms": {…}, "platformFeeSats": 0, "disputeFeeSats": 0, "dustBumpSats": 0, "feeOutputSats": 0, "waived": false, "reason": "zero_rate",
-           "satoraProtocolFeeSats": 0, "satoraNetworkFeeSats": 2, "ifDisputeRuled"?: {…}},
-  "payeeReceives": {"arkSats": 5000, "lightningInvoiceSats": 4998, "lightningInvoiceRange": [4898, 4998]},
+           "satoraProtocolFeeSats": 0, "satoraNetworkFeeSats": 25, "ifDisputeRuled"?: {…}},
+  "payeeReceives": {"arkSats": 5000, "lightningInvoiceSats": 4975, "lightningInvoiceRange": [4875, 4975]},
   "quoteType": "estimate", "note": "…" }
 ```
 - With `dest` (a Lightning address, or any BOLT11 from the payee's wallet) the quote is `exact` for that route.
-- Without `dest` it is an estimate, and `recommendedInvoiceSats` already subtracts `estimateMarginSats`.
+- Without `dest` it is an estimate, priced with Satora's live protocol fee plus typical Lightning routing (0.5%, at least 6 sats), not the generic `/quote` `network_fee` (a padded estimate that was undershooting exact invoices). `recommendedInvoiceSats` is 2 sats below that (`estimateMarginSats`), the same margin as an exact quote. Create the BOLT11 for `recommendedInvoiceSats`. For the exact route-specific amount, re-quote with `dest`. If approve returns `AMOUNT_MISMATCH`, use the exact `recommendedInvoiceSats` it returns.
 - A payout BOLT11 must request between `minInvoiceSats` and `maxInvoiceSats`.
 - An amountless `dest` returns `amountlessInvoice: {supported: false, setInvoiceAmountSats}`.
 

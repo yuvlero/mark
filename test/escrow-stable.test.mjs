@@ -285,13 +285,13 @@ test("quote --payout-stable: payee leg, escrow fee, swap fee and what arrives; n
 test("CLI: --from / --payout-stable / --payout-address / claim-payout validation", () => {
   const chk = (argv) => { const { pos, f } = parseArgs(argv); return checkEscrowArgs(pos[0], pos[1], f); };
   for (const ok of [["fund", "e1", "--from", "usdc"], ["fund", "e1", "--from", "usdc-base", "--wait", "--timeout", "1800"], ["fund", "e1", "--from", "usdt0", "--switch-rail"],
-    ["approve", "e1", "--payout-stable", "usdc", "--payout-address", ME], ["approve", "e1", "--payout-stable", "usdt0", "--payout-address", ME, "--wait"],
+    ["approve", "e1", "--payout-stable", "usdc", "--payout-address", ME], ["approve", "e1", "--payout-stable", "usdt0", "--payout-address", ME, "--wait"], ["approve", "e1", "--payout-lnaddr", "a@b.c", "--wait"], ["approve", "e1", "--wait"], ["refund", "e1", "--payout-invoice", "lnbc1x", "--wait"],
     ["refund", "e1", "--payout-stable", "usdc-base", "--payout-address", ME], ["quote", "e1", "--payout-stable", "usdc"], ["claim-payout", "e1", "--wait", "--timeout", "600"]]) assert.equal(chk(ok), null, ok.join(" "));
   const bad = [[["fund", "e1", "--from", "dai"], /--from must be/], [["fund", "e1", "--from", "usdc", "--ark"], /pick one/], [["fund", "e1", "--from", "usdc", "--resume-claim"], /resume-claim/],
     [["show", "e1", "--from", "usdc"], /only for escrow fund/], [["approve", "e1", "--payout-stable", "usdc"], /needs --payout-address/],
     [["approve", "e1", "--payout-stable", "usdc", "--payout-address", "0x12"], /EVM address/], [["approve", "e1", "--payout-address", ME], /goes with --payout-stable/],
     [["approve", "e1", "--payout-stable", "usdc", "--payout-address", ME, "--payout-lnaddr", "a@b.c"], /pick one/], [["quote", "e1", "--payout-stable", "usdc", "--dest", "a@b.c"], /pick one/],
-    [["approve", "e1", "--payout-lnaddr", "a@b.c", "--wait"], /only for a stablecoin payout/], [["claim-payout", "e1", "--to", "x"], /not an option/], [["claim-payout"], /escrow id required|claim-payout/]];
+    [["claim-payout", "e1", "--to", "x"], /not an option/], [["claim-payout"], /escrow id required|claim-payout/]];
   for (const [argv, re] of bad) { const r = chk(argv); assert.ok(r, argv.join(" ")); assert.match(r.message, re, argv.join(" ")); }
   assert.match(ESCROW_USAGE["claim-payout"], /claim-payout <id>/); assert.match(ESCROW_USAGE.fund, /--from usdc\|usdt0\|usdc-base/);
 });
@@ -405,13 +405,16 @@ test("claim-payout / refund-payout: an unreadable submitted proposal is an error
   assert.equal(await code(es.claimPayout(c, "e1")), "ESCROW_UNREACHABLE"); assert.equal(await code(uc.refundPayout(c, "e1", payoutArk(9, "ark"))), "ESCROW_UNREACHABLE");
   assert.equal(m.calls.claim.length + m.calls.refund.length, 0);
 });
-test("MCP: wait on approve/refund without payoutStable is a usage error (like the CLI)", async () => {
+test("MCP: wait on approve/refund is accepted for any payout (not only payoutStable)", async () => {
   const home = tmpHome();
   const t = new StdioClientTransport({ command: process.execPath, args: [new URL("../dist/src/cli.js", import.meta.url).pathname, "mcp"], env: { ...process.env, MARK_HOME: home }, stderr: "ignore" });
   const cl = new Client({ name: "t", version: "1" }); await cl.connect(t);
   try {
+    const tools = Object.fromEntries((await cl.listTools()).tools.map((x) => [x.name, x]));
+    assert.match(tools.escrow_approve.inputSchema.properties.wait.description, /Lightning invoice paid|payout settles/);
+    assert.doesNotMatch(tools.escrow_approve.inputSchema.properties.wait.description, /stablecoin payout only/);
     for (const [name, args] of [["escrow_approve", { id: "e1", payoutLnaddr: "a@b.c", wait: true }], ["escrow_refund", { id: "e1", payoutArk: "ark1x", wait: true }]]) {
-      const r = await cl.callTool({ name, arguments: args }); assert.match(JSON.stringify(r), /only for a stablecoin payout/, name);
+      const r = await cl.callTool({ name, arguments: args }); assert.doesNotMatch(JSON.stringify(r), /only for a stablecoin payout/, name);
     }
   } finally { await cl.close(); }
 });

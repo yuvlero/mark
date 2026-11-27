@@ -38,7 +38,7 @@ export type Kind = "release" | "refund";
 export interface PayoutOpts { payoutInvoice?: string; payoutLnaddr?: string; payoutArk?: string; payoutStable?: string; payoutAddress?: string }
 export interface TermsInput { title?: string; description?: string; deliverable?: string; acceptance?: string; deliverableSha256?: string }
 export interface CreateOpts { role: Role; counterparty: string; sats: number; deadline: string | number; hash?: string; arbiterMode?: "auto" | "manual"; webhookUrl?: string; terms?: TermsInput }
-/** wait (stablecoin payout): when the payout tx went out right away (the co-signer had signed), claim the stablecoins too. */
+/** wait: until the deal is released/refunded, then until the payout settles (Lightning invoice paid, Ark tx submitted, or stablecoins claimed). */
 export interface ApproveOpts extends PayoutOpts { kind?: Kind; with?: "counterparty" | "arbiter"; preimage?: string; wait?: boolean; timeoutSec?: number; pollMs?: number }
 
 // ---------- auto-refund deadline countdown (both roles) ----------
@@ -651,7 +651,7 @@ async function payoutSpec(c: Ctx, e: Escrow, kind: Kind, o: PayoutOpts): Promise
   const amount = dealFee(e).payeeSats; // payee leg: escrow minus the platform fee output
   if (o.payoutInvoice) {
     const q = await c.api.quote(e.id, kind, o.payoutInvoice); // route-specific: same pricing as swap creation
-    if (isAmountless(o.payoutInvoice)) throw new MarkError("AMOUNTLESS_INVOICE_UNSUPPORTED", `amountless invoices cannot be paid (Satora requires the amount). Create the invoice for ${q.amountlessInvoice?.setInvoiceAmountSats ?? q.lightning.recommendedInvoiceSats} sats (estimate with safety margin), or run: ${mk()} escrow quote ${e.id} --dest <your lightning address> for the exact value`, { setInvoiceAmountSats: q.amountlessInvoice?.setInvoiceAmountSats ?? q.lightning.recommendedInvoiceSats, quoteType: q.quoteType ?? "estimate" });
+    if (isAmountless(o.payoutInvoice)) throw new MarkError("AMOUNTLESS_INVOICE_UNSUPPORTED", `amountless invoices cannot be paid (Satora requires the amount). Create the invoice for ${q.amountlessInvoice?.setInvoiceAmountSats ?? q.lightning.recommendedInvoiceSats} sats (typical-routing estimate), or run: ${mk()} escrow quote ${e.id} --dest <your lightning address> for the exact value`, { setInvoiceAmountSats: q.amountlessInvoice?.setInvoiceAmountSats ?? q.lightning.recommendedInvoiceSats, quoteType: q.quoteType ?? "estimate" });
     validatePayoutInvoice(o.payoutInvoice, q.lightning.invoiceSats, c.network); // fail fast before creating a swap
   } else if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(o.payoutLnaddr!)) throw new MarkError("BAD_DEST", "payout-lnaddr must be a lightning address");
   const s = await c.swaps();
@@ -673,7 +673,10 @@ export async function approve(c: Ctx, id: string, o: ApproveOpts = {}) {
   const hasPayout = !!(o.payoutInvoice || o.payoutLnaddr || o.payoutArk || o.payoutStable || o.payoutAddress);
   if (!hasPayout) {
     const pending = e.proposals.filter((p) => !p.submittedTxid && p.signers.includes(role) && !p.sigs.includes(role) && (!o.kind || p.kind === o.kind));
-    if (pending.length) return signProposal(c, e, await c.api.proposal(id, pending[pending.length - 1].id), role);
+    if (pending.length) {
+      const signed = await signProposal(c, e, await c.api.proposal(id, pending[pending.length - 1].id), role);
+      return o.wait ? waitAfterApprove(c, id, { signed, timeoutSec: o.timeoutSec, pollMs: o.pollMs }) : signed;
+    }
     const open = e.proposals.filter((p) => !p.submittedTxid && (!o.kind || p.kind === o.kind));
     const why = open.length ? `open proposal(s) ${open.map((p) => `${p.kind}:${p.id} signed by [${p.sigs.join(",")}]`).join("; ")} need nothing from me (${role})` : "there is no pending proposal yet";
     throw new MarkError("NOTHING_TO_SIGN", `nothing to sign: ${why}. A co-signer needs no payout. To PROPOSE as payee (seller->release, buyer->refund), pass exactly one of --payout-invoice | --payout-lnaddr | --payout-ark | --payout-stable (with --payout-address).`, { state: e.state, role });
@@ -693,11 +696,55 @@ export async function approve(c: Ctx, id: string, o: ApproveOpts = {}) {
   if (spec.stable) checkOwnStableProposal(prop, kind, spec.payout, spec.swap!.fundAddress);
   const signed = await signProposal(c, r.escrow, prop, role);
   const out = { ...signed, payoutSwap: spec.swap ? { id: spec.swap.id, vhtlc: spec.swap.fundAddress, sourceSats: spec.swap.fundAmountSats } : undefined };
-  if (!spec.stable) return out;
-  const sent = ["released", "refunded"].includes((signed as any).escrow?.state);
-  const next = sent ? `the payout tx was submitted: claim the stablecoins with ${mk()} escrow claim-payout ${id} --wait` : `waiting for the ${signers.find((x) => x !== role)} to sign; then claim the stablecoins with ${mk()} escrow claim-payout ${id} --wait (only this Mark home can claim them)`;
-  if (!(o.wait && sent)) return { ...out, payoutStable: spec.stable, next };
-  return { ...out, payoutStable: spec.stable, claim: await claimPayout(c, id, { wait: true, timeoutSec: o.timeoutSec, pollMs: o.pollMs }) };
+  if (!o.wait) {
+    if (!spec.stable) return out;
+    const sent = ["released", "refunded"].includes((signed as any).escrow?.state);
+    const next = sent ? `the payout tx was submitted: claim the stablecoins with ${mk()} escrow claim-payout ${id} --wait` : `waiting for the ${signers.find((x) => x !== role)} to sign; then claim the stablecoins with ${mk()} escrow claim-payout ${id} --wait (only this Mark home can claim them)`;
+    return { ...out, payoutStable: spec.stable, next };
+  }
+  return waitAfterApprove(c, id, { signed: out, stable: spec.stable, timeoutSec: o.timeoutSec, pollMs: o.pollMs });
+}
+
+
+const PAYOUT_DONE = new Set(["released", "refunded"]);
+const APPROVE_WAIT_SEC = 900;
+/** After approve/refund (propose+sign or co-sign): wait until the deal is released/refunded, then until the payout settles. */
+export async function waitAfterApprove(c: Ctx, id: string, o: { signed: any; stable?: Record<string, unknown>; timeoutSec?: number; pollMs?: number }) {
+  const end = Date.now() + (o.timeoutSec ?? APPROVE_WAIT_SEC) * 1000; const poll = o.pollMs ?? 5000;
+  const out: any = { ...o.signed, ...(o.stable ? { payoutStable: o.stable } : {}) };
+  let e: Escrow = o.signed.escrow ?? await c.api.get(id);
+  while (!PAYOUT_DONE.has(e.state) && Date.now() < end) {
+    await sleep(poll);
+    try { e = await c.api.get(id); } catch { /* keep polling */ }
+  }
+  if (!PAYOUT_DONE.has(e.state)) {
+    return { ...out, escrow: e, timedOut: true, next: `still ${e.state}. The other signer may still need to sign. Keep waiting: ${mk()} escrow approve ${id} --wait (or check ${mk()} escrow status ${id})` };
+  }
+  const left = Math.max(0, (end - Date.now()) / 1000);
+  const sp = await submittedPayout(c, id, e);
+  const typ = sp?.payout?.type;
+  if (o.stable || typ === "stable") {
+    return { ...out, escrow: e, claim: await claimPayout(c, id, { wait: true, timeoutSec: left, pollMs: o.pollMs }) };
+  }
+  const swapId = sp?.payout?.swapId ?? c.index.get(id).payoutSwap;
+  if (typ === "ark" || !swapId) {
+    return { ...out, escrow: e, settled: true, next: `deal ${e.state}. The payout is complete.` };
+  }
+  const payoutSwap = await waitLightningPayoutSwap(c, swapId, { timeoutSec: left, pollMs: poll, escrowId: id, state: e.state });
+  return { ...out, escrow: e, payoutSwap, settled: !!(payoutSwap as any).settled, timedOut: !!(payoutSwap as any).timedOut, next: (payoutSwap as any).note };
+}
+
+async function waitLightningPayoutSwap(c: Ctx, swapId: string, o: { timeoutSec: number; pollMs: number; escrowId: string; state: string }) {
+  const end = Date.now() + o.timeoutSec * 1000; const s = await c.swaps(); let last = "unknown";
+  for (;;) {
+    try {
+      const info = await s.get(swapId); last = info.status;
+      if (SWAP_DONE.has(last)) return { id: swapId, status: last, settled: true, note: `deal ${o.state}; Lightning invoice paid.` };
+      if (SWAP_FAILED.has(last)) return { id: swapId, status: last, ended: true, note: `deal ${o.state}; payout swap ended as ${last}. Check ${mk()} escrow status ${o.escrowId}` };
+    } catch { /* keep polling */ }
+    if (Date.now() >= end) return { id: swapId, status: last, timedOut: true, note: `deal ${o.state}; payout swap still ${last}. Keep waiting: ${mk()} escrow status ${o.escrowId}` };
+    await sleep(o.pollMs);
+  }
 }
 
 export async function dispute(c: Ctx, id: string, reason?: string) {

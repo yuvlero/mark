@@ -318,9 +318,9 @@ mark escrow quote <id> --dest seller@walletofsatoshi.com   # or --dest <any bolt
 ```
 (Illustrative numbers: the exact values depend on the route.) Create an invoice for `lightning.recommendedInvoiceSats` (anywhere in `minInvoiceSats..maxInvoiceSats` works), valid for at least 10 more minutes, then:
 ```bash
-mark escrow approve <id> --payout-invoice lnbc49800n1…
+mark escrow approve <id> --payout-invoice lnbc49800n1…   # add --wait to wait until the invoice is paid
 ```
-- Without `--dest` the quote is an **estimate** (`quoteType: "estimate"`, routing fees vary by destination), and `recommendedInvoiceSats` already subtracts a safety margin.
+- Without `--dest` the quote is an **estimate** (`quoteType: "estimate"`), priced with Satora's live protocol fee plus typical Lightning routing (0.5%, at least 6 sats). Create the invoice for `recommendedInvoiceSats` (2 sats below that, the same margin as an exact quote). For the exact route-specific amount, re-quote with `--dest`. If `approve` returns `AMOUNT_MISMATCH`, use the exact `recommendedInvoiceSats` it returns.
 - **Option C: Ark address:** `--payout-ark ark1…`. You receive `payeeLegSats` (escrow minus platform fee), with no swap fee. **Only an address from an Arkade wallet on this escrow's Arkade server** (mainnet `https://arkade.computer`; see `mark escrow limits` → `arkade`). Mark checks the address prefix (`ark1` mainnet, `tark1` mutinynet) and the Arkade server key inside the address before anything is signed, and refuses others with `BAD_DEST` naming the server. A Bark / Second Ark address will NOT work: use Option A or B instead.
 
 **Option D: stablecoins (mainnet):** `--payout-stable usdc|usdt0|usdc-base --payout-address 0x…`. Mark creates a Satora swap (Arkade → stablecoin) for exactly your payee leg and proposes it; the escrow server checks the swap (amount, your EVM address, this escrow's Arkade server, a timelock at least an hour out) when you propose and again right before the payout tx goes out, and the co-signer's Mark checks it at Satora before signing. Once the payout tx is out, claim the stablecoins (gasless) from the same Mark home: `mark escrow claim-payout <id> --wait` (or add `--wait` to the approve when you sign last). Preview first with `mark escrow quote <id> --payout-stable usdc`. About 1% swap fee (Satora ~0.5% + Agent Escrow 0.5%) plus network fees; `usdc-base` also pays Circle's ~0.05 USDC bridge fee. If the swap never pays out, `mark escrow refund-payout <id> --to <ark address>` after its timelock.
@@ -328,7 +328,7 @@ mark escrow approve <id> --payout-invoice lnbc49800n1…
 The seller's approve **proposes and signs**. Then the buyer co-signs:
 ```bash
 mark escrow pending          # B: every payout waiting on me (or: mark escrow pending <id>)
-mark escrow approve <id>     # B: co-sign. With 2 signatures the payout is submitted.
+mark escrow approve <id> [--wait]     # B: co-sign. With 2 signatures the payout is submitted. --wait waits until the deal is released and the payout settles (Lightning invoice paid, or Ark complete).
 ```
 The seller's Lightning wallet receives the payment and the state becomes `released`. Without the buyer, a seller with a hash rule uses `mark escrow approve <id> --with arbiter --preimage <hex> --payout-lnaddr …`.
 
