@@ -102,6 +102,8 @@ test("MARK_HOUSE_KEY_FILE (operator-only): file is used when set; env wins; miss
     reset();
     assert.deepEqual(houseHeader(prod, { MARK_HOUSE_KEY_FILE: huge }), {}, "oversized file is not read as a key");
     reset();
+    assert.deepEqual(houseHeader(prod, { MARK_HOUSE_KEY_FILE: dir }), {}, "a directory is not read as a key");
+    reset();
     assert.deepEqual(houseHeader("https://evil.example", { MARK_HOUSE_KEY_FILE: good }), {}, "file key not sent to a foreign https origin");
     reset();
     assert.deepEqual(houseHeader("http://escrow.example", { MARK_HOUSE_KEY_FILE: good }), {}, "file key never in clear text over the network");

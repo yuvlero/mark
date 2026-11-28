@@ -120,12 +120,19 @@ function keyFromFile(filePath: string): string | null {
   if (houseKeyFileCache.has(filePath)) return houseKeyFileCache.get(filePath) ?? null;
   let value: string | null = null;
   try {
-    const st = fs.statSync(filePath);
-    // regular file only, size-checked before read: no pipes/devices, no unbounded slurp of a huge file
-    if (st.isFile() && st.size <= HOUSE_KEY_FILE_MAX) {
-      const k = fs.readFileSync(filePath, "utf8").trim();
-      if (HOUSE_KEY_RE.test(k)) value = k;
-    }
+    // One open + fstat + bounded read on that fd (O_NONBLOCK so a FIFO cannot hang us). Symlinks to regular files are followed.
+    const fd = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+    try {
+      const st = fs.fstatSync(fd);
+      if (st.isFile()) {
+        const buf = Buffer.alloc(HOUSE_KEY_FILE_MAX + 1);
+        const n = fs.readSync(fd, buf, 0, buf.length, 0);
+        if (n <= HOUSE_KEY_FILE_MAX) {
+          const k = buf.subarray(0, n).toString("utf8").trim();
+          if (HOUSE_KEY_RE.test(k)) value = k;
+        }
+      }
+    } finally { fs.closeSync(fd); }
   } catch { /* missing / unreadable / etc.: stay silent, never echo contents */ }
   houseKeyFileCache.set(filePath, value);
   return value;
