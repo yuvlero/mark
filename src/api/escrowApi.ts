@@ -2,6 +2,7 @@
  * HTTP client for the escrow REST contract (docs/escrow-api.md). The ONLY place Mark talks to the server.
  * `fetchImpl` is injectable so tests can mock the API without a server.
  */
+import fs from "node:fs";
 import { MarkError } from "../errors.js";
 import { LOOPBACK_HOSTS } from "../config.js";
 import type { FeeTerms } from "../core/fees.js";
@@ -104,10 +105,42 @@ export interface DemoOffer { enabled: boolean; network?: string; code?: string; 
  *  house traffic instead of external usage. Unset for everyone else (nothing is sent). Never logged, never part of an error. Sent ONLY to
  *  the production escrow origin (https://agentescrow.to), to an https origin listed in MARK_HOUSE_ORIGIN (comma-separated, exact origin
  *  match), or to a loopback http URL: never to any other --escrow-url and never in clear text over the network. With it set, redirects
- *  are refused (redirect: "error") so the header can never follow a 3xx to another origin. */
+ *  are refused (redirect: "error") so the header can never follow a 3xx to another origin.
+ *  MARK_HOUSE_KEY_FILE (optional): path to a file whose trimmed contents are the same key. MARK_HOUSE_KEY wins when set (including when
+ *  it is set but invalid: the file is not consulted). The file is read once per process and cached; if it is missing, unreadable, empty
+ *  or invalid, nothing is sent and nothing is logged or thrown (the path's contents never appear in errors). */
 export const HOUSE_ORIGINS = ["https://agentescrow.to"];
+const HOUSE_KEY_RE = /^[\x21-\x7e]{1,1024}$/;
+const HOUSE_KEY_FILE_MAX = 4096;
+const houseKeyFileCache = new Map<string, string | null>();
+/** Tests only: drop the MARK_HOUSE_KEY_FILE cache so a later read sees a new path or new contents. */
+export function resetHouseKeyFileCache(): void { houseKeyFileCache.clear(); }
+function keyFromFile(filePath: string): string | null {
+  if (houseKeyFileCache.has(filePath)) return houseKeyFileCache.get(filePath) ?? null;
+  let value: string | null = null;
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    if (raw.length <= HOUSE_KEY_FILE_MAX) {
+      const k = raw.trim();
+      if (HOUSE_KEY_RE.test(k)) value = k;
+    }
+  } catch { /* missing / unreadable / etc.: stay silent, never echo contents */ }
+  houseKeyFileCache.set(filePath, value);
+  return value;
+}
+/** Resolve the operator house key: env wins; otherwise a cached read of MARK_HOUSE_KEY_FILE. Invalid values become "". */
+function houseKey(env: NodeJS.ProcessEnv): string {
+  const fromEnv = env.MARK_HOUSE_KEY;
+  if (fromEnv != null && String(fromEnv).trim() !== "") {
+    const k = String(fromEnv).trim();
+    return HOUSE_KEY_RE.test(k) ? k : "";
+  }
+  const file = (env.MARK_HOUSE_KEY_FILE ?? "").trim();
+  if (!file) return "";
+  return keyFromFile(file) ?? "";
+}
 export function houseHeader(baseUrl: string | undefined, env: NodeJS.ProcessEnv = process.env): Record<string, string> {
-  const k = (env.MARK_HOUSE_KEY ?? "").trim(); if (!/^[\x21-\x7e]{1,1024}$/.test(k)) return {}; // visible ASCII only: never a header-construction error that could echo it
+  const k = houseKey(env); if (!k) return {}; // visible ASCII only: never a header-construction error that could echo it
   let u: URL; try { u = new URL(String(baseUrl ?? "")); } catch { return {}; }
   const local = u.protocol === "http:" && LOOPBACK_HOSTS.includes(u.hostname);
   const extra = (env.MARK_HOUSE_ORIGIN ?? "").split(",").map((x) => { try { const o = new URL(x.trim()); return o.protocol === "https:" ? o.origin : null; } catch { return null; } }).filter(Boolean);

@@ -61,6 +61,10 @@ test("feedbackServer: --server > --escrow-url > MARK_ESCROW_URL > config > defau
 });
 test("submitFeedback: POST /feedback with JSON + version headers, no house header; HTTP errors map to codes", async () => {
   process.env.MARK_HOUSE_KEY = "should-never-be-sent";
+  const houseDir = fs.mkdtempSync("/tmp/mark-fb-house-");
+  const houseFile = houseDir + "/key";
+  fs.writeFileSync(houseFile, "should-never-be-sent-from-file\n", { mode: 0o600 });
+  process.env.MARK_HOUSE_KEY_FILE = houseFile;
   const s = await fakeServer((req) => req.url === "/feedback" ? [201, { id: "fb_aaaaaaaaaaaaaaaa", receivedAt: "2026-11-26T12:00:00.000Z", type: "bug" }] : [404, {}]);
   try {
     const r = await submitFeedback({ serverUrl: s.url, message: "boom", type: "bug", errorCode: "X" });
@@ -68,7 +72,7 @@ test("submitFeedback: POST /feedback with JSON + version headers, no house heade
     const q = s.seen[0]; assert.equal(q.method, "POST"); assert.equal(q.url, "/feedback"); assert.equal(q.headers["content-type"], "application/json"); assert.equal(q.headers["x-mark-version"], MARK_VERSION);
     assert.match(q.headers["user-agent"], /mark/i); assert.ok(!JSON.stringify(q.headers).includes("should-never-be-sent")); assert.ok(!Object.keys(q.headers).some((h) => h.includes("house")));
     assert.deepEqual(Object.keys(q.body).sort(), ["errorCode", "markVersion", "message", "nodeVersion", "platform", "type"]);
-  } finally { await s.close(); delete process.env.MARK_HOUSE_KEY; }
+  } finally { await s.close(); delete process.env.MARK_HOUSE_KEY; delete process.env.MARK_HOUSE_KEY_FILE; fs.rmSync(houseDir, { recursive: true, force: true }); }
   for (const [st, j, code] of [[400, { code: "BAD_FEEDBACK", error: "message is required" }, "BAD_FEEDBACK"], [429, { code: "RATE_LIMITED", error: "slow down" }, "RATE_LIMITED"], [404, { error: "not found" }, "FEEDBACK_UNSUPPORTED"], [500, "oops", "ESCROW_ERROR"], [201, { nope: 1 }, "ESCROW_BAD_RESPONSE"]]) {
     const e = await fakeServer(() => [st, j]);
     try { await assert.rejects(submitFeedback({ serverUrl: e.url, message: "x" }), (x) => x.code === code, code); } finally { await e.close(); }

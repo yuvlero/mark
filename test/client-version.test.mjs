@@ -4,7 +4,7 @@ import test from "node:test"; import assert from "node:assert/strict";
 import fs from "node:fs"; import path from "node:path"; import http from "node:http"; import { spawn } from "node:child_process";
 import * as uc from "../dist/src/core/usecases.js";
 import { openCtx } from "../dist/src/core/context.js";
-import { EscrowApi, upgradeRequired, UPGRADE_HINT, safeUpgrade, plainText, houseHeader } from "../dist/src/api/escrowApi.js";
+import { EscrowApi, upgradeRequired, UPGRADE_HINT, safeUpgrade, plainText, houseHeader, resetHouseKeyFileCache } from "../dist/src/api/escrowApi.js";
 import { MARK_VERSION, MARK_USER_AGENT } from "../dist/src/version.js";
 import { compareSemver, parseSemver, semverLt } from "../dist/src/core/semver.js";
 import { rememberPolicy, cachedPolicy, noticeFor, updateNotice, VERSION_POLICY_TTL_MS, RETRY_MS, NOTICE_TIMEOUT_MS, safeHighlights, HIGHLIGHTS_MAX } from "../dist/src/core/clientVersion.js";
@@ -65,6 +65,62 @@ test("MARK_HOUSE_KEY (operator-only): sent as x-escrow-house on every request ov
       delete process.env.MARK_HOUSE_KEY; await new EscrowApi(`http://127.0.0.1:${a.address().port}`).limits().catch(() => {}); assert.deepEqual(seen, [null], "without the key redirects behave as before");
     } finally { a.close(); b.close(); }
   } finally { if (prev === undefined) delete process.env.MARK_HOUSE_KEY; else process.env.MARK_HOUSE_KEY = prev; if (prevO === undefined) delete process.env.MARK_HOUSE_ORIGIN; else process.env.MARK_HOUSE_ORIGIN = prevO; }
+});
+
+test("MARK_HOUSE_KEY_FILE (operator-only): file is used when set; env wins; missing/empty/invalid file sends nothing; secret never in errors", async () => {
+  const K = "test-only-dummy-house-file-key-0123456789ab";
+  const ENVK = "test-only-dummy-house-env-wins-0123456789ab";
+  const dir = fs.mkdtempSync("/tmp/mark-house-");
+  const good = path.join(dir, "good.key");
+  const empty = path.join(dir, "empty.key");
+  const invalid = path.join(dir, "invalid.key");
+  const missing = path.join(dir, "no-such.key");
+  fs.writeFileSync(good, `\n${K}\n`, { mode: 0o600 });
+  fs.writeFileSync(empty, "   \n", { mode: 0o600 });
+  fs.writeFileSync(invalid, "a b c not-a-valid-key\n", { mode: 0o600 });
+  const prod = "https://agentescrow.to";
+  const reset = () => resetHouseKeyFileCache();
+  try {
+    reset();
+    assert.deepEqual(houseHeader(prod, { MARK_HOUSE_KEY_FILE: good }), { "x-escrow-house": K }, "file is used");
+    reset();
+    assert.deepEqual(houseHeader(prod, { MARK_HOUSE_KEY: ENVK, MARK_HOUSE_KEY_FILE: good }), { "x-escrow-house": ENVK }, "env beats file");
+    reset();
+    assert.deepEqual(houseHeader(prod, { MARK_HOUSE_KEY: "  ", MARK_HOUSE_KEY_FILE: good }), { "x-escrow-house": K }, "whitespace-only env falls through to file");
+    reset();
+    assert.deepEqual(houseHeader(prod, { MARK_HOUSE_KEY: "a b", MARK_HOUSE_KEY_FILE: good }), {}, "invalid env wins and sends nothing");
+    reset();
+    assert.deepEqual(houseHeader(prod, { MARK_HOUSE_KEY_FILE: missing }), {}, "missing file");
+    reset();
+    assert.deepEqual(houseHeader(prod, { MARK_HOUSE_KEY_FILE: empty }), {}, "empty file");
+    reset();
+    assert.deepEqual(houseHeader(prod, { MARK_HOUSE_KEY_FILE: invalid }), {}, "invalid file");
+    reset();
+    assert.deepEqual(houseHeader(prod, {}), {}, "neither set");
+    // cache: changing the file after a read must not change the header until reset
+    reset();
+    assert.deepEqual(houseHeader(prod, { MARK_HOUSE_KEY_FILE: good }), { "x-escrow-house": K });
+    fs.writeFileSync(good, "other-dummy-key-should-be-cached-away-012345", { mode: 0o600 });
+    assert.deepEqual(houseHeader(prod, { MARK_HOUSE_KEY_FILE: good }), { "x-escrow-house": K }, "cached for the process");
+    reset();
+    assert.deepEqual(houseHeader(prod, { MARK_HOUSE_KEY_FILE: good }), { "x-escrow-house": "other-dummy-key-should-be-cached-away-012345" }, "reset sees new contents");
+    // a request error must not echo the file key
+    reset();
+    const prev = process.env.MARK_HOUSE_KEY, prevF = process.env.MARK_HOUSE_KEY_FILE;
+    delete process.env.MARK_HOUSE_KEY; process.env.MARK_HOUSE_KEY_FILE = good;
+    // restore the good key in the file and cache
+    fs.writeFileSync(good, K + "\n", { mode: 0o600 }); reset();
+    try {
+      const down = await new EscrowApi(prod, async () => { throw new Error("connect ECONNREFUSED"); }).limits().then(() => null, (x) => x);
+      assert.equal(down.code, "ESCROW_UNREACHABLE");
+      const blob = JSON.stringify({ m: down.message, d: down.details, s: String(down) });
+      assert.ok(!blob.includes(K), "file key not in the error");
+      assert.ok(!blob.includes("other-dummy-key-should-be-cached-away-012345"));
+    } finally {
+      if (prev === undefined) delete process.env.MARK_HOUSE_KEY; else process.env.MARK_HOUSE_KEY = prev;
+      if (prevF === undefined) delete process.env.MARK_HOUSE_KEY_FILE; else process.env.MARK_HOUSE_KEY_FILE = prevF;
+    }
+  } finally { reset(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("426 UPGRADE_REQUIRED: clear error with the update command and MCP hint (also when the body is not JSON)", async () => {
