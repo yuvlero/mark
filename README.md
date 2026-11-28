@@ -467,7 +467,7 @@ Not supported: Lightning addresses as the payout (Satora would fetch their invoi
 
 ## 7. Command reference
 
-Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL` (https; http only for `localhost`, `127.0.0.1` or `[::1]`), `--arbiter-pubkey <hex>` (explicit arbiter identity pin; env `MARK_ARBITER_PUBKEY`). Operator-only env `MARK_HOUSE_KEY` (or `MARK_HOUSE_KEY_FILE` pointing at a file of the same key; `MARK_HOUSE_KEY` wins if set): sent as `x-escrow-house` so the escrow operator's own runs are counted as house traffic (sent only to `https://agentescrow.to`, an https origin in `MARK_HOUSE_ORIGIN`, or loopback; leave both unset). A missing or unreadable file is ignored.
+Global flags: `--network bitcoin|mutinynet`, `--escrow-url URL` (https; http only for `localhost`, `127.0.0.1` or `[::1]`), `--arbiter-pubkey <hex>` (explicit arbiter identity pin; env `MARK_ARBITER_PUBKEY`). Operator-only env `MARK_HOUSE_KEY` (or `MARK_HOUSE_KEY_FILE` pointing at a file of the same key; if `MARK_HOUSE_KEY` is present it wins, including a blank value that sends nothing): sent as `x-escrow-house` so the escrow operator's own runs are counted as house traffic (sent only to `https://agentescrow.to`, an https origin in `MARK_HOUSE_ORIGIN`, or loopback; leave both unset). A missing or unreadable file is ignored.
 
 | Command | What it does |
 |---|---|

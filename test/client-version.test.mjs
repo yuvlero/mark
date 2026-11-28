@@ -86,7 +86,9 @@ test("MARK_HOUSE_KEY_FILE (operator-only): file is used when set; env wins; miss
     reset();
     assert.deepEqual(houseHeader(prod, { MARK_HOUSE_KEY: ENVK, MARK_HOUSE_KEY_FILE: good }), { "x-escrow-house": ENVK }, "env beats file");
     reset();
-    assert.deepEqual(houseHeader(prod, { MARK_HOUSE_KEY: "  ", MARK_HOUSE_KEY_FILE: good }), { "x-escrow-house": K }, "whitespace-only env falls through to file");
+    assert.deepEqual(houseHeader(prod, { MARK_HOUSE_KEY: "", MARK_HOUSE_KEY_FILE: good }), {}, "empty env wins and sends nothing");
+    reset();
+    assert.deepEqual(houseHeader(prod, { MARK_HOUSE_KEY: "  ", MARK_HOUSE_KEY_FILE: good }), {}, "whitespace-only env wins and sends nothing");
     reset();
     assert.deepEqual(houseHeader(prod, { MARK_HOUSE_KEY: "a b", MARK_HOUSE_KEY_FILE: good }), {}, "invalid env wins and sends nothing");
     reset();
@@ -95,6 +97,14 @@ test("MARK_HOUSE_KEY_FILE (operator-only): file is used when set; env wins; miss
     assert.deepEqual(houseHeader(prod, { MARK_HOUSE_KEY_FILE: empty }), {}, "empty file");
     reset();
     assert.deepEqual(houseHeader(prod, { MARK_HOUSE_KEY_FILE: invalid }), {}, "invalid file");
+    const huge = path.join(dir, "huge.key");
+    fs.writeFileSync(huge, "x".repeat(4097), { mode: 0o600 });
+    reset();
+    assert.deepEqual(houseHeader(prod, { MARK_HOUSE_KEY_FILE: huge }), {}, "oversized file is not read as a key");
+    reset();
+    assert.deepEqual(houseHeader("https://evil.example", { MARK_HOUSE_KEY_FILE: good }), {}, "file key not sent to a foreign https origin");
+    reset();
+    assert.deepEqual(houseHeader("http://escrow.example", { MARK_HOUSE_KEY_FILE: good }), {}, "file key never in clear text over the network");
     reset();
     assert.deepEqual(houseHeader(prod, {}), {}, "neither set");
     // cache: changing the file after a read must not change the header until reset

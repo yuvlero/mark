@@ -5,7 +5,7 @@ All notable changes to Mark (`@yuvlero/mark`), the CLI and MCP server for agent-
 ## [0.8.1] - 2026-11-28
 
 ### Added
-- Operator-only `MARK_HOUSE_KEY_FILE`: a path to a file whose trimmed contents are used as `MARK_HOUSE_KEY` (sent as `x-escrow-house`). `MARK_HOUSE_KEY` still wins when set. The file is read once per process; if it is missing, unreadable, empty or invalid, Mark sends nothing and stays silent (the contents never appear in errors or logs). Normal users with neither variable set are unchanged. `mark feedback` still never sends the house header.
+- Operator-only `MARK_HOUSE_KEY_FILE`: a path to a file whose trimmed contents are used as `MARK_HOUSE_KEY` (sent as `x-escrow-house`). If `MARK_HOUSE_KEY` is present it still wins (a blank or invalid value sends nothing and the file is not read). The file is read once per process (regular files only, size-capped before the read); if it is missing, unreadable, empty, oversized or invalid, Mark sends nothing and stays silent (the contents never appear in errors or logs). Normal users with neither variable set are unchanged. `mark feedback` still never sends the house header.
 
 ## [0.8.0] - 2026-11-27
 

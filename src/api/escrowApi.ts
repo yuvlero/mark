@@ -106,9 +106,10 @@ export interface DemoOffer { enabled: boolean; network?: string; code?: string; 
  *  the production escrow origin (https://agentescrow.to), to an https origin listed in MARK_HOUSE_ORIGIN (comma-separated, exact origin
  *  match), or to a loopback http URL: never to any other --escrow-url and never in clear text over the network. With it set, redirects
  *  are refused (redirect: "error") so the header can never follow a 3xx to another origin.
- *  MARK_HOUSE_KEY_FILE (optional): path to a file whose trimmed contents are the same key. MARK_HOUSE_KEY wins when set (including when
- *  it is set but invalid: the file is not consulted). The file is read once per process and cached; if it is missing, unreadable, empty
- *  or invalid, nothing is sent and nothing is logged or thrown (the path's contents never appear in errors). */
+ *  MARK_HOUSE_KEY_FILE (optional): path to a file whose trimmed contents are the same key. If MARK_HOUSE_KEY is present it wins (a blank
+ *  or invalid value sends nothing and the file is not consulted). The file is read once per process and cached (regular files only, size
+ *  capped before the read); if it is missing, unreadable, empty, oversized or invalid, nothing is sent and nothing is logged or thrown
+ *  (the path's contents never appear in errors). */
 export const HOUSE_ORIGINS = ["https://agentescrow.to"];
 const HOUSE_KEY_RE = /^[\x21-\x7e]{1,1024}$/;
 const HOUSE_KEY_FILE_MAX = 4096;
@@ -119,20 +120,21 @@ function keyFromFile(filePath: string): string | null {
   if (houseKeyFileCache.has(filePath)) return houseKeyFileCache.get(filePath) ?? null;
   let value: string | null = null;
   try {
-    const raw = fs.readFileSync(filePath, "utf8");
-    if (raw.length <= HOUSE_KEY_FILE_MAX) {
-      const k = raw.trim();
+    const st = fs.statSync(filePath);
+    // regular file only, size-checked before read: no pipes/devices, no unbounded slurp of a huge file
+    if (st.isFile() && st.size <= HOUSE_KEY_FILE_MAX) {
+      const k = fs.readFileSync(filePath, "utf8").trim();
       if (HOUSE_KEY_RE.test(k)) value = k;
     }
   } catch { /* missing / unreadable / etc.: stay silent, never echo contents */ }
   houseKeyFileCache.set(filePath, value);
   return value;
 }
-/** Resolve the operator house key: env wins; otherwise a cached read of MARK_HOUSE_KEY_FILE. Invalid values become "". */
+/** Resolve the operator house key. If MARK_HOUSE_KEY is present (even blank or invalid) it wins and the file is not read.
+ *  Otherwise a cached read of MARK_HOUSE_KEY_FILE. Invalid values become "". */
 function houseKey(env: NodeJS.ProcessEnv): string {
-  const fromEnv = env.MARK_HOUSE_KEY;
-  if (fromEnv != null && String(fromEnv).trim() !== "") {
-    const k = String(fromEnv).trim();
+  if (Object.prototype.hasOwnProperty.call(env, "MARK_HOUSE_KEY")) {
+    const k = String(env.MARK_HOUSE_KEY ?? "").trim();
     return HOUSE_KEY_RE.test(k) ? k : "";
   }
   const file = (env.MARK_HOUSE_KEY_FILE ?? "").trim();
